@@ -1,0 +1,190 @@
+KotlinMPDreamPlayer/
+├── androidApp/ - точка входа в android приложение
+│   ├── src/
+│   │   └── main/
+│   │       ├── kotlin/
+│   │       │   └── org.milkdev.dreamplayer/
+│   │       │       ├── DreamPlayerApplication.kt
+│   │       │       └── MainActivity.kt
+│   │       ├── res/
+│   │       └── AndroidManifest.xml
+│   └── build.gradle.kts
+├── composeApp/ - точка входа в общий модуль логики
+│   ├── src/
+│   │   ├── androidMain/ - модуль Android логики
+│   │   │   ├── kotlin/
+│   │   │   │   └── org.milkdev.dreamplayer/
+│   │   │   │       ├── app/
+│   │   │   │       │   ├── ApplicationContext.kt
+│   │   │   │       │   └── Theme.android.kt
+│   │   │   │       ├── database/
+│   │   │   │       │   ├── DataStore.android.kt
+│   │   │   │       │   └── Database.android.kt
+│   │   │   │       ├── diagnostics/
+│   │   │   │       │   └── AppDebugLog.android.kt
+│   │   │   │       ├── extensions/
+│   │   │   │       │   ├── ai/
+│   │   │   │       │   │   └── AiPlaylistSecretStore.android.kt
+│   │   │   │       │   ├── data/
+│   │   │   │       │   │   └── AlbumArtFileStore.android.kt
+│   │   │   │       │   └── secrets/
+│   │   │   │       │       ├── AndroidEncryptedSecretStore.kt
+│   │   │   │       │       └── LastFmSecretStore.android.kt
+│   │   │   │       ├── features/
+│   │   │   │       │   └── PlatformFeatureProvider.android.kt
+│   │   │   │       ├── library/
+│   │   │   │       │   ├── metadata/
+│   │   │   │       │   │   └── EmbeddedMetadataReader.android.kt
+│   │   │   │       │   ├── MediaStoreScanner.kt
+│   │   │   │       │   └── MusicLibrarySource.android.kt
+│   │   │   │       ├── playback/
+│   │   │   │       │   ├── AudioPlayer.android.kt
+│   │   │   │       │   └── PlaybackService.kt
+│   │   │   │       ├── ui/
+│   │   │   │       │   ├── PlatformBackHandler.android.kt
+│   │   │   │       │   └── TrackImage.android.kt
+│   │   │   │       └── Platform.android.kt
+│   │   │   └── res/
+│   │   │       ├── drawable/
+│   │   │       └── values/
+│   │   ├── commonMain/ - модуль общей логики
+│   │   │   ├── composeResources/ - общие ресурсы
+│   │   │   │   ├── drawable/
+│   │   │   │   └── font/
+│   │   │   └── kotlin/
+│   │   │       └── org.milkdev.dreamplayer/
+│   │   │           ├── app/ 
+│   │   │           │   ├── App.kt - независимая от платформы точка входа в приложение
+│   │   │           │   ├── Color.kt - цвета темы
+│   │   │           │   └── Theme.kt - тема приложения включая шрифты
+│   │   │           ├── database/ - база данных
+│   │   │           │   ├── dao/ - методы для работы с БД
+│   │   │           │   │   ├── MusicDao.kt
+│   │   │           │   │   └── PlaylistDao.kt
+│   │   │           │   ├── entities/ - сущности БД
+│   │   │           │   │   ├── AlbumEntity.kt
+│   │   │           │   │   ├── ArtistEntity.kt
+│   │   │           │   │   ├── GenreEntities.kt
+│   │   │           │   │   ├── MetadataEntities.kt
+│   │   │           │   │   ├── PlaylistEntity.kt
+│   │   │           │   │   ├── PlaylistTrackCrossRef.kt
+│   │   │           │   │   ├── SyncAuditEntity.kt
+│   │   │           │   │   └── TrackEntity.kt
+│   │   │           │   ├── AppDatabase.kt
+│   │   │           │   ├── DataStore.kt
+│   │   │           │   ├── Database.kt 
+│   │   │           │   └── SystemPlaylists.kt
+│   │   │           ├── diagnostics/ - модуль диагностики
+│   │   │           │   ├── AppDebugLog.kt
+│   │   │           │   ├── LogStorage.kt
+│   │   │           │   └── NetworkTraceLog.kt
+│   │   │           ├── extensions/ - модули расширенных функций
+│   │   │           │   ├── ai/ - модуль ИИ генерации плейлиста дня
+│   │   │           │   │   ├── AiPlaylistFormatter.kt
+│   │   │           │   │   ├── AiPlaylistModels.kt
+│   │   │           │   │   ├── AiPlaylistRecommender.kt
+│   │   │           │   │   ├── AiPlaylistResponseParser.kt
+│   │   │           │   │   ├── AiPlaylistSecretStore.kt
+│   │   │           │   │   └── AiPlaylistSelection.kt
+│   │   │           │   ├── data/ - обработка полученных извне данных
+│   │   │           │   │   ├── AlbumArtFileStore.kt
+│   │   │           │   │   ├── CoverArtRepository.kt
+│   │   │           │   │   ├── LastFmDto.kt
+│   │   │           │   │   ├── LastFmRepository.kt
+│   │   │           │   │   └── MusicBrainzMetadataRepository.kt
+│   │   │           │   ├── network/ - сетевой модуль
+│   │   │           │   │   ├── AiNetworkDiagnosticsService.kt
+│   │   │           │   │   ├── AiPromptService.kt
+│   │   │           │   │   ├── HttpClient.kt
+│   │   │           │   │   ├── LastFmNetworkDiagnosticsService.kt
+│   │   │           │   │   ├── LastfmService.kt
+│   │   │           │   │   ├── NetworkDiagnostics.kt
+│   │   │           │   │   └── RequestRateLimiter.kt
+│   │   │           │   ├── secrets/ - зашифрованное хранилище API ключей
+│   │   │           │       └── LastFmSecretStore.kt
+│   │   │           ├── features/ - платформенные функции
+│   │   │           │   └── PlatformFeatureProvider.kt
+│   │   │           ├── library/ - библиотека треков
+│   │   │           │   ├── metadata/ - работа с метаданными треков 
+│   │   │           │   │   ├── EmbeddedMetadata.kt
+│   │   │           │   │   └── MetadataSyncService.kt
+│   │   │           │   ├── DailyPlaylistRepository.kt
+│   │   │           │   ├── DailyPlaylistState.kt
+│   │   │           │   ├── LibraryModels.kt
+│   │   │           │   ├── MusicLibrarySource.kt
+│   │   │           │   ├── MusicRepository.kt
+│   │   │           │   ├── MusicScanner.kt
+│   │   │           │   ├── PlaylistRepository.kt
+│   │   │           │   ├── SettingsRepository.kt
+│   │   │           │   └── TrackSearch.kt
+│   │   │           ├── model/ - модуль связи логики с интерфейсом
+│   │   │           │   ├── LibraryUiModels.kt
+│   │   │           │   ├── PlayerViewModel.kt
+│   │   │           │   └── TrackSortOrder.kt
+│   │   │           ├── playback/ - функции проигрывания
+│   │   │           │   ├── AudioPlayer.kt
+│   │   │           │   ├── AudioPlayerState.kt
+│   │   │           │   ├── PlaybackModels.kt
+│   │   │           │   ├── PlaybackQueueController.kt
+│   │   │           │   ├── PlaybackResolver.kt
+│   │   │           │   └── PlayerUiState.kt
+│   │   │           ├── ui/ - интерфейс
+│   │   │           │   ├── AboutDialog.kt
+│   │   │           │   ├── Components.kt
+│   │   │           │   ├── DisableClicks.kt
+│   │   │           │   ├── HomeScreen.kt
+│   │   │           │   ├── LazyArtworkLoading.kt
+│   │   │           │   ├── LibraryCollectionDetailsScreen.kt
+│   │   │           │   ├── LibraryScreen.kt
+│   │   │           │   ├── LibrarySearchScreen.kt
+│   │   │           │   ├── LogConsole.kt
+│   │   │           │   ├── PlatformBackHandler.kt
+│   │   │           │   ├── PlayerOverlayHost.kt
+│   │   │           │   ├── PlayerScreen.kt
+│   │   │           │   ├── PlayingQueueScreen.kt
+│   │   │           │   ├── PlaylistScreens.kt
+│   │   │           │   └── SettingsScreen.kt
+│   │   │           └── Platform.kt
+│   │   ├── commonTest/ - тесты
+│   │   │   └── kotlin/
+│   │   │       └── org.milkdev.dreamplayer/
+│   │   │           ├── ComposeAppCommonTest.kt
+│   │   │           └── NetworkDiagnosticsTest.kt
+│   │   └── jvmMain/ - модуль desktop логики
+│   │       └── kotlin/
+│   │           ├── app/
+│   │           │   └── Theme.jvm.kt
+│   │           └── org.milkdev.dreamplayer/
+│   │               ├── audio/
+│   │               │   └── DesktopAudioFiles.kt
+│   │               ├── database/
+│   │               │   ├── ApplicationDirectory.kt
+│   │               │   ├── DataStore.jvm.kt
+│   │               │   └── Database.jvm.kt
+│   │               ├── diagnostics/
+│   │               │   └── AppDebugLog.jvm.kt
+│   │               ├── extensions/
+│   │               │   ├── ai/
+│   │               │   │   └── AiPlaylistSecretStore.jvm.kt
+│   │               │   ├── data/
+│   │               │   │   └── AlbumArtFileStore.jvm.kt
+│   │               │   └── secrets/
+│   │               │       └── LastFmSecretStore.jvm.kt
+│   │               ├── features/
+│   │               │   └── PlatformFeatureProvider.jvm.kt
+│   │               ├── library/
+│   │               │   ├── metadata/
+│   │               │   │   └── EmbeddedMetadataReader.jvm.kt
+│   │               │   ├── JvmMusicScanner.kt
+│   │               │   └── MusicLibrarySource.jvm.kt
+│   │               ├── playback/
+│   │               │   └── AudioPlayer.jvm.kt
+│   │               ├── ui/
+│   │               │   ├── PlatformBackHandler.jvm.kt
+│   │               │   └── TrackImage.jvm.kt
+│   │               └── Platform.jvm.kt
+│   └── build.gradle.kts
+├── desktopApp/ - модуль входа в desktop
+│   ├── src/main/kotlin/org.milkdev.dreamplayer/
+│   │   └── Main.kt
+│   └── build.gradle.kts
