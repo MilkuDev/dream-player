@@ -17,8 +17,4 @@ captures
 !*.xcworkspace/contents.xcworkspacedata
 **/xcshareddata/WorkspaceSettings.xcsettings
 node_modules/
-/androidApp/androidApp.txt
-
-/composeApp/src/androidMain/androidMain.txt
-/composeApp/src/commonMain/commonMain.txt
 /index/
