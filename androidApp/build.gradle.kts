@@ -33,6 +33,7 @@ android {
         compose = true
     }
 
+    // Optional but recommended for clean build setups
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
