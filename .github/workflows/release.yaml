@@ -141,9 +141,14 @@ jobs:
           path: ./ready-artifacts
           merge-multiple: true
 
-      - name: Generate SHA-256 Checksums
+      - name: Flatten Artifacts & Generate Checksums
         run: |
           cd ./ready-artifacts
+
+          find . -mindepth 2 -type f -exec mv {} . \;
+          
+          find . -type d -empty -delete
+          
           sha256sum * > checksums.txt
           cat checksums.txt
 
