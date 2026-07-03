@@ -30,7 +30,7 @@ compose.desktop {
             )
             packageName = "DreamPlayer"
             packageVersion = "0.1.0"
-            description = "KotlinMPDreamPlayer - Kotlin Desktop Player"
+            description = "DreamPlayer - Kotlin Desktop Player"
             copyright = "2026 Milku"
 
             windows {
@@ -41,7 +41,7 @@ compose.desktop {
             }
 
             macOS {
-                dockName = "MPDreamPlayer"
+                dockName = "DreamPlayer"
             }
         }
     }
