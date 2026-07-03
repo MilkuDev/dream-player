@@ -60,7 +60,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build macOS Packages & Distributable
-        run: ./gradlew :desktopApp:packageDmg :desktopApp:packagePkg :desktopApp:createDistributable
+        run: ./gradlew :desktopApp:packageDmg :desktopApp:packagePkg :desktopApp:createDistributable --info
 
       - name: Pack macOS Portable ZIP
         run: |

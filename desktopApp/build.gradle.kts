@@ -7,7 +7,10 @@ plugins {
 }
 
 kotlin {
-    jvmToolchain(jdkVersion = 21)
+    jvmToolchain {
+        languageVersion.set(JavaLanguageVersion.of(21))
+        vendor.set(JvmVendorSpec.AZUL)
+    }
 }
 
 dependencies {
