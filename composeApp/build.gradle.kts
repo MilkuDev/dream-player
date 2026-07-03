@@ -85,20 +85,8 @@ dependencies {
     androidRuntimeClasspath(libs.compose.uiTooling)
 }
 
-// Настройка генерации ресурсов Compose Multiplatform 1.10+
 compose.resources {
-    // publicResClass set to true makes the generated Res class public.
-    // By default, the generated class is internal.
     publicResClass = true
-
-    // packageOfResClass allows you to assign the generated Res class to a particular package
-    // (to access within the code, as well as for isolation in a final artifact).
-    // By default, Compose Multiplatform assigns the {group name}.{module name}.generated.resources package to the class.
     packageOfResClass = "org.milkdev.dreamplayer.generated.resources"
-
-    // generateResClass set to always makes the project unconditionally generate the Res class.
-    // This may be useful when the resource library is only available transitively.
-    // By default, Compose Multiplatform uses the auto value to generate the Res class only if the
-    // current project has an explicit implementation or api dependency on the resource library.
     generateResClass = always
 }

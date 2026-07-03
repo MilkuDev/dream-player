@@ -1,6 +1,15 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.androidApplication)
     alias(libs.plugins.composeCompiler)
+}
+
+val localProperties = Properties()
+val localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localProperties.load(FileInputStream(localPropertiesFile))
 }
 
 android {
@@ -17,14 +26,14 @@ android {
 
     signingConfigs {
         create("release") {
-            val keystorePath = System.getenv("KEYSTORE_PATH") ?: "myKey"
+            val keystorePath = System.getenv("KEYSTORE_PATH") ?: "../myKey"
             val keystoreFile = rootProject.file(keystorePath)
 
             if (keystoreFile.exists()) {
                 storeFile = keystoreFile
-                storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "ТВОЙ_ПАРОЛЬ_ЛОКАЛЬНО"
-                keyAlias = System.getenv("KEY_ALIAS") ?: "key0"
-                keyPassword = System.getenv("KEY_PASSWORD") ?: "ТВОЙ_ПАРОЛЬ_ЛОКАЛЬНО"
+                storePassword = System.getenv("KEYSTORE_PASSWORD") ?: localProperties.getProperty("KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS") ?: localProperties.getProperty("KEY_ALIAS")
+                keyPassword = System.getenv("KEY_PASSWORD") ?: localProperties.getProperty("KEY_PASSWORD")
             }
         }
     }
@@ -33,7 +42,6 @@ android {
         compose = true
     }
 
-    // Optional but recommended for clean build setups
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -44,7 +52,7 @@ android {
         getByName("release") {
             isMinifyEnabled = false
 
-            val keystorePath = System.getenv("KEYSTORE_PATH") ?: "myKey"
+            val keystorePath = System.getenv("KEYSTORE_PATH") ?: "../myKey"
             if (rootProject.file(keystorePath).exists()) {
                 signingConfig = signingConfigs.getByName("release")
             } else {
