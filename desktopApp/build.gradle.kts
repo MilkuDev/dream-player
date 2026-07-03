@@ -32,7 +32,7 @@ compose.desktop {
                 TargetFormat.Rpm,
             )
             packageName = "DreamPlayer"
-            packageVersion = "0.1.0"
+            packageVersion = "1.0.0"
             description = "DreamPlayer - Kotlin Desktop Player"
             copyright = "2026 Milku"
 
