@@ -141,14 +141,33 @@ jobs:
           path: ./ready-artifacts
           merge-multiple: true
 
-      - name: Flatten Artifacts & Generate Checksums
+      - name: Flatten, Rename & Generate Checksums
         run: |
           cd ./ready-artifacts
-
+          
           find . -mindepth 2 -type f -exec mv {} . \;
-          
           find . -type d -empty -delete
+
+          VERSION="${{ github.ref_name }}"
           
+          # Android
+          mv *.apk "DreamPlayer-${VERSION}-Android.apk" 2>/dev/null || true
+          
+          # Windows
+          mv *.exe "DreamPlayer-${VERSION}-Windows-Installer.exe" 2>/dev/null || true
+          mv *.msi "DreamPlayer-${VERSION}-Windows-Installer.msi" 2>/dev/null || true
+          mv DreamPlayer-Windows-Portable.zip "DreamPlayer-${VERSION}-Windows-Portable.zip" 2>/dev/null || true
+          
+          # macOS
+          mv *.dmg "DreamPlayer-${VERSION}-macOS.dmg" 2>/dev/null || true
+          mv *.pkg "DreamPlayer-${VERSION}-macOS.pkg" 2>/dev/null || true
+          mv DreamPlayer-macOS-Portable.zip "DreamPlayer-${VERSION}-macOS-Portable.zip" 2>/dev/null || true
+          
+          # Linux
+          mv *.deb "DreamPlayer-${VERSION}-Linux.deb" 2>/dev/null || true
+          mv *.rpm "DreamPlayer-${VERSION}-Linux.rpm" 2>/dev/null || true
+          mv DreamPlayer-Linux-Portable.tar.gz "DreamPlayer-${VERSION}-Linux-Portable.tar.gz" 2>/dev/null || true
+
           sha256sum * > checksums.txt
           cat checksums.txt
 
