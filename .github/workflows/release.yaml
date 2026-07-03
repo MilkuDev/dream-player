@@ -62,6 +62,10 @@ jobs:
       - name: Build macOS Packages & Distributable
         run: ./gradlew :desktopApp:packageDmg :desktopApp:packagePkg :desktopApp:createDistributable --info
 
+      - name: Print JPackage error log
+        if: failure()
+        run: cat desktopApp/build/compose/logs/createDistributable/*-err.txt
+
       - name: Pack macOS Portable ZIP
         run: |
           cd desktopApp/build/compose/binaries/main

@@ -44,6 +44,7 @@ compose.desktop {
             }
 
             macOS {
+                bundleID = "org.milkdev.dreamplayer"
                 dockName = "DreamPlayer"
             }
         }
