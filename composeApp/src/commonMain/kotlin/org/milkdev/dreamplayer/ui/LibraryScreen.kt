@@ -58,6 +58,7 @@ import org.milkdev.dreamplayer.library.UserPlaylist
 import org.milkdev.dreamplayer.model.AlbumSortOrder
 import org.milkdev.dreamplayer.model.LibraryCategory
 import org.milkdev.dreamplayer.model.TrackSortOrder
+import org.milkdev.dreamplayer.library.AlbumListItem
 import org.milkdev.dreamplayer.playback.PlayerUiState
 import kotlin.time.Duration.Companion.seconds
 
@@ -87,7 +88,7 @@ fun LibraryScreen(
     onPlaylistClick: (UserPlaylist) -> Unit,
     onCreatePlaylist: (String) -> Unit,
     onArtistClick: (ArtistListItem) -> Unit = {},
-    onAlbumItemClick: (org.milkdev.dreamplayer.library.AlbumListItem) -> Unit = {},
+    onAlbumItemClick: (AlbumListItem) -> Unit = {},
     onGenreClick: (GenreListItem) -> Unit = {},
     onSortTrack: (TrackSortOrder) -> Unit = {},
     onSortAlbum: (AlbumSortOrder) -> Unit = {},
@@ -357,8 +358,8 @@ private fun LibraryTrackList(
 
 @Composable
 private fun LibraryAlbumGrid(
-    albums: List<org.milkdev.dreamplayer.library.AlbumListItem>,
-    onAlbumClick: (org.milkdev.dreamplayer.library.AlbumListItem) -> Unit,
+    albums: List<AlbumListItem>,
+    onAlbumClick: (AlbumListItem) -> Unit,
     loadUncachedArtwork: Boolean,
     gridState: androidx.compose.foundation.lazy.grid.LazyGridState,
     contentPadding: PaddingValues,

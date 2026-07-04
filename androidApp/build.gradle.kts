@@ -65,6 +65,7 @@ android {
 
 dependencies {
     implementation(project(":composeApp"))
+    implementation(project(":shared"))
     implementation(libs.compose.material3)
     implementation(libs.androidx.activity.compose)
 }
