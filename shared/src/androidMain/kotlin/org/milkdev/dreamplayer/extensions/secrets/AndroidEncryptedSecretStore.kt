@@ -6,15 +6,13 @@ import android.util.Base64
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import kotlinx.coroutines.flow.first
-import org.milkdev.org.milkdev.dreamplayer.database.settingsDataStore
+import org.milkdev.dreamplayer.database.settingsDataStore
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
-import kotlin.collections.remove
-import kotlin.text.get
-import kotlin.text.set
+
 
 internal object AndroidEncryptedSecretStore {
     suspend fun getString(key: Preferences.Key<String>): String? {
@@ -37,7 +35,7 @@ internal object AndroidEncryptedSecretStore {
 
         val payload = encrypt(trimmedValue.encodeToByteArray())
         settingsDataStore.edit { preferences ->
-            preferences[key] set Base64.encodeToString(payload, Base64.NO_WRAP)
+            preferences[key] = Base64.encodeToString(payload, Base64.NO_WRAP)
         }
     }
 

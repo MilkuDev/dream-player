@@ -22,9 +22,9 @@ import org.milkdev.dreamplayer.app.AppTheme
 import org.milkdev.dreamplayer.generated.resources.Res
 import org.milkdev.dreamplayer.generated.resources.settings
 import org.milkdev.dreamplayer.generated.resources.shuffle_2
-import org.milkdev.org.milkdev.dreamplayer.playback.PlayerUiState
-import org.milkdev.org.milkdev.dreamplayer.library.LibraryTrack
-import org.milkdev.org.milkdev.dreamplayer.playback.DailyPlaylistUiState
+import org.milkdev.dreamplayer.playback.PlayerUiState
+import org.milkdev.dreamplayer.library.LibraryTrack
+import org.milkdev.dreamplayer.playback.DailyPlaylistUiState
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

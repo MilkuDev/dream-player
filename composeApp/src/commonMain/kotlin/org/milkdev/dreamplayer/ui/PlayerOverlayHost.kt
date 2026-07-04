@@ -29,9 +29,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
-import org.milkdev.org.milkdev.dreamplayer.library.LibraryTrack
-import org.milkdev.org.milkdev.dreamplayer.playback.PlayerPresentation
-import org.milkdev.org.milkdev.dreamplayer.playback.PlayerUiState
+import org.milkdev.dreamplayer.library.LibraryTrack
+import org.milkdev.dreamplayer.playback.PlayerPresentation
+import org.milkdev.dreamplayer.playback.PlayerUiState
 import kotlin.math.roundToInt
 
 @Composable
@@ -149,7 +149,7 @@ fun PlayerOverlayHost(
         if (state.isQueueSheetVisible) {
             QueueSheetOverlay(
                 tracks = state.playbackQueue,
-                currentTrackId = state.currentTrack.id,
+                currentTrackId = state.currentTrack.id, // todo
                 currentQueueIndex = state.currentQueueIndex,
                 onNavigateBack = onNavigateBack,
                 onTrackClick = onQueueTrackClick,

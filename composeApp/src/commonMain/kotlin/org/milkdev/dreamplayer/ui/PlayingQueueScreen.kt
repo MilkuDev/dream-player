@@ -67,7 +67,7 @@ import org.milkdev.dreamplayer.generated.resources.delete
 import org.milkdev.dreamplayer.generated.resources.drag_indicator
 import org.milkdev.dreamplayer.generated.resources.equalizer
 import org.milkdev.dreamplayer.generated.resources.stat_minus
-import org.milkdev.org.milkdev.dreamplayer.library.LibraryTrack
+import org.milkdev.dreamplayer.library.LibraryTrack
 
 @Stable
 private data class UiTrack(val key: String, val track: LibraryTrack)

@@ -1,8 +1,10 @@
+@file:Suppress("EXPECT_ACTUAL_CLASSIFIERS_ARE_IN_BETA_WARNING")
+
 package org.milkdev.dreamplayer.library.metadata
 
-import androidx.core.net.toUri
+import android.annotation.SuppressLint
 import org.milkdev.dreamplayer.app.applicationContext
-import org.milkdev.org.milkdev.dreamplayer.library.RawTrackData
+import org.milkdev.dreamplayer.library.RawTrackData
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
@@ -30,9 +32,10 @@ actual object EmbeddedMetadataReader {
     }
 }
 
+@SuppressLint("UseKtx")
 private fun openMetadataStream(path: String): InputStream? {
     return if (path.startsWith("content://", ignoreCase = true)) {
-        applicationContext.contentResolver.openInputStream(path.toUri())
+        applicationContext.contentResolver.openInputStream(android.net.Uri.parse(path))
     } else {
         File(path).takeIf { it.isFile }?.let(::FileInputStream)
     }

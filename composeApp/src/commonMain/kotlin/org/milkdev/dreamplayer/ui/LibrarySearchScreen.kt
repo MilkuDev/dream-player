@@ -26,8 +26,8 @@ import org.jetbrains.compose.resources.painterResource
 import org.milkdev.dreamplayer.app.AppTheme
 import org.milkdev.dreamplayer.generated.resources.Res
 import org.milkdev.dreamplayer.generated.resources.arrow_back
-import org.milkdev.org.milkdev.dreamplayer.library.LibraryTrack
-import org.milkdev.org.milkdev.dreamplayer.playback.PlayerUiState
+import org.milkdev.dreamplayer.library.LibraryTrack
+import org.milkdev.dreamplayer.playback.PlayerUiState
 import kotlin.time.Duration.Companion.seconds
 
 private var isFirstLaunchDebug = true

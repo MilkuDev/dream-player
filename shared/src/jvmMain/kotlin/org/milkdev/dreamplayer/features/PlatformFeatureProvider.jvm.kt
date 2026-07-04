@@ -2,7 +2,6 @@
 
 package org.milkdev.dreamplayer.features
 
-import org.milkdev.dreamplayer.features.PlatformFeatureStatus
 
 actual object PlatformFeatureProvider {
     actual val aiDailyPlaylistApi: PlatformFeatureStatus = PlatformFeatureStatus(

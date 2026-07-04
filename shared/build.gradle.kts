@@ -1,4 +1,3 @@
-// shared/build.gradle.kts
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.androidMultiplatformLibrary)
@@ -55,6 +54,10 @@ kotlin {
             implementation(libs.mp3spi)
             implementation(libs.flannel)
             implementation(libs.kotlinx.coroutines.swing)
+        }
+        commonTest.dependencies {
+            implementation(kotlin("test"))
+            implementation(libs.ktor.client.mock)
         }
     }
 }

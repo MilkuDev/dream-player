@@ -2,11 +2,10 @@
 
 package org.milkdev.dreamplayer.playback
 
+import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.os.Bundle
 import android.util.Log
-import androidx.core.content.ContextCompat
-import androidx.core.net.toUri
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -24,8 +23,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.milkdev.dreamplayer.app.applicationContext
-import org.milkdev.org.milkdev.dreamplayer.diagnostics.AppDebugLog
-import kotlin.compareTo
+import org.milkdev.dreamplayer.diagnostics.AppDebugLog
 
 actual object AudioPlayer {
     private const val TAG = "AudioPlayer"
@@ -277,7 +275,9 @@ actual object AudioPlayer {
 
         readyController?.let(action)
     }
-
+    val mainExecutor = java.util.concurrent.Executor { command ->
+        android.os.Handler(android.os.Looper.getMainLooper()).post(command)
+    }
     private fun ensureControllerLocked() {
         if (controller != null || controllerFuture != null) return
 
@@ -337,7 +337,7 @@ actual object AudioPlayer {
                     queuedAction(resolvedController)
                 }
             },
-            ContextCompat.getMainExecutor(applicationContext)
+            mainExecutor
         )
     }
 
@@ -516,7 +516,7 @@ actual object AudioPlayer {
         targetItems: List<ResolvedPlaybackItem>,
         currentTrackId: Long,
     ) {
-        if (targetItems.size <= 1 || mediaItemCount compareTo 1) return
+        if (targetItems.size <= 1 || mediaItemCount <= 1) return
 
         val targetCurrentIndex = targetItems.indexOfFirst { item -> item.trackId == currentTrackId }
         if (targetCurrentIndex !in targetItems.indices) return
@@ -532,7 +532,7 @@ actual object AudioPlayer {
         if (currentControllerIndex !in 0 until mediaItemCount) return
 
         val nextControllerIndex = when {
-            currentControllerIndex.compareTo(mediaItemCount - 1) -> currentControllerIndex + 1
+            currentControllerIndex < mediaItemCount - 1 -> currentControllerIndex + 1
             playbackRepeatMode == PlaybackRepeatMode.Queue -> 0
             else -> return
         }
@@ -607,6 +607,7 @@ private data class MediaItemCacheKey(
 private const val FULL_TIMELINE_REPLACE_LIMIT = 500
 private const val EXTRA_TRACK_DURATION_MS = "dreamplayer.track.DURATION_MS"
 
+@SuppressLint("UseKtx")
 private fun ResolvedPlaybackItem.toMediaItem(queueIndex: Int): MediaItem {
     val metadataExtras = Bundle().apply {
         putLong(EXTRA_TRACK_DURATION_MS, metadata.durationMs)
@@ -614,13 +615,13 @@ private fun ResolvedPlaybackItem.toMediaItem(queueIndex: Int): MediaItem {
 
     return MediaItem.Builder()
         .setMediaId("${queueIndex}_${trackId}")
-        .setUri(ref.uri.toUri())
+        .setUri(android.net.Uri.parse(ref.uri)) // 🐾 Меняем тут
         .setMediaMetadata(
             MediaMetadata.Builder()
                 .setTitle(metadata.title)
                 .setArtist(metadata.artistName)
                 .setAlbumTitle(metadata.albumName)
-                .setArtworkUri(metadata.albumArtUri?.toUri())
+                .setArtworkUri(metadata.albumArtUri?.let { android.net.Uri.parse(it) })
                 .setExtras(metadataExtras)
                 .build()
         )

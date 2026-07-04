@@ -12,3 +12,6 @@ actual fun currentTimeMillis(): Long = System.currentTimeMillis()
 
 // @Composable
 // actual fun SetSystemBarAppearance(isDark: Boolean) { }
+actual fun SetSystemBarAppearance(isDark: Boolean) {
+
+}

@@ -3,6 +3,17 @@ package org.milkdev.dreamplayer
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.milkdev.dreamplayer.extensions.ai.AiPlaylistCandidate
+import org.milkdev.dreamplayer.extensions.ai.AiPlaylistModels
+import org.milkdev.dreamplayer.extensions.ai.AiPlaylistPromptPresets
+import org.milkdev.dreamplayer.extensions.ai.AiPlaylistProviders
+import org.milkdev.dreamplayer.extensions.ai.AiPlaylistRequest
+import org.milkdev.dreamplayer.extensions.ai.AiPlaylistResponseParser
+import org.milkdev.dreamplayer.extensions.ai.buildAiPlaylistSystemPrompt
+import org.milkdev.dreamplayer.extensions.ai.buildGeminiPlaylistRequestBody
+import org.milkdev.dreamplayer.extensions.ai.formatAiPlaylistCandidates
+import org.milkdev.dreamplayer.extensions.ai.resolveRecommendedAiPlaylistIds
+import org.milkdev.dreamplayer.extensions.ai.resolveRecommendedAiPlaylistSelection
 import kotlin.random.Random
 import kotlin.test.assertContentEquals
 import kotlin.test.assertFalse
@@ -11,28 +22,28 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
-import org.milkdev.org.milkdev.dreamplayer.library.TrackSearchMode
-import org.milkdev.org.milkdev.dreamplayer.library.PlaylistRepository
-import org.milkdev.org.milkdev.dreamplayer.library.ShuffleAnchor
-import org.milkdev.org.milkdev.dreamplayer.library.filterTracksByQuery
-import org.milkdev.org.milkdev.dreamplayer.library.LibraryTrack
-import org.milkdev.org.milkdev.dreamplayer.features.PlatformFeatureProvider
-import org.milkdev.org.milkdev.dreamplayer.model.AppDestination
-import org.milkdev.org.milkdev.dreamplayer.model.AppNavigationState
-import org.milkdev.org.milkdev.dreamplayer.model.withNavigationTarget
-import org.milkdev.org.milkdev.dreamplayer.model.withNavigationState
-import org.milkdev.org.milkdev.dreamplayer.model.movedQueueItemOrNull
-import org.milkdev.org.milkdev.dreamplayer.model.withPlayerOpened
-import org.milkdev.org.milkdev.dreamplayer.model.withPlayerClosed
-import org.milkdev.org.milkdev.dreamplayer.model.withQueueSheetOpened
-import org.milkdev.org.milkdev.dreamplayer.model.withRepeatToggled
-import org.milkdev.org.milkdev.dreamplayer.model.withShuffleDisabled
-import org.milkdev.org.milkdev.dreamplayer.model.withShuffleEnabled
-import org.milkdev.org.milkdev.dreamplayer.playback.PlaybackRepeatMode
-import org.milkdev.org.milkdev.dreamplayer.playback.PlaybackQueueController
-import org.milkdev.org.milkdev.dreamplayer.playback.PlayerUiState
-import org.milkdev.org.milkdev.dreamplayer.playback.PlayerPresentation
-import org.milkdev.org.milkdev.dreamplayer.playback.Screen
+import org.milkdev.dreamplayer.library.TrackSearchMode
+import org.milkdev.dreamplayer.library.PlaylistRepository
+import org.milkdev.dreamplayer.library.ShuffleAnchor
+import org.milkdev.dreamplayer.library.filterTracksByQuery
+import org.milkdev.dreamplayer.library.LibraryTrack
+import org.milkdev.dreamplayer.features.PlatformFeatureProvider
+import org.milkdev.dreamplayer.model.AppDestination
+import org.milkdev.dreamplayer.model.AppNavigationState
+import org.milkdev.dreamplayer.model.withNavigationTarget
+import org.milkdev.dreamplayer.model.withNavigationState
+import org.milkdev.dreamplayer.model.movedQueueItemOrNull
+import org.milkdev.dreamplayer.model.withPlayerOpened
+import org.milkdev.dreamplayer.model.withPlayerClosed
+import org.milkdev.dreamplayer.model.withQueueSheetOpened
+import org.milkdev.dreamplayer.model.withRepeatToggled
+import org.milkdev.dreamplayer.model.withShuffleDisabled
+import org.milkdev.dreamplayer.model.withShuffleEnabled
+import org.milkdev.dreamplayer.playback.PlaybackRepeatMode
+import org.milkdev.dreamplayer.playback.PlaybackQueueController
+import org.milkdev.dreamplayer.playback.PlayerUiState
+import org.milkdev.dreamplayer.playback.PlayerPresentation
+import org.milkdev.dreamplayer.playback.Screen
 
 class ComposeAppCommonTest {
     private val tracks = listOf(
@@ -513,9 +524,9 @@ class ComposeAppCommonTest {
     @Test
     fun aiCandidateFormatterUsesCompactTsvWithoutDuration() {
         val formatted =
-            _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.formatAiPlaylistCandidates(
+            formatAiPlaylistCandidates(
                 candidates = listOf(
-                    _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.AiPlaylistCandidate(
+                    AiPlaylistCandidate(
                         id = 10,
                         artist = "Artist\tName",
                         title = "Title\nName",
@@ -531,21 +542,21 @@ class ComposeAppCommonTest {
     @Test
     fun aiCandidateFormatterLimitsCandidateCount() {
         val formatted =
-            _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.formatAiPlaylistCandidates(
+            formatAiPlaylistCandidates(
                 candidates = listOf(
-                    _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.AiPlaylistCandidate(
+                    AiPlaylistCandidate(
                         1,
                         "a",
                         "t1",
                         "x"
                     ),
-                    _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.AiPlaylistCandidate(
+                    AiPlaylistCandidate(
                         2,
                         "a",
                         "t2",
                         "x"
                     ),
-                    _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.AiPlaylistCandidate(
+                    AiPlaylistCandidate(
                         3,
                         "a",
                         "t3",
@@ -560,22 +571,22 @@ class ComposeAppCommonTest {
 
     @Test
     fun aiModelCatalogFiltersByProviderAndFallsBackToProviderDefault() {
-        val geminiModels = _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.AiPlaylistModels.forProvider(
-            _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.AiPlaylistProviders.Gemini.id)
-        val fallback = _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.AiPlaylistModels.byApiModel(
-            providerId = _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.AiPlaylistProviders.Gemini.id,
+        val geminiModels = AiPlaylistModels.forProvider(
+            AiPlaylistProviders.Gemini.id)
+        val fallback = AiPlaylistModels.byApiModel(
+            providerId = AiPlaylistProviders.Gemini.id,
             apiModel = "old-or-unknown-model",
         )
 
-        assertTrue(geminiModels.all { it.providerId == _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.AiPlaylistProviders.Gemini.id })
+        assertTrue(geminiModels.all { it.providerId == AiPlaylistProviders.Gemini.id })
         assertEquals("Gemini 3.5 Flash", fallback.displayName)
         assertEquals("gemini-3.5-flash", fallback.apiModel)
     }
 
     @Test
     fun aiModelCatalogKeepsDisplayNameSeparateFromApiModel() {
-        val model = _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.AiPlaylistModels.byApiModel(
-            providerId = _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.AiPlaylistProviders.DeepSeek.id,
+        val model = AiPlaylistModels.byApiModel(
+            providerId = AiPlaylistProviders.DeepSeek.id,
             apiModel = "deepseek-v4-flash",
         )
 
@@ -586,8 +597,8 @@ class ComposeAppCommonTest {
     @Test
     fun aiSystemPromptCombinesPresetWithJsonContract() {
         val prompt =
-            _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.buildAiPlaylistSystemPrompt(
-                promptPresetId = _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.AiPlaylistPromptPresets.Energetic.id,
+            buildAiPlaylistSystemPrompt(
+                promptPresetId = AiPlaylistPromptPresets.Energetic.id,
                 customSystemPrompt = "",
                 limit = 30,
             )
@@ -600,8 +611,8 @@ class ComposeAppCommonTest {
     @Test
     fun aiSystemPromptUsesCustomTextWhenCustomPresetSelected() {
         val prompt =
-            _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.buildAiPlaylistSystemPrompt(
-                promptPresetId = _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.AiPlaylistPromptPresets.CustomId,
+            buildAiPlaylistSystemPrompt(
+                promptPresetId = AiPlaylistPromptPresets.CustomId,
                 customSystemPrompt = "Pick sleepy synthwave only.",
                 limit = 12,
             )
@@ -613,19 +624,19 @@ class ComposeAppCommonTest {
     @Test
     fun geminiPlaylistRequestUsesMinimalThinkingAndStructuredJson() {
         val requestBody =
-            _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.buildGeminiPlaylistRequestBody(
-                _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.AiPlaylistRequest(
+            buildGeminiPlaylistRequestBody(
+                AiPlaylistRequest(
                     apiKey = "secret",
                     model = "gemini-3.5-flash",
                     systemPrompt = "Choose energetic tracks only.",
                     candidates = listOf(
-                        _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.AiPlaylistCandidate(
+                        AiPlaylistCandidate(
                             10,
                             "Noisestorm",
                             "Surge",
                             "Monstercat"
                         ),
-                        _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.AiPlaylistCandidate(
+                        AiPlaylistCandidate(
                             20,
                             "Tokyo Machine",
                             "PLAY",
@@ -676,14 +687,14 @@ class ComposeAppCommonTest {
 
     @Test
     fun aiResponseParserAcceptsCleanJsonObject() {
-        val ids = _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.AiPlaylistResponseParser.parseTrackIds("""{"ids":[1,2,3]}""")
+        val ids = AiPlaylistResponseParser.parseTrackIds("""{"ids":[1,2,3]}""")
 
         assertContentEquals(listOf(1L, 2L, 3L), ids)
     }
 
     @Test
     fun aiResponseParserAcceptsLegacyTrackIdsAndMarkdownFence() {
-        val ids = _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.AiPlaylistResponseParser.parseTrackIds(
+        val ids = AiPlaylistResponseParser.parseTrackIds(
             """
             ```json
             {"trackIds":[4,5,6]}
@@ -696,10 +707,10 @@ class ComposeAppCommonTest {
 
     @Test
     fun aiResponseParserExtractsJsonFromNoisyTextAndArrays() {
-        val objectIds = _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.AiPlaylistResponseParser.parseTrackIds(
+        val objectIds = AiPlaylistResponseParser.parseTrackIds(
             "Sure, here is the playlist: {\"ids\":[7,8]} Enjoy."
         )
-        val arrayIds = _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.AiPlaylistResponseParser.parseTrackIds("```[9,10]```")
+        val arrayIds = AiPlaylistResponseParser.parseTrackIds("```[9,10]```")
 
         assertContentEquals(listOf(7L, 8L), objectIds)
         assertContentEquals(listOf(9L, 10L), arrayIds)
@@ -707,7 +718,7 @@ class ComposeAppCommonTest {
 
     @Test
     fun aiResponseParserReturnsEmptyListForBrokenPayload() {
-        val ids = _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.AiPlaylistResponseParser.parseTrackIds("not json {\"ids\":[1,")
+        val ids = AiPlaylistResponseParser.parseTrackIds("not json {\"ids\":[1,")
 
         assertTrue(ids.isEmpty())
     }
@@ -715,7 +726,7 @@ class ComposeAppCommonTest {
     @Test
     fun recommendedAiPlaylistIdsDropDuplicatesInvalidIdsAndFillLocally() {
         val ids =
-            _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.resolveRecommendedAiPlaylistIds(
+            resolveRecommendedAiPlaylistIds(
                 candidateIds = listOf(1, 2, 3, 4, 5),
                 recommendedIds = listOf(3, 99, 3, 1),
                 limit = 4,
@@ -727,7 +738,7 @@ class ComposeAppCommonTest {
     @Test
     fun recommendedAiPlaylistSelectionReportsAcceptedRejectedAndFallbackIds() {
         val selection =
-            _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.resolveRecommendedAiPlaylistSelection(
+            resolveRecommendedAiPlaylistSelection(
                 candidateIds = listOf(1, 2, 3, 4, 5),
                 recommendedIds = listOf(3, 99, 3, 1),
                 limit = 4,
@@ -742,7 +753,7 @@ class ComposeAppCommonTest {
     @Test
     fun recommendedAiPlaylistIdsFallbackToLocalOrderWhenResponseIsEmpty() {
         val ids =
-            _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.resolveRecommendedAiPlaylistIds(
+           resolveRecommendedAiPlaylistIds(
                 candidateIds = listOf(1, 2, 3),
                 recommendedIds = emptyList(),
                 limit = 2,

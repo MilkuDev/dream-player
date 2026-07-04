@@ -49,17 +49,17 @@ import org.jetbrains.compose.resources.painterResource
 import org.milkdev.dreamplayer.app.AppTheme
 import org.milkdev.dreamplayer.generated.resources.Res
 import org.milkdev.dreamplayer.generated.resources.artist
-import org.milkdev.org.milkdev.dreamplayer.library.GenreListItem
+import org.milkdev.dreamplayer.library.GenreListItem
 import org.milkdev.dreamplayer.generated.resources.playlist_add
 import org.milkdev.dreamplayer.generated.resources.playlist_play_24dp
-import org.milkdev.org.milkdev.dreamplayer.library.ArtistListItem
-import org.milkdev.org.milkdev.dreamplayer.library.LibraryTrack
-import org.milkdev.org.milkdev.dreamplayer.library.UserPlaylist
+import org.milkdev.dreamplayer.library.ArtistListItem
+import org.milkdev.dreamplayer.library.LibraryTrack
+import org.milkdev.dreamplayer.library.UserPlaylist
 import org.milkdev.dreamplayer.model.AlbumSortOrder
-import org.milkdev.org.milkdev.dreamplayer.model.LibraryCategory
+import org.milkdev.dreamplayer.model.LibraryCategory
 import org.milkdev.dreamplayer.model.TrackSortOrder
-import org.milkdev.org.milkdev.dreamplayer.library.AlbumListItem
-import org.milkdev.org.milkdev.dreamplayer.playback.PlayerUiState
+import org.milkdev.dreamplayer.library.AlbumListItem
+import org.milkdev.dreamplayer.playback.PlayerUiState
 import kotlin.time.Duration.Companion.seconds
 
 private val TrackSortOrders = listOf(

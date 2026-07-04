@@ -5,15 +5,11 @@ import android.database.ContentObserver
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
-import androidx.core.net.toUri
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flow
 import org.milkdev.dreamplayer.app.applicationContext
-import org.milkdev.org.milkdev.dreamplayer.library.CoverSource
-import org.milkdev.org.milkdev.dreamplayer.library.MusicScanner
-import org.milkdev.org.milkdev.dreamplayer.library.RawTrackData
 
 class MediaStoreScanner : MusicScanner {
 
@@ -59,10 +55,11 @@ class MediaStoreScanner : MusicScanner {
             while (cursor.moveToNext()) {
                 val id = cursor.getLong(idColumn)
                 val contentUri = ContentUris.withAppendedId(collection, id).toString()
-                
+
                 val albumId = cursor.getLong(albumIdColumn)
+                @Suppress("UseKtx")
                 val albumArtUri = ContentUris.withAppendedId(
-                    "content://media/external/audio/albumart".toUri(),
+                    android.net.Uri.parse("content://media/external/audio/albumart"),
                     albumId
                 ).toString()
 
