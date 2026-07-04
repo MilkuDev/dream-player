@@ -192,11 +192,7 @@ internal fun LongArray.movedCopy(fromIndex: Int, toIndex: Int): LongArray? {
 
 private fun LongArray.hasSameElementsAs(other: LongArray): Boolean {
     if (size != other.size) return false
-    val counts = mutableMapOf<Long, Int>()
-    forEach { id -> counts[id] = (counts[id] ?: 0) + 1 }
-    other.forEach { id ->
-        val count = counts[id] ?: return false
-        if (count == 1) counts.remove(id) else counts[id] = count - 1
-    }
-    return counts.isEmpty()
+    val sorted1 = this.copyOf().apply { sort() }
+    val sorted2 = other.copyOf().apply { sort() }
+    return sorted1.contentEquals(sorted2)
 }

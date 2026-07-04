@@ -148,21 +148,35 @@ class PlayerViewModel {
 
         storeScope.launch {
             AudioPlayer.state.collect { playbackState ->
-                playbackQueueController.skipToIndex(playbackState.queue.currentIndex)
-                _state.update { currentState ->
-                    val queueTracks = when {
-                        playbackState.queue.trackIds.isEmpty() -> emptyList()
-                        currentState.isQueueSheetVisible -> currentState.findTracksForIds(playbackState.queue.trackIds)
-                        else -> currentState.playbackQueue
+                val queueControllerSnapshotBefore = playbackQueueController.snapshot()
+
+                if (playbackState.queue.queueVersion == queueControllerSnapshotBefore.queueVersion) {
+                    playbackQueueController.skipToIndex(playbackState.queue.currentIndex)
+                }
+
+                val currentQueueSnapshot = playbackQueueController.snapshot()
+
+                val queueTracks = when {
+                    currentQueueSnapshot.trackIds.isEmpty() -> emptyList()
+                    _state.value.isQueueSheetVisible -> {
+                        withContext(Dispatchers.Default) {
+                            _state.value.findTracksForIds(currentQueueSnapshot.trackIds)
+                        }
                     }
-                    val currentTrack = playbackState.currentTrackId?.let { trackId ->
+                    else -> _state.value.playbackQueue
+                }
+
+                _state.update { currentState ->
+                    val currentTrack = currentQueueSnapshot.currentTrackId?.let { trackId ->
                         queueTracks.firstOrNull { it.id == trackId }
                             ?: currentState.currentTrack?.takeIf { it.id == trackId }
                     }
+
                     val resolvedDurationMs = playbackState.totalDurationMs
                         .takeIf { it > 0L }
                         ?: currentTrack?.durationMs
                         ?: 0L
+
                     val trackChanged = currentState.currentTrack?.id != currentTrack?.id
 
                     val updatedState = currentState.copy(
@@ -170,8 +184,8 @@ class PlayerViewModel {
                         isPlaying = playbackState.isPlaying,
                         totalDurationMs = resolvedDurationMs,
                         playbackQueue = queueTracks,
-                        currentQueueIndex = playbackState.queue.currentIndex,
-                        queueVersion = playbackState.queue.queueVersion,
+                        currentQueueIndex = currentQueueSnapshot.currentIndex,
+                        queueVersion = currentQueueSnapshot.queueVersion,
                         playbackProgressMs = when {
                             currentTrack == null -> 0L
                             trackChanged -> 0L
@@ -1301,32 +1315,43 @@ class PlayerViewModel {
         }
     }
 
+    private var snapshotUpdateJob: Job? = null
+
     private fun applyQueueSnapshot(
         queueSnapshot: PlaybackQueueSnapshot,
         mode: PlaybackSnapshotApplyMode,
         moveRequest: QueueMoveRequest? = null,
         shuffleApplyMode: ShuffleApplyMode = ShuffleApplyMode.QueueVisible,
     ) {
-        storeScope.launch {
-            val playbackSnapshot = PlaybackResolver.resolve(queueSnapshot)
-            val currentQueueSnapshot = playbackQueueController.snapshot()
-            if (!playbackSnapshot.matchesQueue(currentQueueSnapshot)) {
-                AppDebugLog.log(
-                    "playback_snapshot_stale requested=${queueSnapshot.queueVersion} " +
-                            "current=${currentQueueSnapshot.queueVersion}"
-                )
-                return@launch
+        val isUpdate = mode == PlaybackSnapshotApplyMode.Update
+
+        if (isUpdate) {
+            snapshotUpdateJob?.cancel()
+        }
+
+        val job = storeScope.launch {
+            val playbackSnapshot = withContext(Dispatchers.Default) {
+                PlaybackResolver.resolve(queueSnapshot)
             }
+
+            val currentQueueSnapshot = playbackQueueController.snapshot()
+            if (!playbackSnapshot.matchesQueue(currentQueueSnapshot)) return@launch
 
             val currentTrack = playbackSnapshot.currentItem()?.toLibraryTrack()
 
-            _state.update { currentState ->
-                val resolvedQueue = if (shuffleApplyMode == ShuffleApplyMode.QueueVisible) {
-                    currentState.findTracksForIds(currentQueueSnapshot.trackIds)
-                } else {
-                    currentState.playbackQueue
+            val resolvedQueue = if (shuffleApplyMode == ShuffleApplyMode.QueueVisible) {
+                withContext(Dispatchers.Default) {
+                    _state.value.findTracksForIds(currentQueueSnapshot.trackIds)
                 }
+            } else {
+                _state.value.playbackQueue
+            }
 
+            if (isUpdate && !isActive) return@launch
+
+            val hasMissingTracks = resolvedQueue.size != currentQueueSnapshot.trackIds.size
+
+            _state.update { currentState ->
                 currentState.copy(
                     currentTrack = currentTrack,
                     isPlaying = if (mode == PlaybackSnapshotApplyMode.Play) true else currentState.isPlaying,
@@ -1339,6 +1364,10 @@ class PlayerViewModel {
                 )
             }
 
+            if (shuffleApplyMode == ShuffleApplyMode.QueueVisible && hasMissingTracks) {
+                refreshQueueDisplay(currentQueueSnapshot)
+            }
+
             when (mode) {
                 PlaybackSnapshotApplyMode.Play -> AudioPlayer.play(playbackSnapshot)
                 PlaybackSnapshotApplyMode.Update -> AudioPlayer.updateQueue(playbackSnapshot)
@@ -1347,6 +1376,10 @@ class PlayerViewModel {
                     AudioPlayer.moveQueueItem(request.fromIndex, request.toIndex, playbackSnapshot)
                 }
             }
+        }
+
+        if (isUpdate) {
+            snapshotUpdateJob = job
         }
     }
 
