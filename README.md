@@ -87,6 +87,11 @@ To maximize predictability, the execution flow follows a strict unidirectional s
 
 ---
 
+## Releases
+Download at [releases page](https://github.com/MilkuDev/dream-player/releases)
+
+---
+
 ## Building & Running
 
 ### Android
