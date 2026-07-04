@@ -1,116 +1,112 @@
 # DreamPlayer
 
-DreamPlayer is a local music player built from the ground up using **Kotlin Multiplatform** and **Compose Multiplatform**. It targets **Android** and **Desktop (Windows/macOS/Linux JVM)**, providing a unified, high-performance audio experience across devices without relying on heavy external frameworks.
+Local music player targeting Android and Desktop (Windows/macOS/Linux JVM). Built entirely on Kotlin Multiplatform and Compose Multiplatform. The primary goal is maintaining a single, shared audio engine and business logic layer across different operating systems without relying on bloated external frameworks.
 
----
+## Core Architecture
 
-## Architecture & Core Philosophy
+The design prioritizes explicit declarations and native language capabilities over heavy dependencies.
 
-The project is designed to be lightweight, modular, and explicit, avoiding heavy third-party abstractions where native language features suffice.
+* **No DI Magic:** Koin, Hilt, and similar frameworks are intentionally omitted. Platform abstractions are resolved using Kotlin's native `expect`/`actual` modifiers, which keeps compile times low and the dependency graph transparent.
+* **Custom State Handling:** Standard Android Jetpack ViewModels do not translate well to pure desktop environments. State management is handled through a custom `PlayerViewModel` built strictly for predictable multiplatform execution.
+* **Isolated Playback Engine:** Audio streaming and database operations are strictly separated. The playback layer consumes pre-resolved `PlaybackSnapshot` instances, preventing background database I/O from causing UI stutters or audio artifacts.
+* **Network Security Policy:** All external traffic is routed through Ktor under a strict HTTPS whitelist. Connections are only permitted to explicitly trusted APIs (MusicBrainz, Last.fm, OpenAI, Gemini, DeepSeek).
 
-* **Zero DI Frameworks:** No Koin or Hilt. The project relies entirely on Kotlin's native `expect`/`actual` mechanism for platform-specific abstractions, keeping compile times fast and dependency graphs transparent
-* **Custom Multiplatform State Management:** Driven by a custom architectural implementation via `PlayerViewModel`, specifically tailored for multiplatform predictability rather than sticking strictly to platform-bound patterns like Android Jetpack ViewModel.
-* **Decoupled Playback Engine:** The playback layer is completely isolated from the database layer. The audio player receives clean data snapshots (`PlaybackSnapshot`), eliminating direct database queries during time-critical audio streaming.
-* **Secure Network Policy:** Network communication goes through Ktor and is governed by a strict policy that enforces HTTPS and explicitly whitelists trusted hosts (e.g., MusicBrainz, Last.fm, OpenAI, Gemini, DeepSeek).
+## Technical Stack
 
-### Architecture Flowchart
+* **UI Interface:** Compose Multiplatform (Material 3).
+* **Storage:** Room (SQLite) backed by a bundled driver. Write-Ahead Logging (WAL) is enabled to ensure concurrent read/write operations without blocking.
+* **Preferences:** DataStore.
+* **Networking:** Ktor Client paired with `kotlinx.serialization`.
+* **Android Audio:** Media3 ExoPlayer integrated with `MediaSession`.
+* **Desktop Audio:** Java Sound API utilizing custom Service Provider Interfaces (`mp3spi` and `flannel` for FLAC decoding).
 
----
+## Source Structure
 
-## Tech Stack & Core Libraries
+Platform-specific entry points are kept minimal. The vast majority of the logic resides in the common module.
 
-* **UI & Theming:** Compose Multiplatform with Material 3.
-* **Database:** Room (SQLite) with a bundled driver ensuring uniform behavior across platforms. Writes are optimized using Write-Ahead Logging (WAL) mode to keep the UI perfectly smooth.
-* **Settings:** DataStore Preferences for simple, lightweight configuration storage.
-* **Network & Parsing:** Ktor Client combined with `kotlinx.serialization` for JSON payloads.
-* **Platform Audio (Android):** Media3 ExoPlayer coupled with `MediaSession` for flawless background audio and native system integration.
-* **Platform Audio (Desktop):** Java Sound API utilizing custom Service Provider Interfaces (`mp3spi` and `flannel` for native FLAC decoding).
+    KotlinMPDreamPlayer/
+    ├── androidApp/          (Minimal Android launcher)
+    ├── desktopApp/          (Minimal Desktop launcher)
+    └── composeApp/          (Shared logic and UI)
+        ├── schemas/         (Room DB migration files)
+        └── src/
+            ├── commonMain/  (ViewModels, Repositories, DB setup)
+            ├── androidMain/ (MediaStore API, Media3, Android storage)
+            └── jvmMain/     (Local file walking, Java Sound API)
 
----
+## Subsystem Details
 
-## Project Structure
+### 1. File Synchronization
+OS limitations require different strategies for discovering audio files:
+* **Android:** Queries `MediaStore` (`IS_MUSIC != 0`) and listens for real-time file system changes via `ContentObserver`.
+* **Desktop:** Executes a recursive traversal of the `~/Music` directory, parsing file headers and detecting associated artwork sidecars (`cover.jpg`, etc.).
 
-The codebase isolates platform mechanics into distinct launcher modules while sharing core implementation logic:
+To prevent library corruption when files are moved or renamed, `MusicRepository` calculates a unique hash signature (Title + Artist + Duration + File Size). This guarantees that playback history and playlist positions remain stable regardless of file path modifications.
 
-```text
-KotlinMPDreamPlayer/
-├── androidApp/          # Thin Android application launcher & assets configuration
-├── desktopApp/          # Thin Desktop application launcher (Main.kt)
-└── composeApp/          # Core multiplatform module
-    ├── schemas/         # Room DB schema version history (1.json to 7.json)
-    └── src/
-        ├── commonMain/  # Main shared codebase (UI, ViewModels, Room DB setup, Repositories)
-        ├── androidMain/ # MediaStore scanner, Media3 audio player, Android-specific secure storage
-        └── jvmMain/     # Local directory file scanner, Java Sound audio player, desktop paths
-```
+### 2. Relational Database
+The Room schema maintains the local catalog via interconnected tables:
+* `artists`, `albums`, `library_tracks`: Core metadata storage.
+* `playlists`, `playlist_track_cross_ref`: Custom user mixes enforcing strict track sequence.
+* `genres`, `album_genre_cross_ref`, `track_genre_cross_ref`: Genre associations.
+* `sync_audit`: Indexing performance logs and error states.
 
----
+### 3. Metadata Processing
+`MetadataSyncService` resolves missing file tags through a strict hierarchy:
+1. **Local Priority:** Embedded file tags (MBIDs, release years) are the ultimate source of truth.
+2. **Remote Lookups:** Missing data triggers API calls to MusicBrainz and Last.fm, strictly respecting rate limits.
+3. **Artwork Retrieval:** Missing covers are downloaded from the Cover Art Archive.
+Remote data is never permitted to overwrite existing, high-confidence local tags.
 
-## Core Subsystems
-
-### 1. Music Scanning & Sync
-The application bypasses common platform limitations by executing specialized scanning strategies:
-* **Android (`MediaStoreScanner`):** Queries the system's content provider (`IS_MUSIC != 0`), hooks into native `content://` URIs, and actively observes media library updates using a `ContentObserver`.
-* **Desktop (`JvmMusicScanner`):** Directly walks through the `~/Music` directory, decodes audio file headers for metadata, and automatically scans for sidecar artwork files (e.g., `cover.jpg`, `folder.png`, `front.webp`).
-
-**Smart Syncing (`MusicRepository`):**
-When raw tracks are collected, they are processed in batches into the Room database. Tracks are matched not just by file path, but by a unique signature (**Title + Artist + Duration + File Size**). This prevents losing track history, user stats, or playlist assignments if an audio file is renamed or moved across folders.
-
-### 2. Database Schema
-The Room SQLite database maps out the entire catalog structure across the following primary tables:
-* `artists` / `albums` / `library_tracks`: Core catalog items containing basic tracking details and availability flags.
-* `playlists` / `playlist_track_cross_ref`: Handles user-defined and system lists along with strict track positioning.
-* `genres` / `album_genre_cross_ref` / `track_genre_cross_ref`: Cross-referenced genre tagging.
-* `sync_audit`: Tracks indexing history, performance counters, and error boundaries.
-* Metadata state tables: Tracks synchronization completeness and data confidence metrics.
-
-### 3. Metadata & Artwork Enrichment
-Enrichment runs as a background process orchestrated by `MetadataSyncService` using a strict, multi-tiered trust system:
-1.  **Local Embedded Tags:** Extracts embedded tags, including MusicBrainz Recording IDs (MBID), years, and genres.
-2.  **Remote Enrichment:** Connects to MusicBrainz and Last.fm APIs via Ktor to resolve missing dates or genres, adhering to strict API rate-limiting.
-3.  **Artwork Retrieval:** Looks up high-resolution imagery via the Cover Art Archive using resolved release group IDs.
-
-Values are evaluated using a deterministic trust hierarchy (e.g., keeping an existing high-confidence tag over a low-confidence scrape).
-
-### 4. Smart Playlist Generation (Daily Playlist)
-The system playlist ("Плейлист дня") checks daily for recreation, leveraging two operating modes:
-* **`LOCAL_DAILY` Mode:** Generates a curated, randomized mix directly from available records in the local database.
-* **`AI_API` Mode:** Extracts up to 200 random track candidates (metadata only, no audio files) and dispatches them to a configured LLM provider (OpenAI, Gemini, or DeepSeek) along with a specialized prompt. The provider returns an optimized sequence of track IDs.
-* *Fallback Safety:* If a network breakdown, quota exhaustion, or parsing error occurs, the pipeline gracefully defaults to `LOCAL_DAILY` mode and logs the diagnostic failure details to help debugging.
+### 4. Smart Playlists
+The daily mix generates via two distinct pathways:
+* **AI Curation:** Extracts basic metadata for a sample of ~200 local tracks and requests an optimized listening sequence from an LLM provider (OpenAI, Gemini, DeepSeek).
+* **Local Fallback:** If network conditions degrade or API limits are reached, the system instantly switches to a randomized, offline curation algorithm.
 
 ### 5. Playback Pipeline
-To maximize predictability, the execution flow follows a strict unidirectional sequence:
-1.  **Action:** The user triggers a playback action on the UI.
-2.  **Queue Controller:** `PlaybackQueueController` manages track ordering, shuffling states, and tracks the current queue version.
-3.  **Resolution:** `PlaybackResolver` asks `MusicLibrarySource` to fetch database records and convert raw database IDs into ready-to-play `ResolvedPlaybackItem` references (containing validated playback URIs and availability states).
-4.  **Execution:** The resolved snapshot is pushed directly down to the platform's `AudioPlayer` implementation.
+State mutations flow in a single direction:
+1. A playback intent is dispatched from the UI.
+2. `PlaybackQueueController` applies shuffle algorithms and assigns a new queue version.
+3. `PlaybackResolver` maps raw database IDs into validated `ResolvedPlaybackItem` references.
+4. The resolved snapshot is passed directly to the native `AudioPlayer` implementation.
 
----
+## Build
 
-## Releases
-Download at [releases page](https://github.com/MilkuDev/dream-player/releases)
+Download compiled binaries directly from the [releases page](https://github.com/MilkuDev/dream-player/releases). 
+To build from source, clone the repository and execute the platform-specific commands below.
 
----
-
-## Building & Running
+### Clone the Repository
+```bash
+git clone [https://github.com/MilkuDev/dream-player.git](https://github.com/MilkuDev/dream-player.git)
+cd KotlinMPDreamPlayer
+```
 
 ### Android
-Ensure you have an Android device or emulator connected.
+Requires a connected Android device or an active emulator.
 * **macOS / Linux:**
-    ```shell
-    ./gradlew :androidApp:assembleDebug
-    ```
+  ```bash
+  ./gradlew :androidApp:assembleDebug
+  ```
+  or
+  
+  ```bash
+  ./gradlew :androidApp:assembleRelease
+  ```
 * **Windows:**
-    ```shell
-    .\gradlew.bat :androidApp:assembleDebug
-    ```
+  ```powershell
+  .\gradlew.bat :androidApp:assembleDebug
+  ```
+  or
+  
+  ```powershell
+  .\gradlew.bat :androidApp:assembleRelease
+  ```
 
 ### Desktop (JVM)
 * **macOS / Linux:**
-    ```shell
-    ./gradlew :desktopApp:run
-    ```
+  ```bash
+  ./gradlew :desktopApp:createDistributable 
+  ```
 * **Windows:**
-    ```shell
-    .\gradlew.bat :desktopApp:run
-    ```
+  ```powershell
+  .\gradlew :desktopApp:createDistributable 
+  ```
