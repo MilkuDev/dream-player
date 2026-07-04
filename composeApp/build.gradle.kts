@@ -33,6 +33,10 @@ kotlin {
         }
     }
 
+    iosArm64()
+    iosSimulatorArm64()
+    macosArm64()
+
     jvm()
 
     sourceSets {
@@ -42,6 +46,9 @@ kotlin {
             implementation(libs.androidx.media3.session)
             implementation(libs.room.ktx)
             implementation(libs.ktor.client.android)
+        }
+        iosMain.dependencies {
+            implementation("io.ktor:ktor-client-darwin:${libs.versions.ktor.get()}")
         }
         commonMain.dependencies {
             implementation(libs.androidx.datastore.preferences)
@@ -79,6 +86,9 @@ kotlin {
 dependencies {
     add("kspAndroid", libs.room.compiler)
     add("kspJvm", libs.room.compiler)
+    add("kspIosArm64", libs.room.compiler)
+    add("kspIosSimulatorArm64", libs.room.compiler)
+    add("kspMacosArm64", libs.room.compiler)
 }
 
 dependencies {
