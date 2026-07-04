@@ -22,16 +22,16 @@ import org.milkdev.dreamplayer.extensions.network.httpClient
 object CoverArtNetworkPolicy {
     val MusicBrainzEndpoint = SecureNetworkEndpoint(
         serviceName = "MusicBrainz",
-        url = "https://${NetworkHosts.MusicBrainz}/ws/2/release-group",
-        allowedHosts = setOf(NetworkHosts.MusicBrainz),
+        url = "https://${NetworkHosts.MUSIC_BRAINZ}/ws/2/release-group",
+        allowedHosts = setOf(NetworkHosts.MUSIC_BRAINZ),
     )
     val CoverArtArchiveEndpoint = SecureNetworkEndpoint(
         serviceName = "Cover Art Archive",
-        url = "https://${NetworkHosts.CoverArtArchive}",
-        allowedHosts = setOf(NetworkHosts.CoverArtArchive, NetworkHosts.InternetArchive),
+        url = "https://${NetworkHosts.COVER_ART_ARCHIVE}",
+        allowedHosts = setOf(NetworkHosts.COVER_ART_ARCHIVE, NetworkHosts.INTERNET_ARCHIVE),
     )
     val LastFmImageHosts = setOf(
-        NetworkHosts.LastFm,
+        NetworkHosts.LAST_FM,
         "lastfm.freetls.fastly.net",
         "lastfm-img2.akamaized.net",
     )
@@ -386,7 +386,7 @@ private fun buildReleaseGroupQuery(artist: String, album: String): String {
 }
 
 private fun coverArtArchiveFrontUrl(mbid: String): String {
-    return "https://${NetworkHosts.CoverArtArchive}/release-group/$mbid/front-500"
+    return "https://${NetworkHosts.COVER_ART_ARCHIVE}/release-group/$mbid/front-500"
 }
 
 private fun String.escapeMusicBrainzQuery(): String {
@@ -417,8 +417,8 @@ private fun String.toRedirectUrl(currentUrl: String): String {
 }
 
 private fun String.normalizedArchiveRedirectUrl(): String {
-    return if (startsWith("http://${NetworkHosts.InternetArchive}", ignoreCase = true)) {
-        "https://${NetworkHosts.InternetArchive}${removePrefix("http://${NetworkHosts.InternetArchive}")}"
+    return if (startsWith("http://${NetworkHosts.INTERNET_ARCHIVE}", ignoreCase = true)) {
+        "https://${NetworkHosts.INTERNET_ARCHIVE}${removePrefix("http://${NetworkHosts.INTERNET_ARCHIVE}")}"
     } else {
         this
     }

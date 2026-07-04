@@ -8,5 +8,5 @@ actual fun currentTimeMillis(): Long {
     TODO("Not yet implemented")
 }
 
-actual fun SetSystemBarAppearance(isDark: Boolean) {
+actual fun setSystemBarAppearance(isDark: Boolean) {
 }

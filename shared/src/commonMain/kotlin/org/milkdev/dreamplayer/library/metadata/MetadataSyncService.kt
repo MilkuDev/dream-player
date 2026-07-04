@@ -119,7 +119,7 @@ class MetadataSyncService(
 
     suspend fun syncBatch(limit: Int = MANUAL_LASTFM_BATCH_SIZE): MetadataSyncBatchResult {
         return syncLastFmBatch(limit = limit)
-    } // TODO:
+    } // TODO: idk
 
     suspend fun syncCoverBatch(
         limit: Int = MANUAL_COVER_BATCH_SIZE,

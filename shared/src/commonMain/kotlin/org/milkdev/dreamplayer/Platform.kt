@@ -9,4 +9,4 @@ expect fun getPlatform(): Platform
 
 expect fun currentTimeMillis(): Long
 
-expect fun SetSystemBarAppearance(isDark: Boolean)
+expect fun setSystemBarAppearance(isDark: Boolean)

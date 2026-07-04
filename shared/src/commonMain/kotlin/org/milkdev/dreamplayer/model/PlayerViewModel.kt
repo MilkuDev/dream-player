@@ -251,7 +251,7 @@ class PlayerViewModel {
                         it.copy(
                             aiPlaylistProviderId = AiPlaylistProviders.OpenAi.id,
                             aiPlaylistModel = AiPlaylistProviders.OpenAi.defaultModelId,
-                            aiPlaylistPromptPresetId = AiPlaylistPromptPresets.DefaultId,
+                            aiPlaylistPromptPresetId = AiPlaylistPromptPresets.DEFAULT_ID,
                             aiPlaylistCustomSystemPrompt = "",
                             isAiPlaylistApiKeyConfigured = false,
                             isAnyAiPlaylistApiKeyConfigured = false,
@@ -1462,7 +1462,7 @@ class PlayerViewModel {
                 serviceName = "Last.fm",
                 status = status,
                 message = message,
-                host = NetworkHosts.LastFm,
+                host = NetworkHosts.LAST_FM,
                 isHttps = true,
                 isHostAllowed = true,
             )

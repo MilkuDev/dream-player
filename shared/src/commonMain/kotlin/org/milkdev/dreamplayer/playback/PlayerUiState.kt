@@ -67,7 +67,7 @@ data class PlayerUiState(
     val dailyPlaylistGenerationMode: DailyPlaylistGenerationMode = DailyPlaylistGenerationMode.LOCAL_DAILY,
     val aiPlaylistProviderId: String = AiPlaylistProviders.OpenAi.id,
     val aiPlaylistModel: String = AiPlaylistProviders.OpenAi.defaultModelId,
-    val aiPlaylistPromptPresetId: String = AiPlaylistPromptPresets.DefaultId,
+    val aiPlaylistPromptPresetId: String = AiPlaylistPromptPresets.DEFAULT_ID,
     val aiPlaylistCustomSystemPrompt: String = "",
     val isAiPlaylistApiKeyConfigured: Boolean = false,
     val isAnyAiPlaylistApiKeyConfigured: Boolean = false,

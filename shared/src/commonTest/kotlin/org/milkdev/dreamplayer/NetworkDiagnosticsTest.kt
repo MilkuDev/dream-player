@@ -6,7 +6,7 @@ import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -42,8 +42,8 @@ class NetworkDiagnosticsTest {
             SecureNetworkPolicy.requireAllowed(
                 SecureNetworkEndpoint(
                     serviceName = "OpenAI",
-                    url = "http://${NetworkHosts.OpenAi}/v1/models",
-                    allowedHosts = setOf(NetworkHosts.OpenAi),
+                    url = "http://${NetworkHosts.OPEN_AI}/v1/models",
+                    allowedHosts = setOf(NetworkHosts.OPEN_AI),
                 )
             )
         }
@@ -53,14 +53,14 @@ class NetworkDiagnosticsTest {
                 SecureNetworkEndpoint(
                     serviceName = "OpenAI",
                     url = "https://example.com/v1/models",
-                    allowedHosts = setOf(NetworkHosts.OpenAi),
+                    allowedHosts = setOf(NetworkHosts.OPEN_AI),
                 )
             )
         }
     }
 
     @Test
-    fun lastFmDiagnosticsUsesAllowedHttpsEndpointAndDoesNotExposeKeyInStatus() = runBlocking {
+    fun lastFmDiagnosticsUsesAllowedHttpsEndpointAndDoesNotExposeKeyInStatus() = runTest {
         LogStorage.clearLastFmNetwork()
         val apiKey = "LASTFM_SECRET"
         var capturedUrl = ""
@@ -81,7 +81,7 @@ class NetworkDiagnosticsTest {
             )
         ).testApiKey(apiKey)
 
-        assertTrue(capturedUrl.startsWith("https://${NetworkHosts.LastFm}/2.0/"))
+        assertTrue(capturedUrl.startsWith("https://${NetworkHosts.LAST_FM}/2.0/"))
         assertTrue(capturedUrl.contains("method=chart.gettopartists"))
         assertTrue(capturedUrl.contains("limit=1"))
         assertTrue(capturedUrl.contains("api_key=$apiKey"))
@@ -95,7 +95,7 @@ class NetworkDiagnosticsTest {
     }
 
     @Test
-    fun lastFmErrorCodesMapToTypedFailures() = runBlocking {
+    fun lastFmErrorCodesMapToTypedFailures() = runTest {
         val cases = listOf(
             10 to LastFmErrorType.InvalidApiKey,
             26 to LastFmErrorType.SuspendedApiKey,
@@ -124,7 +124,7 @@ class NetworkDiagnosticsTest {
     }
 
     @Test
-    fun lastFmAlbumCoverPrefersMegaThenExtraLargeThenLastNonBlank() = runBlocking {
+    fun lastFmAlbumCoverPrefersMegaThenExtraLargeThenLastNonBlank() = runTest {
         val client = HttpClient(
             MockEngine {
                 respond(
@@ -179,7 +179,7 @@ class NetworkDiagnosticsTest {
     }
 
     @Test
-    fun lastFmAlbumMetadataParsesYearGenreAndCover() = runBlocking {
+    fun lastFmAlbumMetadataParsesYearGenreAndCover() = runTest {
         val client = HttpClient(
             MockEngine {
                 respond(
@@ -220,7 +220,7 @@ class NetworkDiagnosticsTest {
     }
 
     @Test
-    fun lastFmAlbumLookupSeparatesNoMatchAndRetryableFailures() = runBlocking {
+    fun lastFmAlbumLookupSeparatesNoMatchAndRetryableFailures() = runTest {
         val notFoundClient = HttpClient(
             MockEngine {
                 respond(
@@ -258,7 +258,7 @@ class NetworkDiagnosticsTest {
     }
 
     @Test
-    fun coverArtRepositoryUsesMusicBrainzUserAgentAndCachesCaaRedirect() = runBlocking {
+    fun coverArtRepositoryUsesMusicBrainzUserAgentAndCachesCaaRedirect() = runTest {
         LogStorage.clearOtherNetwork()
         val saved = mutableListOf<SavedAlbumArt>()
         val requestedHosts = mutableListOf<String>()
@@ -266,7 +266,7 @@ class NetworkDiagnosticsTest {
             MockEngine { request ->
                 requestedHosts += request.url.host
                 when (request.url.host) {
-                    NetworkHosts.MusicBrainz -> {
+                    NetworkHosts.MUSIC_BRAINZ -> {
                         assertTrue(request.headers[HttpHeaders.UserAgent].orEmpty().startsWith("DreamPlayer/"))
                         assertTrue(request.url.parameters["query"].orEmpty().contains("releasegroup"))
                         respond(
@@ -288,15 +288,15 @@ class NetworkDiagnosticsTest {
                             headers = headersOf(HttpHeaders.ContentType, "application/json"),
                         )
                     }
-                    NetworkHosts.CoverArtArchive -> respond(
+                    NetworkHosts.COVER_ART_ARCHIVE -> respond(
                         content = "",
                         status = HttpStatusCode.TemporaryRedirect,
                         headers = headersOf(
                             HttpHeaders.Location,
-                            "http://${NetworkHosts.InternetArchive}/download/cover.jpg",
+                            "http://${NetworkHosts.INTERNET_ARCHIVE}/download/cover.jpg",
                         ),
                     )
-                    NetworkHosts.InternetArchive -> respond(
+                    NetworkHosts.INTERNET_ARCHIVE -> respond(
                         content = "fake-image",
                         status = HttpStatusCode.OK,
                         headers = headersOf(HttpHeaders.ContentType, "image/jpeg"),
@@ -316,7 +316,7 @@ class NetworkDiagnosticsTest {
         assertEquals("file:///cached/42.jpg", found.localUri)
         assertEquals("48140466-cff6-3222-bd55-63c27e43190d", found.musicBrainzReleaseGroupMbid)
         assertContentEquals(
-            listOf(NetworkHosts.MusicBrainz, NetworkHosts.CoverArtArchive, NetworkHosts.InternetArchive),
+            listOf(NetworkHosts.MUSIC_BRAINZ, NetworkHosts.COVER_ART_ARCHIVE, NetworkHosts.INTERNET_ARCHIVE),
             requestedHosts,
         )
         assertEquals("fake-image", saved.single().bytes.decodeToString())
@@ -329,11 +329,11 @@ class NetworkDiagnosticsTest {
     }
 
     @Test
-    fun coverArtRepositoryTreatsCaaNotFoundAsNoMatch() = runBlocking {
+    fun coverArtRepositoryTreatsCaaNotFoundAsNoMatch() = runTest {
         val client = HttpClient(
             MockEngine { request ->
                 when (request.url.host) {
-                    NetworkHosts.MusicBrainz -> respond(
+                    NetworkHosts.MUSIC_BRAINZ -> respond(
                         content = """
                             {
                               "release-groups": [
@@ -351,7 +351,7 @@ class NetworkDiagnosticsTest {
                         status = HttpStatusCode.OK,
                         headers = headersOf(HttpHeaders.ContentType, "application/json"),
                     )
-                    NetworkHosts.CoverArtArchive -> respond(
+                    NetworkHosts.COVER_ART_ARCHIVE -> respond(
                         content = "",
                         status = HttpStatusCode.NotFound,
                     )
@@ -371,7 +371,7 @@ class NetworkDiagnosticsTest {
     }
 
     @Test
-    fun coverArtRepositoryStopsOnMusicBrainzRateLimit() = runBlocking {
+    fun coverArtRepositoryStopsOnMusicBrainzRateLimit() = runTest {
         val client = HttpClient(
             MockEngine {
                 respond(
@@ -392,7 +392,7 @@ class NetworkDiagnosticsTest {
     }
 
     @Test
-    fun aiPromptServiceSendsPromptThroughAllowedHttpsEndpoint() = runBlocking {
+    fun aiPromptServiceSendsPromptThroughAllowedHttpsEndpoint() = runTest {
         val apiKey = "OPENAI_SECRET"
         var capturedHost = ""
         var capturedAuthorization = ""
@@ -421,7 +421,7 @@ class NetworkDiagnosticsTest {
             prompt = "Say hello",
         ).toString()
 
-        assertEquals(NetworkHosts.OpenAi, capturedHost)
+        assertEquals(NetworkHosts.OPEN_AI, capturedHost)
         assertEquals("Bearer $apiKey", capturedAuthorization)
         assertTrue(requestBody.contains("Say hello"))
         assertTrue(requestBody.contains("gpt-5.4-mini"))

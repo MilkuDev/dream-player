@@ -6,6 +6,6 @@ package org.milkdev.dreamplayer.features
 actual object PlatformFeatureProvider {
     actual val aiDailyPlaylistApi: PlatformFeatureStatus = PlatformFeatureStatus(
         enabled = false,
-        reason = "Будет доступно позже",
+        reason = "Soon",
     )
 }

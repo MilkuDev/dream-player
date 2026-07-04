@@ -1,4 +1,4 @@
-@file:Suppress("EXPECT_ACTUAL_CLASSIFIERS_ARE_IN_BETA_WARNING")
+@file:Suppress("EXPECT_ACTUAL_CLASSIFIERS_ARE_IN_BETA_WARNING", "SpellCheckingInspection")
 
 package org.milkdev.dreamplayer.library.metadata
 
@@ -78,7 +78,7 @@ private fun ByteArray.parseMp3EmbeddedMetadata(): EmbeddedMetadata {
 private fun ByteArray.parseFlacComments(): Map<String, String> {
     var offset = 0
     val vendorSize = littleEndianUnsignedInt(offset)?.regionEnd(offset + INT_BYTES, size) ?: return emptyMap()
-    offset = vendorSize
+    offset = vendorSize // TODO: something
 
     val commentCount = littleEndianUnsignedInt(offset) ?: return emptyMap()
     if (commentCount > MAX_COMMENT_COUNT) return emptyMap()

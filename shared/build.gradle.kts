@@ -47,7 +47,7 @@ kotlin {
             implementation(libs.ktor.client.android)
         }
         appleMain.dependencies {
-            implementation("io.ktor:ktor-client-darwin:${libs.versions.ktor.get()}")
+            implementation(libs.ktor.client.darwin)
         }
         jvmMain.dependencies {
             implementation(libs.ktor.client.cio)
@@ -57,6 +57,7 @@ kotlin {
         }
         commonTest.dependencies {
             implementation(kotlin("test"))
+            implementation(libs.kotlinx.coroutines.test)
             implementation(libs.ktor.client.mock)
         }
     }

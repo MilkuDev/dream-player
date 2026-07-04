@@ -1,3 +1,5 @@
+@file:Suppress("ConvertCallChainIntoSequence")
+
 package org.milkdev.dreamplayer.extensions.data
 
 import io.ktor.client.HttpClient
@@ -241,15 +243,15 @@ class MusicBrainzMetadataRepository(
 object MusicBrainzMetadataNetworkPolicy {
     val ReleaseGroupSearchEndpoint = SecureNetworkEndpoint(
         serviceName = "MusicBrainz",
-        url = "https://${NetworkHosts.MusicBrainz}/ws/2/release-group",
-        allowedHosts = setOf(NetworkHosts.MusicBrainz),
+        url = "https://${NetworkHosts.MUSIC_BRAINZ}/ws/2/release-group",
+        allowedHosts = setOf(NetworkHosts.MUSIC_BRAINZ),
     )
 
     fun releaseGroupLookupEndpoint(mbid: String): SecureNetworkEndpoint {
         return SecureNetworkEndpoint(
             serviceName = "MusicBrainz",
-            url = "https://${NetworkHosts.MusicBrainz}/ws/2/release-group/$mbid",
-            allowedHosts = setOf(NetworkHosts.MusicBrainz),
+            url = "https://${NetworkHosts.MUSIC_BRAINZ}/ws/2/release-group/$mbid",
+            allowedHosts = setOf(NetworkHosts.MUSIC_BRAINZ),
         )
     }
 }

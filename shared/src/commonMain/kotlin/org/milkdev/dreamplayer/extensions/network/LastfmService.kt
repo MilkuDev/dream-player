@@ -39,8 +39,8 @@ sealed interface LastFmResult<out T> {
 object LastFmNetworkPolicy {
     val ApiEndpoint = SecureNetworkEndpoint(
         serviceName = "Last.fm",
-        url = "https://${NetworkHosts.LastFm}/2.0/",
-        allowedHosts = setOf(NetworkHosts.LastFm),
+        url = "https://${NetworkHosts.LAST_FM}/2.0/",
+        allowedHosts = setOf(NetworkHosts.LAST_FM),
     )
 }
 

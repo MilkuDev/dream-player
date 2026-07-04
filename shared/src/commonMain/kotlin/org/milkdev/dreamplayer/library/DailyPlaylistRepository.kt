@@ -142,7 +142,7 @@ class DailyPlaylistRepository(
         }
 
     private suspend fun generateLocalPlaylistTracks(): List<TrackEntity> {
-        return musicDao.getRandomPresentTracks(limit = PlaylistTrackLimit)
+        return musicDao.getRandomPresentTracks(limit = PLAYLIST_TRACK_LIMIT)
     }
 
     private suspend fun generateAiPlaylist(): AiPlaylistAttempt {
@@ -168,7 +168,7 @@ class DailyPlaylistRepository(
                     errorMessage = "Провайдер не найден",
                 ),
             )
-        val candidates = musicDao.getRandomPresentTracks(limit = AiCandidateLimit)
+        val candidates = musicDao.getRandomPresentTracks(limit = AI_CANDIDATE_LIMIT)
         if (candidates.isEmpty()) {
             return AiPlaylistAttempt.Generated(
                 GeneratedDailyPlaylist(
@@ -191,10 +191,10 @@ class DailyPlaylistRepository(
                     systemPrompt = buildAiPlaylistSystemPrompt(
                         promptPresetId = settings.promptPresetId,
                         customSystemPrompt = settings.customSystemPrompt,
-                        limit = PlaylistTrackLimit,
+                        limit = PLAYLIST_TRACK_LIMIT,
                     ),
                     candidates = candidates.map { it.toAiPlaylistCandidate() },
-                    limit = PlaylistTrackLimit,
+                    limit = PLAYLIST_TRACK_LIMIT,
                 )
             )
         }.onFailure { error ->
@@ -221,7 +221,7 @@ class DailyPlaylistRepository(
         val selection = resolveRecommendedAiPlaylistSelection(
             candidateIds = candidates.map { it.id },
             recommendedIds = recommendation.ids,
-            limit = PlaylistTrackLimit,
+            limit = PLAYLIST_TRACK_LIMIT,
         )
         val byId = candidates.associateBy { it.id }
         val selectedTracks = selection.selectedIds.mapNotNull { id -> byId[id] }
@@ -274,8 +274,8 @@ class DailyPlaylistRepository(
     }
 
     private companion object {
-        const val PlaylistTrackLimit = 30
-        const val AiCandidateLimit = 200
+        const val PLAYLIST_TRACK_LIMIT = 30
+        const val AI_CANDIDATE_LIMIT = 200
     }
 
     private data class GeneratedDailyPlaylist(

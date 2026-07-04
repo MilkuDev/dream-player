@@ -1,3 +1,5 @@
+@file:Suppress("SpellCheckingInspection")
+
 package org.milkdev.dreamplayer.library
 
 import kotlinx.coroutines.flow.Flow
@@ -140,7 +142,7 @@ private fun File.readFlacMetadata(): FlacMetadata? {
                         if (blockSize <= MAX_FLAC_PICTURE_BLOCK_SIZE) {
                             val picture = ByteArray(blockSize).also(file::readFully).parseFlacPicture()
                             if (albumArt == null || picture?.pictureType == FRONT_COVER_PICTURE_TYPE) {
-                                albumArt = picture ?: albumArt
+                                albumArt = picture ?: albumArt // TODO: something
                             }
                         }
                     }
@@ -157,7 +159,7 @@ private fun File.readFlacMetadata(): FlacMetadata? {
 private fun ByteArray.parseFlacComments(): Map<String, String> {
     var offset = 0
     val vendorSize = littleEndianUnsignedInt(offset)?.regionEnd(offset + INT_BYTES, size) ?: return emptyMap()
-    offset = vendorSize
+    offset = vendorSize  // TODO: something
 
     val commentCount = littleEndianUnsignedInt(offset) ?: return emptyMap()
     if (commentCount > MAX_FLAC_COMMENT_COUNT) return emptyMap()

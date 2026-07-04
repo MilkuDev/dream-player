@@ -56,7 +56,7 @@ class PlaybackQueueController {
 
         currentIndex = index
         return snapshot()
-    }
+    } // TODO: idk
 
     fun skipToPrevious(): PlaybackQueueSnapshot? {
         val activeIds = activeIds()

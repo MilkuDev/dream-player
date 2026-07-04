@@ -16,18 +16,18 @@ object AiNetworkPolicy {
         return when (provider.id) {
             AiPlaylistProviders.Gemini.id -> SecureNetworkEndpoint(
                 serviceName = provider.displayName,
-                url = "https://${NetworkHosts.Gemini}/v1beta/models/$model:generateContent",
-                allowedHosts = setOf(NetworkHosts.Gemini),
+                url = "https://${NetworkHosts.GEMINI}/v1beta/models/$model:generateContent",
+                allowedHosts = setOf(NetworkHosts.GEMINI),
             )
             AiPlaylistProviders.DeepSeek.id -> SecureNetworkEndpoint(
                 serviceName = provider.displayName,
-                url = "https://${NetworkHosts.DeepSeek}/chat/completions",
-                allowedHosts = setOf(NetworkHosts.DeepSeek),
+                url = "https://${NetworkHosts.DEEP_SEEK}/chat/completions",
+                allowedHosts = setOf(NetworkHosts.DEEP_SEEK),
             )
             else -> SecureNetworkEndpoint(
                 serviceName = provider.displayName,
-                url = "https://${NetworkHosts.OpenAi}/v1/responses",
-                allowedHosts = setOf(NetworkHosts.OpenAi),
+                url = "https://${NetworkHosts.OPEN_AI}/v1/responses",
+                allowedHosts = setOf(NetworkHosts.OPEN_AI),
             )
         }
     }
@@ -36,18 +36,18 @@ object AiNetworkPolicy {
         return when (provider.id) {
             AiPlaylistProviders.Gemini.id -> SecureNetworkEndpoint(
                 serviceName = provider.displayName,
-                url = "https://${NetworkHosts.Gemini}/v1beta/models",
-                allowedHosts = setOf(NetworkHosts.Gemini),
+                url = "https://${NetworkHosts.GEMINI}/v1beta/models",
+                allowedHosts = setOf(NetworkHosts.GEMINI),
             )
             AiPlaylistProviders.DeepSeek.id -> SecureNetworkEndpoint(
                 serviceName = provider.displayName,
-                url = "https://${NetworkHosts.DeepSeek}/models",
-                allowedHosts = setOf(NetworkHosts.DeepSeek),
+                url = "https://${NetworkHosts.DEEP_SEEK}/models",
+                allowedHosts = setOf(NetworkHosts.DEEP_SEEK),
             )
             else -> SecureNetworkEndpoint(
                 serviceName = provider.displayName,
-                url = "https://${NetworkHosts.OpenAi}/v1/models",
-                allowedHosts = setOf(NetworkHosts.OpenAi),
+                url = "https://${NetworkHosts.OPEN_AI}/v1/models",
+                allowedHosts = setOf(NetworkHosts.OPEN_AI),
             )
         }
     }

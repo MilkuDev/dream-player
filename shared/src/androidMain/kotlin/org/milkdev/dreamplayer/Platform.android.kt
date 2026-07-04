@@ -26,5 +26,5 @@ actual fun currentTimeMillis(): Long = System.currentTimeMillis()
 //         }
 //     }
 // }
-actual fun SetSystemBarAppearance(isDark: Boolean) {
+actual fun setSystemBarAppearance(isDark: Boolean) {
 }

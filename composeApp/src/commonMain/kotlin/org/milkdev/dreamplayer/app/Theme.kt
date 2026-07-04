@@ -18,7 +18,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import org.milkdev.dreamplayer.SetSystemBarAppearance
+import org.milkdev.dreamplayer.setSystemBarAppearance
 import org.milkdev.dreamplayer.generated.resources.Res
 import org.milkdev.dreamplayer.generated.resources.google_sans_rounded_bold
 import org.milkdev.dreamplayer.generated.resources.google_sans_rounded_extralight
@@ -155,7 +155,7 @@ fun AppTheme(
     val spacings = AppSpacings()
     val colorScheme = rememberPlatformColorScheme(darkTheme = darkTheme)
 
-    SetSystemBarAppearance(isDark = darkTheme)
+    setSystemBarAppearance(isDark = darkTheme)
     CompositionLocalProvider(
         LocalAppTypography provides customTypography,
         LocalAppSpacings provides spacings

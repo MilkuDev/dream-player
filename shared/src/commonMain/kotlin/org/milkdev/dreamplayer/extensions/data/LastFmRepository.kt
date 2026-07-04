@@ -30,7 +30,7 @@ class LastFmRepository(private val lastFmService: LastFmService) {
         }
 
         return lookupAlbumMetadata(artist = artist, album = album, apiKey = apiKey)
-    }
+    } // TODO: idk
 
     suspend fun lookupAlbumMetadata(
         artist: String,
@@ -135,6 +135,7 @@ class LastFmRepository(private val lastFmService: LastFmService) {
             .replace(Regex("\\s+"), " ")
     }
 
+    @Suppress("RemoveExplicitTypeArguments")
     private fun LastFmAlbum.toMetadata(): LastFmAlbumMetadata {
         val allTags = toptags?.tag?.map { it.name }
         AppDebugLog.log("LastFmRepo: Полученные теги для '${this.name}' -> $allTags")

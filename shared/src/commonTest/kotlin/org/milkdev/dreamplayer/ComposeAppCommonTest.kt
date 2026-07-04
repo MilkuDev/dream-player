@@ -1,5 +1,10 @@
+@file:Suppress("SpellCheckingInspection")
+
 package org.milkdev.dreamplayer
 
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.milkdev.dreamplayer.extensions.ai.AiPlaylistCandidate
 import org.milkdev.dreamplayer.extensions.ai.AiPlaylistModels
 import org.milkdev.dreamplayer.extensions.ai.AiPlaylistPromptPresets
@@ -33,6 +38,14 @@ import org.milkdev.dreamplayer.playback.PlaybackRepeatMode
 import org.milkdev.dreamplayer.playback.PlayerPresentation
 import org.milkdev.dreamplayer.playback.PlayerUiState
 import org.milkdev.dreamplayer.playback.Screen
+import kotlin.random.Random
+import kotlin.test.Test
+import kotlin.test.assertContentEquals
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class ComposeAppCommonTest {
     private val tracks = listOf(
@@ -601,7 +614,7 @@ class ComposeAppCommonTest {
     fun aiSystemPromptUsesCustomTextWhenCustomPresetSelected() {
         val prompt =
             buildAiPlaylistSystemPrompt(
-                promptPresetId = AiPlaylistPromptPresets.CustomId,
+                promptPresetId = AiPlaylistPromptPresets.CUSTOM_ID,
                 customSystemPrompt = "Pick sleepy synthwave only.",
                 limit = 12,
             )

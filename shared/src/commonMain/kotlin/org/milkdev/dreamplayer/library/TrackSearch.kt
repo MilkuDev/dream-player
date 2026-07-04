@@ -26,9 +26,9 @@ data class TrackSearchMode(
         val TitleAndArtist = TrackSearchMode(TrackSearchConfig(setOf(TrackSearchField.TITLE,
             TrackSearchField.ARTIST)), SearchCategory.TRACKS)
         val Artist = TrackSearchMode(TrackSearchConfig(setOf(TrackSearchField.ARTIST)),
-            SearchCategory.ARTISTS)
+            SearchCategory.ARTISTS) // TODO: idk
         val Album = TrackSearchMode(TrackSearchConfig(setOf(TrackSearchField.ALBUM)),
-            SearchCategory.ALBUMS)
+            SearchCategory.ALBUMS) // TODO: idk
     }
 }
 

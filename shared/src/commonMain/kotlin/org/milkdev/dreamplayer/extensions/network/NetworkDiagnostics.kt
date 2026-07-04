@@ -1,3 +1,5 @@
+@file:Suppress("SpellCheckingInspection")
+
 package org.milkdev.dreamplayer.extensions.network
 
 import io.ktor.http.URLProtocol
@@ -97,11 +99,11 @@ object SecureNetworkPolicy {
 }
 
 object NetworkHosts {
-    const val OpenAi = "api.openai.com"
-    const val Gemini = "generativelanguage.googleapis.com"
-    const val DeepSeek = "api.deepseek.com"
-    const val LastFm = "ws.audioscrobbler.com"
-    const val MusicBrainz = "musicbrainz.org"
-    const val CoverArtArchive = "coverartarchive.org"
-    const val InternetArchive = "archive.org"
+    const val OPEN_AI = "api.openai.com"
+    const val GEMINI = "generativelanguage.googleapis.com"
+    const val DEEP_SEEK = "api.deepseek.com"
+    const val LAST_FM = "ws.audioscrobbler.com"
+    const val MUSIC_BRAINZ = "musicbrainz.org"
+    const val COVER_ART_ARCHIVE = "coverartarchive.org"
+    const val INTERNET_ARCHIVE = "archive.org"
 }

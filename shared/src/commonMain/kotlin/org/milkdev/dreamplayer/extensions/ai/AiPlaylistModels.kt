@@ -30,7 +30,7 @@ data class AiPlaylistPromptPreset(
 data class AiPlaylistSettings(
     val providerId: String = AiPlaylistProviders.OpenAi.id,
     val model: String = AiPlaylistProviders.OpenAi.defaultModelId,
-    val promptPresetId: String = AiPlaylistPromptPresets.DefaultId,
+    val promptPresetId: String = AiPlaylistPromptPresets.DEFAULT_ID,
     val customSystemPrompt: String = "",
 )
 
@@ -153,11 +153,11 @@ object AiPlaylistModels {
 }
 
 object AiPlaylistPromptPresets {
-    const val DefaultId = "balanced_day"
-    const val CustomId = "custom"
+    const val DEFAULT_ID = "balanced_day"
+    const val CUSTOM_ID = "custom"
 
     val Balanced = AiPlaylistPromptPreset(
-        id = DefaultId,
+        id = DEFAULT_ID,
         displayName = "Сбалансированный",
         systemPrompt = "Choose a balanced daily music playlist with variety across artists, albums, eras, and energy levels. Avoid clustering too many similar tracks together.",
     )
@@ -172,7 +172,7 @@ object AiPlaylistPromptPresets {
         systemPrompt = "Choose a calm daily music playlist for relaxed listening or focus. Prefer tracks that look softer, smoother, or less intense from their metadata.",
     )
     val Custom = AiPlaylistPromptPreset(
-        id = CustomId,
+        id = CUSTOM_ID,
         displayName = "Свой",
         systemPrompt = "",
         isCustom = true,

@@ -1,3 +1,5 @@
+@file:Suppress("ConvertCallChainIntoSequence")
+
 package org.milkdev.dreamplayer.library
 
 import kotlinx.coroutines.CoroutineScope
@@ -95,7 +97,7 @@ class MusicRepository(
             var changedTracks = 0
             var skippedTracks = 0
             var movedTracks = 0
-            val batches = rawTracks.chunked(BatchSize)
+            val batches = rawTracks.chunked(BATCH_SIZE)
             batches.forEach { batch ->
                 val batchStats = processBatch(
                     batch = batch,
@@ -157,7 +159,7 @@ class MusicRepository(
 
     private suspend fun syncArtists(rawTracks: List<RawTrackData>): Map<String, Long> {
         val artistNames = rawTracks
-            .map { it.artist ?: UnknownArtist }
+            .map { it.artist ?: UNKNOWN_ARTIST }
             .distinct()
 
         if (artistNames.isNotEmpty()) {
@@ -174,10 +176,10 @@ class MusicRepository(
         timestamp: Long
     ): Map<Pair<String, Long>, Long> {
         val albums = rawTracks.mapNotNull {
-            val artistName = it.artist ?: UnknownArtist
+            val artistName = it.artist ?: UNKNOWN_ARTIST
             val artistId = artistMap[artistName] ?: return@mapNotNull null
             AlbumData(
-                title = it.album ?: UnknownAlbum,
+                title = it.album ?: UNKNOWN_ALBUM,
                 artistId = artistId,
                 artUri = it.albumArtUri,
                 coverSource = it.albumArtSource,
@@ -245,13 +247,13 @@ class MusicRepository(
         val existingTracksByPath = batch
             .map { it.path }
             .distinct()
-            .chunked(QueryBatchSize)
+            .chunked(QUERY_BATCH_SIZE)
             .flatMap { musicDao.getTracksByPaths(it) }
             .associateBy { it.filePath }
         val existingTracksByMediaStoreId = batch
             .mapNotNull { it.mediaStoreId }
             .distinct()
-            .chunked(QueryBatchSize)
+            .chunked(QUERY_BATCH_SIZE)
             .flatMap { musicDao.getTracksByMediaStoreIds(it) }
             .associateBy { it.mediaStoreId }
 
@@ -259,8 +261,8 @@ class MusicRepository(
         var skippedTracks = 0
         val changedRawTracks = mutableListOf<RawTrackData>()
         val trackEntities = batch.mapNotNull { raw ->
-            val artistId = artistMap[raw.artist ?: UnknownArtist] ?: -1L
-            val albumId = albumMap[(raw.album ?: UnknownAlbum) to artistId] ?: -1L
+            val artistId = artistMap[raw.artist ?: UNKNOWN_ARTIST] ?: -1L
+            val albumId = albumMap[(raw.album ?: UNKNOWN_ALBUM) to artistId] ?: -1L
             val existingByMediaStoreId = raw.mediaStoreId?.let(existingTracksByMediaStoreId::get)
             val existingByPath = existingTracksByPath[raw.path]
             val existing = existingByMediaStoreId ?: existingByPath ?: movedTrackQueues
@@ -276,9 +278,9 @@ class MusicRepository(
             TrackEntity(
                 id = existing?.id ?: 0L,
                 filePath = raw.path,
-                title = raw.title ?: UnknownTitle,
-                artistName = raw.artist ?: UnknownArtist,
-                albumName = raw.album ?: UnknownAlbum,
+                title = raw.title ?: UNKNOWN_TITLE,
+                artistName = raw.artist ?: UNKNOWN_ARTIST,
+                albumName = raw.album ?: UNKNOWN_ALBUM,
                 artistId = artistId,
                 albumId = albumId,
                 durationMs = raw.durationMs,
@@ -291,8 +293,8 @@ class MusicRepository(
                 albumArtUri = raw.albumArtUri,
                 isPresent = true,
                 lastSeenTimestamp = timestamp,
-                titleSortKey = (raw.title ?: UnknownTitle).toSortKey(),
-                artistSortKey = (raw.artist ?: UnknownArtist).toSortKey()
+                titleSortKey = (raw.title ?: UNKNOWN_TITLE).toSortKey(),
+                artistSortKey = (raw.artist ?: UNKNOWN_ARTIST).toSortKey()
             )
         }
 
@@ -364,7 +366,7 @@ class MusicRepository(
         val missingPaths = presentPaths.filter { it !in scannedPaths }
 
         missingPaths
-            .chunked(QueryBatchSize)
+            .chunked(QUERY_BATCH_SIZE)
             .forEach { musicDao.markTracksMissingByPaths(it, timestamp) }
 
         return missingPaths.size
@@ -379,9 +381,9 @@ class MusicRepository(
             mediaStoreId == raw.mediaStoreId &&
             contentFingerprint == raw.contentFingerprint() &&
             availability == TrackAvailability.AVAILABLE.name &&
-            title == (raw.title ?: UnknownTitle) &&
-            artistName == (raw.artist ?: UnknownArtist) &&
-            albumName == (raw.album ?: UnknownAlbum) &&
+            title == (raw.title ?: UNKNOWN_TITLE) &&
+            artistName == (raw.artist ?: UNKNOWN_ARTIST) &&
+            albumName == (raw.album ?: UNKNOWN_ALBUM) &&
             artistId == resolvedArtistId &&
             albumId == resolvedAlbumId &&
             durationMs == raw.durationMs &&
@@ -393,7 +395,7 @@ class MusicRepository(
 
     private fun RawTrackData.toSignature(artistId: Long): TrackSignature {
         return TrackSignature(
-            title = title ?: UnknownTitle,
+            title = title ?: UNKNOWN_TITLE,
             artistId = artistId,
             durationMs = durationMs,
             fileSize = fileSize,
@@ -604,7 +606,7 @@ class MusicRepository(
             }
             val cacheMisses = uniqueIds.filter { it !in cachedById }
             val loadedById = cacheMisses
-                .chunked(QueryBatchSize)
+                .chunked(QUERY_BATCH_SIZE)
                 .flatMap { chunk -> musicDao.getTracksByIds(chunk) }
                 .associate { entity -> entity.id to entity.toResolvedPlaybackItem() }
 
@@ -771,9 +773,9 @@ class MusicRepository(
                 contentVersion = 0L,
             ),
             metadata = TrackPlaybackMetadata(
-                title = UnknownTitle,
-                artistName = UnknownArtist,
-                albumName = UnknownAlbum,
+                title = UNKNOWN_TITLE,
+                artistName = UNKNOWN_ARTIST,
+                albumName = UNKNOWN_ALBUM,
                 durationMs = 0L,
                 albumArtUri = null,
             ),
@@ -799,9 +801,9 @@ class MusicRepository(
     private fun Long?.orEmptyKey(): String = this?.toString().orEmpty()
 
     private fun String.stableHash64(): Long {
-        var hash = StableHashSeed
+        var hash = STABLE_HASH_SEED
         for (character in this) {
-            hash = (hash xor character.code.toLong()) * StableHashPrime
+            hash = (hash xor character.code.toLong()) * STABLE_HASH_PRIME
         }
         return hash
     }
@@ -813,15 +815,15 @@ class MusicRepository(
     }
 
     private companion object {
-        const val BatchSize = 500
-        const val QueryBatchSize = 500
+        const val BATCH_SIZE = 500
+        const val QUERY_BATCH_SIZE = 500
         const val TOMBSTONE_RETENTION_MS = 14L * 24 * 60 * 60 * 1000
         const val TRUST_EMBEDDED_IDENTITY = 100
         const val TRUST_EMBEDDED_GENRE = 80
-        const val UnknownArtist = "Unknown Artist"
-        const val UnknownAlbum = "Unknown Album"
-        const val UnknownTitle = "Unknown Title"
-        const val StableHashSeed = -3750763034362895579L
-        const val StableHashPrime = 1099511628211L
+        const val UNKNOWN_ARTIST = "Unknown Artist"
+        const val UNKNOWN_ALBUM = "Unknown Album"
+        const val UNKNOWN_TITLE = "Unknown Title"
+        const val STABLE_HASH_SEED = -3750763034362895579L
+        const val STABLE_HASH_PRIME = 1099511628211L
     }
 }

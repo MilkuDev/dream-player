@@ -194,6 +194,7 @@ private fun ByteArray.parseMp4FreeformTags(): Map<String, String> {
     }
 }
 
+@Suppress("SpellCheckingInspection")
 private fun Map<String, String>.toEmbeddedMetadata(fingerprint: String): EmbeddedMetadata {
     return EmbeddedMetadata(
         recordingMbid = firstMusicBrainzId(
@@ -350,6 +351,7 @@ private const val MP4_TAG_WINDOW = 512 * 1024
 private const val MP4_VALUE_SCAN_LENGTH = 96
 private val SUPPORTED_ID3_VERSIONS = 2..4
 private val FLAC_SIGNATURE = byteArrayOf(0x66, 0x4C, 0x61, 0x43)
+@Suppress("SpellCheckingInspection")
 private val MP4_FREEFORM_KEYS = listOf(
     "musicbrainz_trackid",
     "musicbrainz_albumid",
