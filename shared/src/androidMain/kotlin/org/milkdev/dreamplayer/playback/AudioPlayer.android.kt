@@ -16,10 +16,12 @@ import com.google.common.util.concurrent.ListenableFuture
 import java.util.ArrayDeque
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.milkdev.dreamplayer.app.applicationContext
@@ -70,7 +72,6 @@ actual object AudioPlayer {
     }
 
     actual fun play(snapshot: PlaybackSnapshot) {
-        AppDebugLog.log("audio_play_snapshot tracks=${snapshot.queue.trackIds.size} version=${snapshot.queue.queueVersion}")
         setSnapshot(snapshot)
         withController { mediaController ->
             replaceControllerQueue(
@@ -83,55 +84,94 @@ actual object AudioPlayer {
         }
     }
 
-    actual fun updateQueue(snapshot: PlaybackSnapshot) {
-        AppDebugLog.log("audio_update_snapshot tracks=${snapshot.queue.trackIds.size} version=${snapshot.queue.queueVersion}")
-        withController { mediaController ->
-            val currentPlaybackPositionMs = mediaController.currentPosition.coerceAtLeast(0L)
-            val shouldPlay = mediaController.playWhenReady
-            val previousTrackId = synchronized(lock) {
-                playbackSnapshot?.queue?.currentTrackId
-            } ?: mediaController.currentMediaItem?.mediaId?.substringAfter("_")?.toLongOrNull()
+    private var updateJob: Job? = null
 
-            setSnapshot(snapshot)
-            if (
-                snapshot.queue.currentTrackId == previousTrackId &&
-                mediaController.tryApplyQueueUpdate(snapshot)
-            ) {
-                return@withController
+    actual fun updateQueue(snapshot: PlaybackSnapshot) {
+
+        updateJob?.cancel()
+
+        updateJob = playerScope.launch {
+            val (availableIndexedItems, targetMediaItems) = withContext(Dispatchers.Default) {
+                val available = snapshot.items.mapIndexed { index, item -> index to item }
+                    .filter { (_, item) -> item.ref.availability == TrackAvailability.AVAILABLE && item.ref.uri.isNotBlank() }
+
+                val mediaItems = available.map { (queueIndex, item) ->
+                    item.toCachedMediaItem(queueIndex)
+                }
+
+                available to mediaItems
             }
 
-            replaceControllerQueue(
-                mediaController = mediaController,
-                snapshot = snapshot,
-                startPositionMs = if (snapshot.queue.currentTrackId == previousTrackId) {
-                    currentPlaybackPositionMs
-                } else {
-                    0L
-                },
-                playWhenReady = shouldPlay,
-                reason = "update_snapshot",
-            )
+            withContext(Dispatchers.Main) {
+                if (!isActive) return@withContext
+
+                withController { mediaController ->
+                    val currentPlaybackPositionMs = mediaController.currentPosition.coerceAtLeast(0L)
+                    val shouldPlay = mediaController.playWhenReady
+                    val previousTrackId = synchronized(lock) {
+                        playbackSnapshot?.queue?.currentTrackId
+                    } ?: mediaController.currentMediaItem?.mediaId?.substringAfter("_")?.toLongOrNull()
+
+                    setSnapshot(snapshot)
+
+                    if (
+                        snapshot.queue.currentTrackId == previousTrackId &&
+                        mediaController.tryApplyQueueUpdate(snapshot, availableIndexedItems, targetMediaItems)
+                    ) {
+                        return@withController
+                    }
+
+                    replaceControllerQueue(
+                        mediaController = mediaController,
+                        snapshot = snapshot,
+                        startPositionMs = if (snapshot.queue.currentTrackId == previousTrackId) {
+                            currentPlaybackPositionMs
+                        } else {
+                            0L
+                        },
+                        playWhenReady = shouldPlay,
+                        reason = "update_snapshot",
+                    )
+                }
+            }
         }
     }
 
     actual fun moveQueueItem(fromIndex: Int, toIndex: Int, snapshot: PlaybackSnapshot) {
-        AppDebugLog.log(
-            "audio_move_snapshot from=$fromIndex to=$toIndex tracks=${snapshot.queue.trackIds.size} " +
-                    "version=${snapshot.queue.queueVersion}"
-        )
-        withController { mediaController ->
-            setSnapshot(snapshot)
-            if (mediaController.tryApplyQueueUpdate(snapshot)) {
-                return@withController
+
+        updateJob?.cancel()
+
+        updateJob = playerScope.launch {
+            val (availableIndexedItems, targetMediaItems) = withContext(Dispatchers.Default) {
+                val available = snapshot.items.mapIndexed { index, item -> index to item }
+                    .filter { (_, item) -> item.ref.availability == TrackAvailability.AVAILABLE && item.ref.uri.isNotBlank() }
+
+                val mediaItems = available.map { (queueIndex, item) ->
+                    item.toCachedMediaItem(queueIndex)
+                }
+
+                available to mediaItems
             }
 
-            replaceControllerQueue(
-                mediaController = mediaController,
-                snapshot = snapshot,
-                startPositionMs = mediaController.currentPosition.coerceAtLeast(0L),
-                playWhenReady = mediaController.playWhenReady,
-                reason = "move_snapshot_fallback",
-            )
+            withContext(Dispatchers.Main) {
+                if (!isActive) return@withContext
+
+                withController { mediaController ->
+                    setSnapshot(snapshot)
+
+                    if (mediaController.tryApplyQueueUpdate(snapshot, availableIndexedItems, targetMediaItems)) {
+                        return@withController
+                    }
+
+                    replaceControllerQueue(
+                        mediaController = mediaController,
+                        snapshot = snapshot,
+                        startPositionMs = mediaController.currentPosition.coerceAtLeast(0L),
+                        playWhenReady = mediaController.playWhenReady,
+                        reason = "move_snapshot_fallback",
+                    )
+                }
+            }
         }
     }
 
@@ -198,9 +238,12 @@ actual object AudioPlayer {
     actual fun skipToQueueIndex(index: Int) {
         AppDebugLog.log("audio_skip_to_queue_index index=$index")
         withController { mediaController ->
-            val mediaIndex = (0 until mediaController.mediaItemCount).firstOrNull { idx ->
-                mediaController.getMediaItemAt(idx).mediaId.substringBefore("_") == index.toString()
-            } ?: return@withController
+            val snapshot = synchronized(lock) { playbackSnapshot } ?: return@withController
+            val availableItems = snapshot.items.mapIndexed { idx, item -> idx to item }
+                .filter { (_, item) -> item.ref.availability == TrackAvailability.AVAILABLE && item.ref.uri.isNotBlank() }
+
+            val mediaIndex = availableItems.indexOfFirst { (queueIndex, _) -> queueIndex == index }
+            if (mediaIndex < 0 || mediaIndex >= mediaController.mediaItemCount) return@withController
 
             mediaController.seekTo(mediaIndex, 0L)
             mediaController.play()
@@ -243,9 +286,11 @@ actual object AudioPlayer {
                 else -> currentQueueIndex + 1
             }
 
-            val targetMediaIndex = (0 until mediaController.mediaItemCount).firstOrNull { idx ->
-                mediaController.getMediaItemAt(idx).mediaId.substringBefore("_") == targetQueueIndex.toString()
-            } ?: return@withController
+            val availableItems = snapshot.items.mapIndexed { idx, item -> idx to item }
+                .filter { (_, item) -> item.ref.availability == TrackAvailability.AVAILABLE && item.ref.uri.isNotBlank() }
+
+            val targetMediaIndex = availableItems.indexOfFirst { (queueIndex, _) -> queueIndex == targetQueueIndex }
+            if (targetMediaIndex < 0 || targetMediaIndex >= mediaController.mediaItemCount) return@withController
 
             mediaController.seekTo(targetMediaIndex, 0L)
             mediaController.play()
@@ -450,21 +495,18 @@ actual object AudioPlayer {
         return true
     }
 
-    private fun MediaController.tryApplyQueueUpdate(snapshot: PlaybackSnapshot): Boolean {
+    private fun MediaController.tryApplyQueueUpdate(
+        snapshot: PlaybackSnapshot,
+        availableIndexedItems: List<Pair<Int, ResolvedPlaybackItem>>,
+        targetMediaItems: List<MediaItem>
+    ): Boolean {
         val mediaController = this
         val currentMediaItem = currentMediaItem ?: return false
 
         val currentTrackId = currentMediaItem.mediaId.substringAfter("_").toLongOrNull() ?: return false
         if (currentTrackId != snapshot.queue.currentTrackId) return false
 
-        val availableIndexedItems = snapshot.items.mapIndexed { index, item -> index to item }
-            .filter { (_, item) -> item.ref.availability == TrackAvailability.AVAILABLE && item.ref.uri.isNotBlank() }
-
         if (availableIndexedItems.size != mediaItemCount) return false
-
-        val targetTrackIds = availableIndexedItems.map { it.second.trackId }
-        val currentTrackIds = currentTrackIds()
-        if (!currentTrackIds.hasSameTrackIdsAs(targetTrackIds)) return false
 
         val targetCurrentIndex = availableIndexedItems.indexOfFirst { (queueIndex, item) ->
             queueIndex == snapshot.queue.currentIndex && item.trackId == currentTrackId
@@ -479,11 +521,6 @@ actual object AudioPlayer {
             moveMediaItem(currentControllerIndex, targetCurrentIndex)
         }
 
-        // 2. Синхронно маппим элементы без ухода во внешние потоки
-        val targetMediaItems = availableIndexedItems.map { (queueIndex, item) ->
-            item.toCachedMediaItem(queueIndex)
-        }
-
         if (targetCurrentIndex > 0) {
             replaceMediaItems(0, targetCurrentIndex, targetMediaItems.subList(0, targetCurrentIndex))
         }
@@ -495,8 +532,6 @@ actual object AudioPlayer {
             )
         }
 
-        ensureUpcomingItem(availableIndexedItems.map { it.second }, currentTrackId)
-
         AppDebugLog.log("audio_update_snapshot_in_place trackId=$currentTrackId queueSize=${snapshot.queue.trackIds.size}")
         return true
     }
@@ -507,26 +542,30 @@ actual object AudioPlayer {
             ?: snapshot.queue.currentTrackId
             ?: return
 
-        val availableItems = snapshot.items
-            .filter { item -> item.ref.availability == TrackAvailability.AVAILABLE && item.ref.uri.isNotBlank() }
-        ensureUpcomingItem(availableItems, currentTrackId)
+        val availableIndexedItems = snapshot.items.mapIndexed { index, item -> index to item }
+            .filter { (_, item) -> item.ref.availability == TrackAvailability.AVAILABLE && item.ref.uri.isNotBlank() }
+
+        ensureUpcomingItem(availableIndexedItems, currentTrackId)
     }
 
     private fun MediaController.ensureUpcomingItem(
-        targetItems: List<ResolvedPlaybackItem>,
+        targetItems: List<Pair<Int, ResolvedPlaybackItem>>,
         currentTrackId: Long,
     ) {
         if (targetItems.size <= 1 || mediaItemCount <= 1) return
 
-        val targetCurrentIndex = targetItems.indexOfFirst { item -> item.trackId == currentTrackId }
+        val targetCurrentIndex = targetItems.indexOfFirst { (_, item) -> item.trackId == currentTrackId }
         if (targetCurrentIndex !in targetItems.indices) return
 
         val playbackRepeatMode = synchronized(lock) { this@AudioPlayer.repeatMode }
-        val nextTargetItem = when {
-            targetCurrentIndex < targetItems.lastIndex -> targetItems[targetCurrentIndex + 1]
-            playbackRepeatMode == PlaybackRepeatMode.Queue -> targetItems.first()
-            else -> null
-        } ?: return
+        val nextTargetIndex = when {
+            targetCurrentIndex < targetItems.lastIndex -> targetCurrentIndex + 1
+            playbackRepeatMode == PlaybackRepeatMode.Queue -> 0
+            else -> -1
+        }
+        if (nextTargetIndex == -1) return
+
+        val nextTargetItem = targetItems[nextTargetIndex].second
 
         val currentControllerIndex = currentMediaItemIndex
         if (currentControllerIndex !in 0 until mediaItemCount) return
@@ -536,20 +575,14 @@ actual object AudioPlayer {
             playbackRepeatMode == PlaybackRepeatMode.Queue -> 0
             else -> return
         }
-        if (getMediaItemAt(nextControllerIndex).mediaId.substringAfter("_").toLongOrNull() == nextTargetItem.trackId) return
 
-        val nextMediaIndex = (0 until mediaItemCount).firstOrNull { idx ->
-            getMediaItemAt(idx).mediaId.substringAfter("_").toLongOrNull() == nextTargetItem.trackId
-        } ?: return
+        val nextControllerItem = getMediaItemAt(nextControllerIndex) // Это единственный разрешенный вызов!
+        if (nextControllerItem.mediaId.substringAfter("_").toLongOrNull() == nextTargetItem.trackId) return
+
+        val nextMediaIndex = nextTargetIndex
         if (nextMediaIndex == currentControllerIndex) return
 
         moveMediaItem(nextMediaIndex, nextControllerIndex)
-    }
-
-    private fun MediaController.findMediaItemIndex(trackId: Long): Int? {
-        return (0 until mediaItemCount).firstOrNull { index ->
-            getMediaItemAt(index).mediaId.substringAfter("_").toLongOrNull() == trackId
-        }
     }
 
     private fun syncStateFromController(mediaController: MediaController? = synchronized(lock) { controller }) {
@@ -575,27 +608,6 @@ actual object AudioPlayer {
             queue = queue.copy(trackIds = queue.trackIds.copyOf()),
         )
     }
-}
-
-private fun MediaController.currentTrackIds(): List<Long> {
-    return (0 until mediaItemCount).mapNotNull { index ->
-        getMediaItemAt(index).mediaId.substringAfter("_").toLongOrNull()
-    }
-}
-
-private fun List<Long>.hasSameTrackIdsAs(other: List<Long>): Boolean {
-    if (size != other.size) return false
-
-    val counts = groupingBy { it }.eachCount().toMutableMap()
-    other.forEach { id ->
-        val count = counts[id] ?: return false
-        if (count == 1) {
-            counts.remove(id)
-        } else {
-            counts[id] = count - 1
-        }
-    }
-    return counts.isEmpty()
 }
 
 private data class MediaItemCacheKey(
