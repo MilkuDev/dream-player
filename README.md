@@ -1,6 +1,6 @@
 # DreamPlayer
 
-Local music player targeting Android and Desktop (Windows/macOS/Linux JVM). Built entirely on Kotlin Multiplatform and Compose Multiplatform. The primary goal is maintaining a single, shared audio engine and business logic layer across different operating systems without relying on bloated external frameworks.
+Local music player targeting Android and Desktop (Windows/macOS/Linux JVM). Built on Kotlin Multiplatform with Compose Multiplatform. The primary goal is maintaining a single, shared audio engine and business logic layer across different operating systems without relying on bloated external frameworks.
 
 ## Core Architecture
 
