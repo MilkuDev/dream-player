@@ -43,13 +43,13 @@ import org.milkdev.dreamplayer.generated.resources.skip_next
 import org.milkdev.dreamplayer.generated.resources.skip_previous
 import org.milkdev.dreamplayer.generated.resources.play_arrow
 import org.milkdev.dreamplayer.generated.resources.stat_minus
-import org.milkdev.dreamplayer.playback.PlaybackRepeatMode
-import org.milkdev.dreamplayer.playback.PlayerUiState
+import org.milkdev.org.milkdev.dreamplayer.playback.PlaybackRepeatMode
+import org.milkdev.org.milkdev.dreamplayer.playback.PlayerUiState
 import ir.mahozad.multiplatform.wavyslider.material3.WavySlider
 import org.milkdev.dreamplayer.app.AppTheme
 import org.milkdev.dreamplayer.generated.resources.favorite_filled
 import org.milkdev.dreamplayer.generated.resources.lyrics
-import org.milkdev.dreamplayer.library.LibraryTrack
+import org.milkdev.org.milkdev.dreamplayer.library.LibraryTrack
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

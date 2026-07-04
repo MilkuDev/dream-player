@@ -1,6 +1,11 @@
 package org.milkdev.dreamplayer.library.metadata
 
-import org.milkdev.dreamplayer.library.RawTrackData
+import org.milkdev.org.milkdev.dreamplayer.library.RawTrackData
+import org.milkdev.org.milkdev.dreamplayer.library.metadata.EmbeddedMetadata
+import org.milkdev.org.milkdev.dreamplayer.library.metadata.firstMusicBrainzId
+import org.milkdev.org.milkdev.dreamplayer.library.metadata.parseEmbeddedYear
+import org.milkdev.org.milkdev.dreamplayer.library.metadata.splitEmbeddedGenres
+import org.milkdev.org.milkdev.dreamplayer.library.metadata.splitMusicBrainzIds
 import java.io.File
 import java.io.RandomAccessFile
 import java.security.MessageDigest
@@ -192,11 +197,33 @@ private fun ByteArray.parseMp4FreeformTags(): Map<String, String> {
 
 private fun Map<String, String>.toEmbeddedMetadata(fingerprint: String): EmbeddedMetadata {
     return EmbeddedMetadata(
-        recordingMbid = firstMusicBrainzId(valueFor("musicbrainz_trackid", "musicbrainz track id", "ufid", "txxx:musicbrainz track id")),
+        recordingMbid = firstMusicBrainzId(
+            valueFor(
+                "musicbrainz_trackid",
+                "musicbrainz track id",
+                "ufid",
+                "txxx:musicbrainz track id"
+            )
+        ),
         releaseMbid = firstMusicBrainzId(valueFor("musicbrainz_albumid", "musicbrainz album id")),
-        releaseGroupMbid = firstMusicBrainzId(valueFor("musicbrainz_releasegroupid", "musicbrainz release group id")),
-        artistMbids = splitMusicBrainzIds(valueFor("musicbrainz_artistid", "musicbrainz artist id")),
-        albumArtistMbids = splitMusicBrainzIds(valueFor("musicbrainz_albumartistid", "musicbrainz album artist id")),
+        releaseGroupMbid = firstMusicBrainzId(
+            valueFor(
+                "musicbrainz_releasegroupid",
+                "musicbrainz release group id"
+            )
+        ),
+        artistMbids = splitMusicBrainzIds(
+            valueFor(
+                "musicbrainz_artistid",
+                "musicbrainz artist id"
+            )
+        ),
+        albumArtistMbids = splitMusicBrainzIds(
+            valueFor(
+                "musicbrainz_albumartistid",
+                "musicbrainz album artist id"
+            )
+        ),
         year = parseEmbeddedYear(valueFor("date", "year", "tdrc", "tyer")),
         genres = splitEmbeddedGenres(valueFor("genre", "tcon")),
         tagFingerprint = fingerprint,

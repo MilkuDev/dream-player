@@ -11,6 +11,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flow
 import org.milkdev.dreamplayer.app.applicationContext
+import org.milkdev.org.milkdev.dreamplayer.library.CoverSource
+import org.milkdev.org.milkdev.dreamplayer.library.MusicScanner
+import org.milkdev.org.milkdev.dreamplayer.library.RawTrackData
 
 class MediaStoreScanner : MusicScanner {
 

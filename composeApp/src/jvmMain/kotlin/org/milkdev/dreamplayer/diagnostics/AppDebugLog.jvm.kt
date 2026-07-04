@@ -2,6 +2,8 @@
 
 package org.milkdev.dreamplayer.diagnostics
 
+import org.milkdev.org.milkdev.dreamplayer.diagnostics.LogStorage
+
 actual object AppDebugLog {
     actual fun log(event: String) {
         println("DreamPlayer: $event")

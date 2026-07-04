@@ -8,11 +8,12 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
-import org.milkdev.dreamplayer.database.SystemPlaylists
-import org.milkdev.dreamplayer.database.appDatabase
+import org.milkdev.org.milkdev.dreamplayer.database.SystemPlaylists
+import org.milkdev.org.milkdev.dreamplayer.database.appDatabase
 import org.milkdev.dreamplayer.model.AlbumSortOrder
 import org.milkdev.dreamplayer.model.TrackSortOrder
-import org.milkdev.dreamplayer.playback.ResolvedPlaybackItem
+import org.milkdev.org.milkdev.dreamplayer.playback.ResolvedPlaybackItem
+import org.milkdev.org.milkdev.dreamplayer.database.entities.TrackEntity
 
 actual object MusicLibrarySource {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -127,7 +128,7 @@ actual object MusicLibrarySource {
     }
 }
 
-private fun org.milkdev.dreamplayer.database.entities.TrackEntity.toLibraryTrack(): LibraryTrack {
+private fun TrackEntity.toLibraryTrack(): LibraryTrack {
     return LibraryTrack(
         id = id,
         title = title,

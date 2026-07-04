@@ -3,6 +3,7 @@
 package org.milkdev.dreamplayer.diagnostics
 
 import android.util.Log
+import org.milkdev.org.milkdev.dreamplayer.diagnostics.LogStorage
 
 actual object AppDebugLog {
     private const val TAG = "DreamPlayer"

@@ -36,7 +36,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -87,10 +86,10 @@ import org.milkdev.dreamplayer.generated.resources.close
 import org.milkdev.dreamplayer.generated.resources.music_note
 import org.milkdev.dreamplayer.generated.resources.search
 import org.milkdev.dreamplayer.generated.resources.star
-import org.milkdev.dreamplayer.library.LibraryTrack
-import org.milkdev.dreamplayer.model.LibraryCategory
+import org.milkdev.org.milkdev.dreamplayer.library.LibraryTrack
+import org.milkdev.org.milkdev.dreamplayer.model.LibraryCategory
 import org.milkdev.dreamplayer.model.LibrarySortOrder
-import org.milkdev.dreamplayer.playback.Screen
+import org.milkdev.org.milkdev.dreamplayer.playback.Screen
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 

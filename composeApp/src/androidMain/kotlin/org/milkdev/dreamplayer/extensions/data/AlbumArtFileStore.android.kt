@@ -5,13 +5,13 @@ import kotlinx.coroutines.withContext
 import org.milkdev.dreamplayer.app.applicationContext
 import java.io.File
 
-actual fun createAlbumArtFileStore(): AlbumArtFileStore {
+actual fun createAlbumArtFileStore(): org.milkdev.org.milkdev.dreamplayer.extensions.data.AlbumArtFileStore {
     return AndroidAlbumArtFileStore(File(applicationContext.filesDir, "album-art/remote"))
 }
 
 private class AndroidAlbumArtFileStore(
     private val directory: File,
-) : AlbumArtFileStore {
+) : org.milkdev.org.milkdev.dreamplayer.extensions.data.AlbumArtFileStore {
     override suspend fun saveRemoteAlbumArt(
         albumId: Long,
         sourceUrl: String,

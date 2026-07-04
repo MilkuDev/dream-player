@@ -44,10 +44,10 @@ import org.milkdev.dreamplayer.generated.resources.pause
 import org.milkdev.dreamplayer.generated.resources.play_arrow
 import org.milkdev.dreamplayer.generated.resources.skip_next
 import org.milkdev.dreamplayer.generated.resources.skip_previous
-import org.milkdev.dreamplayer.library.LibraryTrack
-import org.milkdev.dreamplayer.model.PlayerViewModel
-import org.milkdev.dreamplayer.playback.PlayerUiState
-import org.milkdev.dreamplayer.playback.Screen
+import org.milkdev.org.milkdev.dreamplayer.library.LibraryTrack
+import org.milkdev.org.milkdev.dreamplayer.model.PlayerViewModel
+import org.milkdev.org.milkdev.dreamplayer.playback.PlayerUiState
+import org.milkdev.org.milkdev.dreamplayer.playback.Screen
 import org.milkdev.dreamplayer.ui.*
 
 private val playerViewModelInstance = PlayerViewModel()

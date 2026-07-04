@@ -45,14 +45,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import org.jetbrains.compose.resources.painterResource
 import org.milkdev.dreamplayer.app.AppTheme
-import org.milkdev.dreamplayer.database.DailyPlaylistGenerationMode
-import org.milkdev.dreamplayer.diagnostics.LogStorage
-import org.milkdev.dreamplayer.extensions.ai.AiPlaylistModels
-import org.milkdev.dreamplayer.extensions.ai.AiPlaylistPromptPresets
-import org.milkdev.dreamplayer.extensions.ai.AiPlaylistProviders
+import org.milkdev.org.milkdev.dreamplayer.database.DailyPlaylistGenerationMode
+import org.milkdev.org.milkdev.dreamplayer.diagnostics.LogStorage
 import org.milkdev.dreamplayer.generated.resources.Res
 import org.milkdev.dreamplayer.generated.resources.arrow_back
-import org.milkdev.dreamplayer.playback.PlayerUiState
+import org.milkdev.org.milkdev.dreamplayer.playback.PlayerUiState
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -224,7 +221,7 @@ fun AiDebugSettingsScreen(
         mutableStateOf(false)
     }
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
-    val selectedModel = AiPlaylistModels.byApiModel(
+    val selectedModel = _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.AiPlaylistModels.byApiModel(
         providerId = state.aiPlaylistProviderId,
         apiModel = state.aiPlaylistModel,
     )
@@ -341,7 +338,7 @@ fun AiDebugSettingsScreen(
                             selectedPresetId = state.aiPlaylistPromptPresetId,
                             onPromptPresetChange = onPromptPresetChange,
                         )
-                        if (AiPlaylistPromptPresets.byId(state.aiPlaylistPromptPresetId).isCustom) {
+                        if (_root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.AiPlaylistPromptPresets.byId(state.aiPlaylistPromptPresetId).isCustom) {
                             AiCustomPromptField(
                                 value = state.aiPlaylistCustomSystemPrompt,
                                 onValueChange = onCustomPromptChange,
@@ -528,7 +525,7 @@ fun SettingsDailyPlaylistItem(
                     selectedPresetId = state.aiPlaylistPromptPresetId,
                     onPromptPresetChange = onPromptPresetChange,
                 )
-                if (AiPlaylistPromptPresets.byId(state.aiPlaylistPromptPresetId).isCustom) {
+                if (_root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.AiPlaylistPromptPresets.byId(state.aiPlaylistPromptPresetId).isCustom) {
                     AiCustomPromptField(
                         value = state.aiPlaylistCustomSystemPrompt,
                         onValueChange = onCustomPromptChange,
@@ -545,7 +542,7 @@ private fun AiProviderSelector(
     onProviderChange: (String) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        AiPlaylistProviders.all.forEach { provider ->
+        _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.AiPlaylistProviders.all.forEach { provider ->
             FilterChip(
                 selected = selectedProviderId == provider.id,
                 onClick = { onProviderChange(provider.id) },
@@ -563,8 +560,8 @@ private fun AiModelDropdown(
     onModelChange: (String) -> Unit,
 ) {
     var expanded by remember(providerId) { mutableStateOf(false) }
-    val models = AiPlaylistModels.forProvider(providerId)
-    val selectedModel = AiPlaylistModels.byApiModel(providerId, selectedModelId)
+    val models = _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.AiPlaylistModels.forProvider(providerId)
+    val selectedModel = _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.AiPlaylistModels.byApiModel(providerId, selectedModelId)
 
     Box(modifier = Modifier.fillMaxWidth()) {
         OutlinedButton(
@@ -675,7 +672,7 @@ private fun AiPromptPresetSelector(
     onPromptPresetChange: (String) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        AiPlaylistPromptPresets.all.forEach { preset ->
+        _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.ai.AiPlaylistPromptPresets.all.forEach { preset ->
             FilterChip(
                 selected = selectedPresetId == preset.id,
                 onClick = { onPromptPresetChange(preset.id) },

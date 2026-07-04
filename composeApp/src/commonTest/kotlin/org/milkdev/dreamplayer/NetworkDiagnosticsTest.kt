@@ -14,46 +14,46 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.test.assertFailsWith
-import org.milkdev.dreamplayer.diagnostics.LogStorage
-import org.milkdev.dreamplayer.extensions.ai.AiPlaylistProviders
-import org.milkdev.dreamplayer.extensions.network.AiPromptService
-import org.milkdev.dreamplayer.extensions.network.buildAiPromptRequestBody
-import org.milkdev.dreamplayer.extensions.data.AlbumArtFileStore
-import org.milkdev.dreamplayer.extensions.data.CoverArtLookup
-import org.milkdev.dreamplayer.extensions.data.CoverArtRepository
-import org.milkdev.dreamplayer.extensions.data.LastFmAlbumLookup
-import org.milkdev.dreamplayer.extensions.data.LastFmImage
-import org.milkdev.dreamplayer.extensions.data.LastFmRepository
-import org.milkdev.dreamplayer.extensions.data.selectBestLastFmImageUrl
-import org.milkdev.dreamplayer.extensions.network.LastFmErrorType
-import org.milkdev.dreamplayer.extensions.network.LastFmNetworkDiagnosticsService
-import org.milkdev.dreamplayer.extensions.network.LastFmResult
-import org.milkdev.dreamplayer.extensions.network.LastFmService
-import org.milkdev.dreamplayer.extensions.network.NetworkHosts
-import org.milkdev.dreamplayer.extensions.network.RequestRateLimiter
-import org.milkdev.dreamplayer.extensions.network.NetworkSecurityException
-import org.milkdev.dreamplayer.extensions.network.SecureNetworkEndpoint
-import org.milkdev.dreamplayer.extensions.network.SecureNetworkPolicy
+import org.milkdev.org.milkdev.dreamplayer.diagnostics.LogStorage
+import org.milkdev.org.milkdev.dreamplayer.extensions.ai.AiPlaylistProviders
+import org.milkdev.org.milkdev.dreamplayer.extensions.network.AiPromptService
+import org.milkdev.org.milkdev.dreamplayer.extensions.network.buildAiPromptRequestBody
+import org.milkdev.org.milkdev.dreamplayer.extensions.data.AlbumArtFileStore
+import org.milkdev.org.milkdev.dreamplayer.extensions.data.CoverArtLookup
+import org.milkdev.org.milkdev.dreamplayer.extensions.data.CoverArtRepository
+import org.milkdev.org.milkdev.dreamplayer.extensions.data.LastFmAlbumLookup
+import org.milkdev.org.milkdev.dreamplayer.extensions.data.LastFmImage
+import org.milkdev.org.milkdev.dreamplayer.extensions.data.LastFmRepository
+import org.milkdev.org.milkdev.dreamplayer.extensions.data.selectBestLastFmImageUrl
+import org.milkdev.org.milkdev.dreamplayer.extensions.network.LastFmErrorType
+import org.milkdev.org.milkdev.dreamplayer.extensions.network.LastFmNetworkDiagnosticsService
+import org.milkdev.org.milkdev.dreamplayer.extensions.network.LastFmResult
+import org.milkdev.org.milkdev.dreamplayer.extensions.network.LastFmService
+import org.milkdev.org.milkdev.dreamplayer.extensions.network.NetworkHosts
+import org.milkdev.org.milkdev.dreamplayer.extensions.network.RequestRateLimiter
+import org.milkdev.org.milkdev.dreamplayer.extensions.network.NetworkSecurityException
+import org.milkdev.org.milkdev.dreamplayer.extensions.network.SecureNetworkEndpoint
+import org.milkdev.org.milkdev.dreamplayer.extensions.network.SecureNetworkPolicy
 
 class NetworkDiagnosticsTest {
     @Test
     fun securePolicyBlocksHttpAndUnknownHosts() {
-        assertFailsWith<NetworkSecurityException> {
-            SecureNetworkPolicy.requireAllowed(
-                SecureNetworkEndpoint(
+        assertFailsWith<org.milkdev.org.milkdev.dreamplayer.extensions.network.NetworkSecurityException> {
+            _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.network.SecureNetworkPolicy.requireAllowed(
+                _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.network.SecureNetworkEndpoint(
                     serviceName = "OpenAI",
-                    url = "http://${NetworkHosts.OpenAi}/v1/models",
-                    allowedHosts = setOf(NetworkHosts.OpenAi),
+                    url = "http://${_root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.network.NetworkHosts.OpenAi}/v1/models",
+                    allowedHosts = setOf(_root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.network.NetworkHosts.OpenAi),
                 )
             )
         }
 
-        assertFailsWith<NetworkSecurityException> {
-            SecureNetworkPolicy.requireAllowed(
-                SecureNetworkEndpoint(
+        assertFailsWith<org.milkdev.org.milkdev.dreamplayer.extensions.network.NetworkSecurityException> {
+            _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.network.SecureNetworkPolicy.requireAllowed(
+                _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.network.SecureNetworkEndpoint(
                     serviceName = "OpenAI",
                     url = "https://example.com/v1/models",
-                    allowedHosts = setOf(NetworkHosts.OpenAi),
+                    allowedHosts = setOf(_root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.network.NetworkHosts.OpenAi),
                 )
             )
         }
@@ -75,11 +75,13 @@ class NetworkDiagnosticsTest {
             }
         )
 
-        val status = LastFmNetworkDiagnosticsService(
-            LastFmService(client)
+        val status = _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.network.LastFmNetworkDiagnosticsService(
+            _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.network.LastFmService(
+                client
+            )
         ).testApiKey(apiKey)
 
-        assertTrue(capturedUrl.startsWith("https://${NetworkHosts.LastFm}/2.0/"))
+        assertTrue(capturedUrl.startsWith("https://${_root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.network.NetworkHosts.LastFm}/2.0/"))
         assertTrue(capturedUrl.contains("method=chart.gettopartists"))
         assertTrue(capturedUrl.contains("limit=1"))
         assertTrue(capturedUrl.contains("api_key=$apiKey"))
@@ -95,9 +97,9 @@ class NetworkDiagnosticsTest {
     @Test
     fun lastFmErrorCodesMapToTypedFailures() = runBlocking {
         val cases = listOf(
-            10 to LastFmErrorType.InvalidApiKey,
-            26 to LastFmErrorType.SuspendedApiKey,
-            29 to LastFmErrorType.RateLimited,
+            10 to _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.network.LastFmErrorType.InvalidApiKey,
+            26 to _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.network.LastFmErrorType.SuspendedApiKey,
+            29 to _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.network.LastFmErrorType.RateLimited,
         )
 
         cases.forEach { (code, expectedType) ->
@@ -111,7 +113,9 @@ class NetworkDiagnosticsTest {
                 }
             )
 
-            val result = LastFmService(client).testApiKey("key")
+            val result = _root_ide_package_.org.milkdev.org.milkdev.dreamplayer.extensions.network.LastFmService(
+                client
+            ).testApiKey("key")
 
             val failure = assertIs<LastFmResult.Failure>(result)
             assertEquals(expectedType, failure.type)

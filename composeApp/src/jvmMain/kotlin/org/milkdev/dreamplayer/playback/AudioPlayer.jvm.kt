@@ -7,6 +7,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.milkdev.dreamplayer.audio.openFlacAudioInputStream
 import org.milkdev.dreamplayer.audio.openMpegAudioInputStream
+import org.milkdev.org.milkdev.dreamplayer.playback.AudioPlayer
+import org.milkdev.org.milkdev.dreamplayer.playback.AudioPlayerState
+import org.milkdev.org.milkdev.dreamplayer.playback.EmptyPlaybackQueueSnapshot
+import org.milkdev.org.milkdev.dreamplayer.playback.PlaybackRepeatMode
+import org.milkdev.org.milkdev.dreamplayer.playback.PlaybackSnapshot
+import org.milkdev.org.milkdev.dreamplayer.playback.ResolvedPlaybackItem
+import org.milkdev.org.milkdev.dreamplayer.playback.TrackAvailability
 import java.io.BufferedInputStream
 import java.io.EOFException
 import java.io.File

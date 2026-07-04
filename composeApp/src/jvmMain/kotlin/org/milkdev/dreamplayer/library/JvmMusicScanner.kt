@@ -3,6 +3,9 @@ package org.milkdev.dreamplayer.library
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import org.milkdev.dreamplayer.audio.readJvmAudioFileFormat
+import org.milkdev.org.milkdev.dreamplayer.library.CoverSource
+import org.milkdev.org.milkdev.dreamplayer.library.MusicScanner
+import org.milkdev.org.milkdev.dreamplayer.library.RawTrackData
 import java.io.File
 import java.io.RandomAccessFile
 import java.security.MessageDigest

@@ -1,6 +1,7 @@
 package org.milkdev.dreamplayer
 
 import androidx.compose.runtime.Composable
+import org.milkdev.dreamplayer.Platform
 
 class DesktopPlatform : Platform {
     override val name: String = "Desktop JVM (${System.getProperty("os.name")})"

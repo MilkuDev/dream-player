@@ -21,7 +21,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.flow.StateFlow
-import org.milkdev.dreamplayer.diagnostics.LogStorage
+import org.milkdev.org.milkdev.dreamplayer.diagnostics.LogStorage
 
 @Composable
 fun LogConsole(

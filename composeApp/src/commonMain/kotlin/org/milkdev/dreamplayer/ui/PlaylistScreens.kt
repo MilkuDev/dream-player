@@ -47,8 +47,8 @@ import org.milkdev.dreamplayer.generated.resources.Res
 import org.milkdev.dreamplayer.generated.resources.arrow_back
 import org.milkdev.dreamplayer.generated.resources.music_note
 import org.milkdev.dreamplayer.generated.resources.playlist_add
-import org.milkdev.dreamplayer.library.LibraryTrack
-import org.milkdev.dreamplayer.playback.PlayerUiState
+import org.milkdev.org.milkdev.dreamplayer.library.LibraryTrack
+import org.milkdev.org.milkdev.dreamplayer.playback.PlayerUiState
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

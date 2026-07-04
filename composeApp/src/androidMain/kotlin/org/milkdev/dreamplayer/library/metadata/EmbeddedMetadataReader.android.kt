@@ -2,7 +2,12 @@ package org.milkdev.dreamplayer.library.metadata
 
 import androidx.core.net.toUri
 import org.milkdev.dreamplayer.app.applicationContext
-import org.milkdev.dreamplayer.library.RawTrackData
+import org.milkdev.org.milkdev.dreamplayer.library.RawTrackData
+import org.milkdev.org.milkdev.dreamplayer.library.metadata.EmbeddedMetadata
+import org.milkdev.org.milkdev.dreamplayer.library.metadata.firstMusicBrainzId
+import org.milkdev.org.milkdev.dreamplayer.library.metadata.parseEmbeddedYear
+import org.milkdev.org.milkdev.dreamplayer.library.metadata.splitEmbeddedGenres
+import org.milkdev.org.milkdev.dreamplayer.library.metadata.splitMusicBrainzIds
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
@@ -19,7 +24,9 @@ actual object EmbeddedMetadataReader {
         val parsed = when {
             tagBytes.startsWith(FLAC_SIGNATURE) -> tagBytes.parseFlacEmbeddedMetadata()
             tagBytes.startsWithId3() -> tagBytes.parseMp3EmbeddedMetadata()
-            else -> EmbeddedMetadata(tagFingerprint = tagBytes.take(MAX_FALLBACK_HASH_BYTES).toByteArray().sha256())
+            else -> EmbeddedMetadata(
+                tagFingerprint = tagBytes.take(MAX_FALLBACK_HASH_BYTES).toByteArray().sha256()
+            )
         }
 
         return parsed.copy(
@@ -62,7 +69,9 @@ private fun ByteArray.parseMp3EmbeddedMetadata(): EmbeddedMetadata {
     val version = this[3].unsigned()
     val tagSize = synchsafeInt(6)
     if (version !in SUPPORTED_ID3_VERSIONS || tagSize <= 0 || ID3_HEADER_SIZE + tagSize > size) {
-        return EmbeddedMetadata(tagFingerprint = take(MAX_FALLBACK_HASH_BYTES).toByteArray().sha256())
+        return EmbeddedMetadata(
+            tagFingerprint = take(MAX_FALLBACK_HASH_BYTES).toByteArray().sha256()
+        )
     }
     val tag = copyOfRange(ID3_HEADER_SIZE, ID3_HEADER_SIZE + tagSize)
     return tag.parseId3TextFrames(version).toEmbeddedMetadata(tag.sha256())
@@ -151,9 +160,24 @@ private fun Map<String, String>.toEmbeddedMetadata(fingerprint: String): Embedde
     return EmbeddedMetadata(
         recordingMbid = firstMusicBrainzId(valueFor("musicbrainz_trackid", "musicbrainz track id")),
         releaseMbid = firstMusicBrainzId(valueFor("musicbrainz_albumid", "musicbrainz album id")),
-        releaseGroupMbid = firstMusicBrainzId(valueFor("musicbrainz_releasegroupid", "musicbrainz release group id")),
-        artistMbids = splitMusicBrainzIds(valueFor("musicbrainz_artistid", "musicbrainz artist id")),
-        albumArtistMbids = splitMusicBrainzIds(valueFor("musicbrainz_albumartistid", "musicbrainz album artist id")),
+        releaseGroupMbid = firstMusicBrainzId(
+            valueFor(
+                "musicbrainz_releasegroupid",
+                "musicbrainz release group id"
+            )
+        ),
+        artistMbids = splitMusicBrainzIds(
+            valueFor(
+                "musicbrainz_artistid",
+                "musicbrainz artist id"
+            )
+        ),
+        albumArtistMbids = splitMusicBrainzIds(
+            valueFor(
+                "musicbrainz_albumartistid",
+                "musicbrainz album artist id"
+            )
+        ),
         year = parseEmbeddedYear(valueFor("date", "year", "tdrc", "tyer")),
         genres = splitEmbeddedGenres(valueFor("genre", "tcon")),
         tagFingerprint = fingerprint,

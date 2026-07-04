@@ -6,7 +6,7 @@ import android.util.Base64
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import kotlinx.coroutines.flow.first
-import org.milkdev.dreamplayer.database.settingsDataStore
+import org.milkdev.org.milkdev.dreamplayer.database.settingsDataStore
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
