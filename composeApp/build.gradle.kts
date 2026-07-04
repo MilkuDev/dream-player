@@ -47,7 +47,7 @@ kotlin {
             implementation(libs.room.ktx)
             implementation(libs.ktor.client.android)
         }
-        iosMain.dependencies {
+        appleMain.dependencies {
             implementation("io.ktor:ktor-client-darwin:${libs.versions.ktor.get()}")
         }
         commonMain.dependencies {

@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.IO
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import org.milkdev.dreamplayer.database.DailyPlaylistGenerationMode
@@ -549,14 +550,14 @@ class PlayerViewModel {
             MusicLibrarySource.getTracksByAlbum(album.id).collect { tracks ->
                 setNavigationState(
                     navigationState.navigateTo(AppDestination.LibraryCollectionDetails),
-                ) {
-                    it.copy(
+                ) { state ->
+                    state.copy(
                         selectedPlaylist = null,
                         selectedPlaylistTracks = emptyList(),
                         selectedLibraryCollection = LibraryCollectionDetailsUiModel(
                             type = LibraryCollectionType.ALBUM,
                             title = album.title,
-                            subtitle = "${album.artistName}${album.year?.let { " • $it" } ?: ""}",
+                            subtitle = "${album.artistName}${album.year?.let { year -> " • $year" } ?: ""}",
                             artworkUri = album.artworkUri,
                             tracks = tracks,
                         ),

@@ -181,10 +181,7 @@ private fun fuzzyScore(
         }
     )
 
-    val distance = levenshteinDistance(query, target, allowedDistance)
-    if (distance == null) {
-        return null
-    }
+    val distance = levenshteinDistance(query, target, allowedDistance) ?: return null
 
     val maxLength = max(query.length, target.length).coerceAtLeast(1)
     val similarity = 1.0 - distance.toDouble() / maxLength.toDouble()
