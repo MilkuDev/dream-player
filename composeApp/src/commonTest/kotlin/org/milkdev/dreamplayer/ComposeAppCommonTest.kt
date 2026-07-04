@@ -1,8 +1,5 @@
 package org.milkdev.dreamplayer
 
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import org.milkdev.dreamplayer.extensions.ai.AiPlaylistCandidate
 import org.milkdev.dreamplayer.extensions.ai.AiPlaylistModels
 import org.milkdev.dreamplayer.extensions.ai.AiPlaylistPromptPresets
@@ -14,35 +11,27 @@ import org.milkdev.dreamplayer.extensions.ai.buildGeminiPlaylistRequestBody
 import org.milkdev.dreamplayer.extensions.ai.formatAiPlaylistCandidates
 import org.milkdev.dreamplayer.extensions.ai.resolveRecommendedAiPlaylistIds
 import org.milkdev.dreamplayer.extensions.ai.resolveRecommendedAiPlaylistSelection
-import kotlin.random.Random
-import kotlin.test.assertContentEquals
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertNotNull
-import kotlin.test.assertNull
-import org.milkdev.dreamplayer.library.TrackSearchMode
+import org.milkdev.dreamplayer.features.PlatformFeatureProvider
+import org.milkdev.dreamplayer.library.LibraryTrack
 import org.milkdev.dreamplayer.library.PlaylistRepository
 import org.milkdev.dreamplayer.library.ShuffleAnchor
+import org.milkdev.dreamplayer.library.TrackSearchMode
 import org.milkdev.dreamplayer.library.filterTracksByQuery
-import org.milkdev.dreamplayer.library.LibraryTrack
-import org.milkdev.dreamplayer.features.PlatformFeatureProvider
 import org.milkdev.dreamplayer.model.AppDestination
 import org.milkdev.dreamplayer.model.AppNavigationState
-import org.milkdev.dreamplayer.model.withNavigationTarget
-import org.milkdev.dreamplayer.model.withNavigationState
 import org.milkdev.dreamplayer.model.movedQueueItemOrNull
-import org.milkdev.dreamplayer.model.withPlayerOpened
+import org.milkdev.dreamplayer.model.withNavigationState
+import org.milkdev.dreamplayer.model.withNavigationTarget
 import org.milkdev.dreamplayer.model.withPlayerClosed
+import org.milkdev.dreamplayer.model.withPlayerOpened
 import org.milkdev.dreamplayer.model.withQueueSheetOpened
 import org.milkdev.dreamplayer.model.withRepeatToggled
 import org.milkdev.dreamplayer.model.withShuffleDisabled
 import org.milkdev.dreamplayer.model.withShuffleEnabled
-import org.milkdev.dreamplayer.playback.PlaybackRepeatMode
 import org.milkdev.dreamplayer.playback.PlaybackQueueController
-import org.milkdev.dreamplayer.playback.PlayerUiState
+import org.milkdev.dreamplayer.playback.PlaybackRepeatMode
 import org.milkdev.dreamplayer.playback.PlayerPresentation
+import org.milkdev.dreamplayer.playback.PlayerUiState
 import org.milkdev.dreamplayer.playback.Screen
 
 class ComposeAppCommonTest {
@@ -753,7 +742,7 @@ class ComposeAppCommonTest {
     @Test
     fun recommendedAiPlaylistIdsFallbackToLocalOrderWhenResponseIsEmpty() {
         val ids =
-           resolveRecommendedAiPlaylistIds(
+            resolveRecommendedAiPlaylistIds(
                 candidateIds = listOf(1, 2, 3),
                 recommendedIds = emptyList(),
                 limit = 2,
