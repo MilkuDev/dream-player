@@ -395,6 +395,7 @@ fun <T : LibrarySortOrder> SortButtonGroupRow(
     onSortSelected: (T) -> Unit,
     modifier: Modifier = Modifier,
     entries: List<T>,
+    iconProvider: ((T) -> DrawableResource)? = null
 ) {
     val scrollState = rememberScrollState()
 
@@ -424,12 +425,14 @@ fun <T : LibrarySortOrder> SortButtonGroupRow(
                     onCheckedChange = { checked ->
                         if (checked) onSortSelected(sortOrder)
                     },
-                    icon = {
-                        Icon(
-                            painter = painterResource(sortOrder.icon),
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
+                    icon = iconProvider?.let { provider ->
+                        {
+                            Icon(
+                                painter = painterResource(provider(sortOrder)),
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
                     },
                     label = sortOrder.label
                 )

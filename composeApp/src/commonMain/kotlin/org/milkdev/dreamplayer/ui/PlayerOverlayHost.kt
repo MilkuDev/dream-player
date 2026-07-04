@@ -51,7 +51,10 @@ fun PlayerOverlayHost(
     onClearQueueClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    if (state.playerPresentation != PlayerPresentation.Fullscreen || state.currentTrack == null) {
+
+    val currentTrack = state.currentTrack
+
+    if (state.playerPresentation != PlayerPresentation.Fullscreen || currentTrack == null) {
         return
     }
 
@@ -149,7 +152,7 @@ fun PlayerOverlayHost(
         if (state.isQueueSheetVisible) {
             QueueSheetOverlay(
                 tracks = state.playbackQueue,
-                currentTrackId = state.currentTrack.id, // todo
+                currentTrackId = currentTrack.id,
                 currentQueueIndex = state.currentQueueIndex,
                 onNavigateBack = onNavigateBack,
                 onTrackClick = onQueueTrackClick,

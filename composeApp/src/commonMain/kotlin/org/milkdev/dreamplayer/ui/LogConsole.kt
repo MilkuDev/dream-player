@@ -14,13 +14,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import org.milkdev.dreamplayer.diagnostics.LogStorage
 
 @Composable
@@ -33,7 +34,8 @@ fun LogConsole(
     emptyText: String = "Пока пусто",
 ) {
     val logs by logsFlow.collectAsState()
-    val clipboardManager = LocalClipboardManager.current // todo
+    val clipboard = LocalClipboard.current
+    val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     LaunchedEffect(logs.size) {
         if (logs.isNotEmpty()) {
@@ -61,12 +63,15 @@ fun LogConsole(
             )
             Row {
                 TextButton(onClick = onClear) {
-                    Text("Очистить", color = Color.Gray, fontSize = 12.sp)
+                    Text("Очистить", color = Color.Red, fontSize = 12.sp)
                 }
                 TextButton(
                     onClick = {
                         val allLogs = logs.joinToString("\n")
-                        clipboardManager.setText(AnnotatedString(allLogs))
+                        val clipEntry = buildTextClipEntry(allLogs)
+                        scope.launch {
+                            clipboard.setClipEntry(clipEntry)
+                        }
                     }
                 ) {
                     Text("Копировать", color = Color(0xFF01FFE1), fontSize = 12.sp)
