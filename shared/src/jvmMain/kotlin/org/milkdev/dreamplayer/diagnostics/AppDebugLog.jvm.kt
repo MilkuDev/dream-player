@@ -2,14 +2,11 @@
 
 package org.milkdev.dreamplayer.diagnostics
 
-import android.util.Log
 import org.milkdev.dreamplayer.diagnostics.LogStorage
 
 actual object AppDebugLog {
-    private const val TAG = "DreamPlayer"
-
     actual fun log(event: String) {
-        Log.d(TAG, event)
+        println("DreamPlayer: $event")
         LogStorage.addLog(event)
     }
 }
