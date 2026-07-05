@@ -15,6 +15,7 @@ import org.milkdev.dreamplayer.library.LibrarySearchState
 import org.milkdev.dreamplayer.library.TrackListItem
 import org.milkdev.dreamplayer.library.UserPlaylist
 import org.milkdev.dreamplayer.model.AlbumSortOrder
+import org.milkdev.dreamplayer.model.LibraryCategory
 import org.milkdev.dreamplayer.model.LibraryCollectionDetailsUiModel
 import org.milkdev.dreamplayer.model.TrackSortOrder
 
@@ -44,6 +45,7 @@ data class PlayerUiState(
     val selectedPlaylistTracks: List<LibraryTrack> = emptyList(),
     val selectedLibraryCollection: LibraryCollectionDetailsUiModel? = null,
     val playbackQueue: List<LibraryTrack> = emptyList(),
+    val currentCategory: LibraryCategory = LibraryCategory.TRACKS,
     val currentQueueIndex: Int = -1,
     val recentlyPlayedTracks: List<LibraryTrack> = emptyList(),
     val homeGenreTitle: String = "",

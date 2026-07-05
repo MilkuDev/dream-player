@@ -329,6 +329,25 @@ class PlayerViewModel {
         }
     }
 
+    fun onLibraryIntent(intent: LibraryIntent) {
+        when (intent) {
+            is LibraryIntent.SelectCategory -> _state.update { it.copy(currentCategory = intent.category) }
+            is LibraryIntent.ChangeTrackSort -> setTrackSortOrder(intent.order)
+            is LibraryIntent.ChangeAlbumSort -> setAlbumSortOrder(intent.order)
+            is LibraryIntent.LoadNextTracks -> loadNextTracksPage()
+            is LibraryIntent.LoadNextAlbums -> loadNextAlbumsPage()
+            is LibraryIntent.LoadNextArtists -> loadNextArtistsPage()
+            is LibraryIntent.LoadNextGenres -> loadNextGenresPage()
+
+            is LibraryIntent.OpenAlbum -> openAlbumDetails(intent.album)
+            is LibraryIntent.OpenArtist -> openArtistDetails(intent.artist)
+            is LibraryIntent.OpenGenre -> openGenreDetails(intent.genre)
+            is LibraryIntent.OpenPlaylist -> openPlaylist(intent.playlist)
+            is LibraryIntent.CreatePlaylist -> createPlaylist(intent.name)
+            is LibraryIntent.PlayTrack -> playFromLibrary(intent.track.id)
+        }
+    }
+
     fun setTrackSortOrder(order: TrackSortOrder) {
         if (_state.value.trackSortOrder == order) return
         _state.update { it.copy(trackSortOrder = order) }
@@ -829,8 +848,6 @@ class PlayerViewModel {
                     playbackProgressMs = 0L,
                 )
             }
-
-            // 4. Запускаем плеер
             applyQueueSnapshot(snapshot, PlaybackSnapshotApplyMode.Play)
         }
     }
