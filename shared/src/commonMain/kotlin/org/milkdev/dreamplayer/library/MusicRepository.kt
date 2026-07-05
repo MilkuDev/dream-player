@@ -221,6 +221,17 @@ class MusicRepository(
         return albumMap
     }
 
+    suspend fun getAllTrackIds(order: TrackSortOrder): LongArray = withContext(Dispatchers.IO) {
+        val idList = when (order) {
+            TrackSortOrder.TRACK_NAME -> musicDao.getAllTrackIdsSortedByTitle()
+            TrackSortOrder.ARTIST -> musicDao.getAllTrackIdsSortedByArtist()
+            TrackSortOrder.ALBUM -> musicDao.getAllTrackIdsSortedByAlbum()
+            TrackSortOrder.YEAR -> musicDao.getAllTrackIdsSortedByYear()
+            TrackSortOrder.GENRE -> musicDao.getAllTrackIdsSortedByGenre()
+        }
+        idList.toLongArray()
+    }
+
     suspend fun addTrackToHistory(trackId: Long) = withContext(Dispatchers.IO) {
         val now = currentTimeMillis()
         musicDao.insertHistoryEntry(

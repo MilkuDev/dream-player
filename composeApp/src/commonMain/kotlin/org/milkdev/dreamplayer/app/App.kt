@@ -172,7 +172,7 @@ fun App(
                             )
                             Screen.Library -> LibraryScreen(
                                 state = state,
-                                onTrackClick = playerViewModel::playFromVisibleTracks,
+                                onTrackClick = { _, track -> playerViewModel.playFromLibrary(track.id) },
                                 onAlbumItemClick = playerViewModel::openAlbumDetails,
                                 onArtistClick = playerViewModel::openArtistDetails,
                                 onGenreClick = playerViewModel::openGenreDetails,

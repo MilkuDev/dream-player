@@ -57,6 +57,31 @@ interface MusicDao {
 """)
     suspend fun getRandomGenreWithTracks(): GenreIdResult?
 
+    @Query("SELECT t.id FROM library_tracks t WHERE t.isPresent = 1 ORDER BY t.titleSortKey ASC, t.id ASC")
+    suspend fun getAllTrackIdsSortedByTitle(): List<Long>
+
+    @Query("SELECT t.id FROM library_tracks t LEFT JOIN albums a ON t.albumId = a.id WHERE t.isPresent = 1 ORDER BY t.artistSortKey ASC, t.titleSortKey ASC, t.id ASC")
+    suspend fun getAllTrackIdsSortedByArtist(): List<Long>
+
+    @Query("SELECT t.id FROM library_tracks t LEFT JOIN albums a ON t.albumId = a.id WHERE t.isPresent = 1 ORDER BY lower(trim(t.albumName)) ASC, t.titleSortKey ASC, t.id ASC")
+    suspend fun getAllTrackIdsSortedByAlbum(): List<Long>
+
+    @Query("""
+        SELECT t.id FROM library_tracks t 
+        LEFT JOIN albums a ON t.albumId = a.id 
+        WHERE t.isPresent = 1 
+        ORDER BY CASE WHEN a.year IS NULL THEN 1 ELSE 0 END ASC, a.year ASC, t.titleSortKey ASC, t.id ASC
+    """)
+    suspend fun getAllTrackIdsSortedByYear(): List<Long>
+
+    @Query("""
+        SELECT t.id FROM library_tracks t 
+        LEFT JOIN albums a ON t.albumId = a.id 
+        WHERE t.isPresent = 1 
+        ORDER BY CASE WHEN a.genre IS NULL OR a.genre = '' THEN 1 ELSE 0 END ASC, a.genre COLLATE NOCASE ASC, t.titleSortKey ASC, t.id ASC
+    """)
+    suspend fun getAllTrackIdsSortedByGenre(): List<Long>
+
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertArtists(artists: List<ArtistEntity>)
 

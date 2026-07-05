@@ -54,6 +54,7 @@ import org.milkdev.dreamplayer.library.SettingsRepository
 import org.milkdev.dreamplayer.library.ShuffleAnchor
 import org.milkdev.dreamplayer.library.UserPlaylist
 import org.milkdev.dreamplayer.library.dailyPlaylistRepository
+
 import org.milkdev.dreamplayer.playback.AudioPlayer
 import org.milkdev.dreamplayer.playback.DailyPlaylistUiState
 import org.milkdev.dreamplayer.playback.PlaybackQueueController
@@ -807,6 +808,31 @@ class PlayerViewModel {
             tracks = preparedQueue.tracks,
             startIndex = preparedQueue.startIndex,
         )
+    }
+
+    fun playFromLibrary(trackId: Long) {
+        storeScope.launch {
+            val order = _state.value.trackSortOrder
+            val allIds = MusicLibrarySource.getAllTrackIds(order)
+            val startIndex = allIds.indexOf(trackId).coerceAtLeast(0)
+
+            val snapshot = playbackQueueController.setQueue(
+                trackIds = allIds,
+                startIndex = startIndex,
+            )
+            _state.update {
+                it.copy(
+                    playbackQueue = emptyList(),
+                    currentQueueIndex = snapshot.currentIndex,
+                    queueVersion = snapshot.queueVersion,
+                    isShuffleEnabled = false,
+                    playbackProgressMs = 0L,
+                )
+            }
+
+            // 4. Запускаем плеер
+            applyQueueSnapshot(snapshot, PlaybackSnapshotApplyMode.Play)
+        }
     }
 
     fun playFromVisibleTracks(tracks: List<LibraryTrack>, track: LibraryTrack) {

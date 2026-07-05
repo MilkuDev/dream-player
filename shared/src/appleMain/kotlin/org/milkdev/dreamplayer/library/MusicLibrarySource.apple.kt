@@ -57,6 +57,10 @@ actual object MusicLibrarySource {
         TODO("Not yet implemented")
     }
 
+    actual suspend fun getAllTrackIds(order: TrackSortOrder): LongArray {
+        TODO("Not yet implemented 'return repository.getAllTrackIds(order)'")
+    }
+
     actual fun getTracksByAlbum(albumId: Long): Flow<List<LibraryTrack>> {
         TODO("Not yet implemented")
     }
