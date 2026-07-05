@@ -1,190 +1,245 @@
 KotlinMPDreamPlayer/
-├── androidApp/ - точка входа в android приложение
+├── androidApp/ - точка входа в Android-приложение (вызывает общий UI)
+│   ├── release/ - релизные сборки и файлы оптимизации производительности
 │   ├── src/
 │   │   └── main/
 │   │       ├── kotlin/
 │   │       │   └── org.milkdev.dreamplayer/
-│   │       │       ├── DreamPlayerApplication.kt
-│   │       │       └── MainActivity.kt
-│   │       ├── res/
-│   │       └── AndroidManifest.xml
-│   └── build.gradle.kts
-├── composeApp/ - точка входа в общий модуль логики
+│   │       │       ├── DreamPlayerApplication.kt - базовый класс приложения, инициализация Android-компонентов
+│   │       │       └── MainActivity.kt - главная Activity приложения, точка монтирования Compose Multiplatform UI
+│   │       ├── res/ - ресурсы приложения (адаптивные и монохромные иконки лаунчера, сплеш-скрины)
+│   │       └── AndroidManifest.xml - манифест приложения Android (разрешения, конфигурация компонентов)
+│   └── build.gradle.kts - конфигурация сборки Android-модуля
+├── composeApp/ - общий модуль пользовательского интерфейса (UI на Jetpack Compose)
+│   ├── schemas/ - сохранённые JSON-схемы базы данных Room для контроля и валидации миграций UI-слоя
+│   │   └── org.milkdev.dreamplayer.database.AppDatabase/
+│   │       └── 1.json ... 8.json
 │   ├── src/
-│   │   ├── androidMain/ - модуль Android логики
+│   │   ├── androidMain/ - платформенный UI-слой для Android
 │   │   │   ├── kotlin/
 │   │   │   │   └── org.milkdev.dreamplayer/
 │   │   │   │       ├── app/
-│   │   │   │       │   ├── ApplicationContext.kt
-│   │   │   │       │   └── Theme.android.kt
-│   │   │   │       ├── database/
-│   │   │   │       │   ├── DataStore.android.kt
-│   │   │   │       │   └── Database.android.kt
-│   │   │   │       ├── diagnostics/
-│   │   │   │       │   └── AppDebugLog.android.kt
-│   │   │   │       ├── extensions/
-│   │   │   │       │   ├── ai/
-│   │   │   │       │   │   └── AiPlaylistSecretStore.android.kt
-│   │   │   │       │   ├── data/
-│   │   │   │       │   │   └── AlbumArtFileStore.android.kt
-│   │   │   │       │   └── secrets/
-│   │   │   │       │       ├── AndroidEncryptedSecretStore.kt
-│   │   │   │       │       └── LastFmSecretStore.android.kt
-│   │   │   │       ├── features/
-│   │   │   │       │   └── PlatformFeatureProvider.android.kt
-│   │   │   │       ├── library/
-│   │   │   │       │   ├── metadata/
-│   │   │   │       │   │   └── EmbeddedMetadataReader.android.kt
-│   │   │   │       │   ├── MediaStoreScanner.kt
-│   │   │   │       │   └── MusicLibrarySource.android.kt
-│   │   │   │       ├── playback/
-│   │   │   │       │   ├── AudioPlayer.android.kt
-│   │   │   │       │   └── PlaybackService.kt
-│   │   │   │       ├── ui/
-│   │   │   │       │   ├── PlatformBackHandler.android.kt
-│   │   │   │       │   └── TrackImage.android.kt
-│   │   │   │       └── Platform.android.kt
-│   │   │   └── res/
-│   │   │       ├── drawable/
-│   │   │       └── values/
-│   │   ├── commonMain/ - модуль общей логики
-│   │   │   ├── composeResources/ - общие ресурсы
-│   │   │   │   ├── drawable/
-│   │   │   │   └── font/
+│   │   │   │       │   └── Theme.android.kt - Android-специфичные настройки темы (например, поддержка Dynamic Colors)
+│   │   │   │       └── ui/ - платформенные хелперы для интерфейса Android
+│   │   │   │           ├── ClipboardHelper.android.kt - реализация работы с системным буфером обмена Android
+│   │   │   │           ├── PlatformBackHandler.android.kt - перехват и обработка системного жеста/кнопки "Назад"
+│   │   │   │           └── TrackImage.android.kt - эффективное отображение и кэширование обложек треков на Android
+│   │   │   └── res/ - ресурсы для Android-версии UI плеера (иконки, темы оформления)
+│   │   ├── commonMain/ - кроссплатформенный UI-слой приложения (основной интерфейс)
+│   │   │   ├── composeResources/ - общие мультиплатформенные ресурсы приложения
+│   │   │   │   ├── drawable/ - системные и кастомные векторные иконки интерфейса плеера (управление, очереди, списки)
+│   │   │   │   └── font/ - файлы шрифтов приложения (семейства Google Sans Rounded и SN Pro)
 │   │   │   └── kotlin/
 │   │   │       └── org.milkdev.dreamplayer/
-│   │   │           ├── app/ 
-│   │   │           │   ├── App.kt - независимая от платформы точка входа в приложение
-│   │   │           │   ├── Color.kt - цвета темы
-│   │   │           │   └── Theme.kt - тема приложения включая шрифты
-│   │   │           ├── database/ - база данных
-│   │   │           │   ├── dao/ - методы для работы с БД
-│   │   │           │   │   ├── MusicDao.kt
-│   │   │           │   │   └── PlaylistDao.kt
-│   │   │           │   ├── entities/ - сущности БД
-│   │   │           │   │   ├── AlbumEntity.kt
-│   │   │           │   │   ├── ArtistEntity.kt
-│   │   │           │   │   ├── GenreEntities.kt
-│   │   │           │   │   ├── MetadataEntities.kt
-│   │   │           │   │   ├── PlaylistEntity.kt
-│   │   │           │   │   ├── PlaylistTrackCrossRef.kt
-│   │   │           │   │   ├── SyncAuditEntity.kt
-│   │   │           │   │   └── TrackEntity.kt
-│   │   │           │   ├── AppDatabase.kt
-│   │   │           │   ├── DataStore.kt
-│   │   │           │   ├── Database.kt 
-│   │   │           │   └── SystemPlaylists.kt
-│   │   │           ├── diagnostics/ - модуль диагностики
-│   │   │           │   ├── AppDebugLog.kt
-│   │   │           │   ├── LogStorage.kt
-│   │   │           │   └── NetworkTraceLog.kt
-│   │   │           ├── extensions/ - модули расширенных функций
-│   │   │           │   ├── ai/ - модуль ИИ генерации плейлиста дня
-│   │   │           │   │   ├── AiPlaylistFormatter.kt
-│   │   │           │   │   ├── AiPlaylistModels.kt
-│   │   │           │   │   ├── AiPlaylistRecommender.kt
-│   │   │           │   │   ├── AiPlaylistResponseParser.kt
-│   │   │           │   │   ├── AiPlaylistSecretStore.kt
-│   │   │           │   │   └── AiPlaylistSelection.kt
-│   │   │           │   ├── data/ - обработка полученных извне данных
-│   │   │           │   │   ├── AlbumArtFileStore.kt
-│   │   │           │   │   ├── CoverArtRepository.kt
-│   │   │           │   │   ├── LastFmDto.kt
-│   │   │           │   │   ├── LastFmRepository.kt
-│   │   │           │   │   └── MusicBrainzMetadataRepository.kt
-│   │   │           │   ├── network/ - сетевой модуль
-│   │   │           │   │   ├── AiNetworkDiagnosticsService.kt
-│   │   │           │   │   ├── AiPromptService.kt
-│   │   │           │   │   ├── HttpClient.kt
-│   │   │           │   │   ├── LastFmNetworkDiagnosticsService.kt
-│   │   │           │   │   ├── LastfmService.kt
-│   │   │           │   │   ├── NetworkDiagnostics.kt
-│   │   │           │   │   └── RequestRateLimiter.kt
-│   │   │           │   ├── secrets/ - зашифрованное хранилище API ключей
-│   │   │           │       └── LastFmSecretStore.kt
-│   │   │           ├── features/ - платформенные функции
-│   │   │           │   └── PlatformFeatureProvider.kt
-│   │   │           ├── library/ - библиотека треков
-│   │   │           │   ├── metadata/ - работа с метаданными треков 
-│   │   │           │   │   ├── EmbeddedMetadata.kt
-│   │   │           │   │   └── MetadataSyncService.kt
-│   │   │           │   ├── DailyPlaylistRepository.kt
-│   │   │           │   ├── DailyPlaylistState.kt
-│   │   │           │   ├── LibraryModels.kt
-│   │   │           │   ├── MusicLibrarySource.kt
-│   │   │           │   ├── MusicRepository.kt
-│   │   │           │   ├── MusicScanner.kt
-│   │   │           │   ├── PlaylistRepository.kt
-│   │   │           │   ├── SettingsRepository.kt
-│   │   │           │   └── TrackSearch.kt
-│   │   │           ├── model/ - модуль связи логики с интерфейсом
-│   │   │           │   ├── LibraryUiModels.kt
-│   │   │           │   ├── PlayerViewModel.kt
-│   │   │           │   └── TrackSortOrder.kt
-│   │   │           ├── playback/ - функции проигрывания
-│   │   │           │   ├── AudioPlayer.kt
-│   │   │           │   ├── AudioPlayerState.kt
-│   │   │           │   ├── PlaybackModels.kt
-│   │   │           │   ├── PlaybackQueueController.kt
-│   │   │           │   ├── PlaybackResolver.kt
-│   │   │           │   └── PlayerUiState.kt
-│   │   │           ├── ui/ - интерфейс
-│   │   │           │   ├── AboutDialog.kt
-│   │   │           │   ├── Components.kt
-│   │   │           │   ├── DisableClicks.kt
-│   │   │           │   ├── HomeScreen.kt
-│   │   │           │   ├── LazyArtworkLoading.kt
-│   │   │           │   ├── LibraryCollectionDetailsScreen.kt
-│   │   │           │   ├── LibraryScreen.kt
-│   │   │           │   ├── LibrarySearchScreen.kt
-│   │   │           │   ├── LogConsole.kt
-│   │   │           │   ├── PlatformBackHandler.kt
-│   │   │           │   ├── PlayerOverlayHost.kt
-│   │   │           │   ├── PlayerScreen.kt
-│   │   │           │   ├── PlayingQueueScreen.kt
-│   │   │           │   ├── PlaylistScreens.kt
-│   │   │           │   └── SettingsScreen.kt
-│   │   │           └── Platform.kt
-│   │   ├── commonTest/ - тесты
+│   │   │           ├── app/ - базовые настройки инициализации UI и темы
+│   │   │           │   ├── App.kt - корневой Composable-экран, точка входа в логику отображения интерфейса
+│   │   │           │   ├── Color.kt - цветовая палитра дизайн-системы приложения
+│   │   │           │   └── Theme.kt - общая Material 3 тема оформления приложения
+│   │   │           └── ui/ - общие экраны и переиспользуемые UI-компоненты плеера
+│   │   │               ├── AboutDialog.kt - диалоговое окно "О приложении"
+│   │   │               ├── ClipboardHelper.kt - expected-интерфейс для кроссплатформенной работы с буфером обмена
+│   │   │               ├── Components.kt - кастомные базовые UI-элементы плеера (кнопки, элементы списков)
+│   │   │               ├── DisableClicks.kt - утилиты для контроля и блокировки кликабельности элементов UI
+│   │   │               ├── HomeScreen.kt - главный экран приложения (рекомендации, последние треки, быстрый доступ)
+│   │   │               ├── LazyArtworkLoading.kt - оптимизированная отложенная загрузка обложек в списках треков
+│   │   │               ├── LibraryCollectionDetailsScreen.kt - экран содержимого конкретного альбома, артиста или жанра
+│   │   │               ├── LibraryScreen.kt - экран локальной медиатеки пользователя (разделы треков, альбомов)
+│   │   │               ├── LibrarySearchScreen.kt - экран поиска по медиатеке в реальном времени
+│   │   │               ├── LogConsole.kt - оверлей встроенной консоли логов для отладки внутри интерфейса
+│   │   │               ├── PlatformBackHandler.kt - expected-компонент перехвата системной навигации "Назад"
+│   │   │               ├── PlayerOverlayHost.kt - контейнер для мини-плеера, отображаемого поверх текущих экранов
+│   │   │               ├── PlayerScreen.kt - основной экран развёрнутого плеера (контроллеры, прогресс, обложка)
+│   │   │               ├── PlayingQueueScreen.kt - экран просмотра и редактирования текущей очереди воспроизведения
+│   │   │               ├── PlaylistScreens.kt - экраны создания, редактирования и просмотра списков воспроизведения
+│   │   │               └── SettingsScreen.kt - экран настроек конфигурации плеера, внешнего вида и интеграций
+│   │   └── jvmMain/ - платформенный UI-слой для Desktop (JVM)
+│   │       └── kotlin/
+│   │           └── org.milkdev.dreamplayer/
+│   │               ├── app/
+│   │               │   └── Theme.jvm.kt - Desktop-специфичные настройки темы оформления
+│   │               └── ui/ - платформенные UI-хелперы для ПК
+│   │                   ├── ClipboardHelper.jvm.kt - реализация работы с буфером обмена ОС на десктопе
+│   │                   ├── PlatformBackHandler.jvm.kt - обработка навигации "Назад" (заглушка/обработчик для десктопа)
+│   │                   └── TrackImage.jvm.kt - отображение обложек треков на десктопной платформе
+├── desktopApp/ - модуль запуска десктопной версии приложения (Windows/Linux/macOS через JVM)
+│   ├── src/
+│   │   └── main/
+│   │       └── kotlin/
+│   │           └── org.milkdev.dreamplayer/
+│   │               └── Main.kt - точка входа (метод main) для Desktop-версии, инициализация и запуск окна приложения
+├── docs/ - техническая документация и слепки структуры проекта
+│   ├── images/ - графические ассеты и диаграммы для файлов документации
+│   ├── architecture-snapshot.md - описание архитектурных решений, кастомных ViewModel и слоёв приложения
+│   └── directory-tree.txt - сохранённый текстовый вид структуры директорий проекта
+├── iosApp/ - точка входа и конфигурация для сборки iOS-приложения (в планах)
+│   └── todo.txt
+├── macosApp/ - точка входа и конфигурация для нативного macOS-приложения (в планах)
+│   └── todo.txt
+├── shared/ - модуль общей бизнес-логики (ядро приложения: Core, Data, Domain, Playback движок)
+│   ├── schemas/ - JSON-схемы базы данных Room для контроля версий и генерации миграций ядра логики
+│   │   └── org.milkdev.dreamplayer.database.AppDatabase/
+│   │       └── 8.json
+│   ├── src/
+│   │   ├── androidMain/ - платформенная реализация бизнес-логики под Android
+│   │   │   └── kotlin/
+│   │   │       └── org.milkdev.dreamplayer/
+│   │   │           ├── app/
+│   │   │           │   └── ApplicationContext.kt - хранение и безопасное предоставление Android Context библиотекам
+│   │   │           ├── database/ - создание платформенных инстансов Room и DataStore для Android
+│   │   │           │   ├── DataStore.android.kt
+│   │   │           │   └── Database.android.kt
+│   │   │           ├── diagnostics/
+│   │   │           │   └── AppDebugLog.android.kt - логирование событий с использованием Android Logcat и записью в файлы
+│   │   │           ├── extensions/
+│   │   │           │   ├── ai/
+│   │   │           │   │   └── AiPlaylistSecretStore.android.kt - безопасное зашифрованное хранение AI токенов на Android
+│   │   │           │   ├── data/
+│   │   │           │   │   └── AlbumArtFileStore.android.kt - кэширование файлов обложек на диске средствами Android ОС
+│   │   │           │   └── secrets/
+│   │   │           │       ├── AndroidEncryptedSecretStore.kt - обёртка над Android Keystore для безопасного шифрования
+│   │   │           │       └── LastFmSecretStore.android.kt - безопасное хранение сессионных ключей Last.fm
+│   │   │           ├── features/
+│   │   │           │   └── PlatformFeatureProvider.android.kt - поставщик флагов доступности специфичных Android-фич системы
+│   │   │           ├── library/ - сканирование и обработка локальной медиатеки устройства Android
+│   │   │           │   ├── metadata/
+│   │   │           │   │   └── EmbeddedMetadataReader.android.kt - чтение встроенных тегов аудиофайлов средствами Android API
+│   │   │           │   ├── MediaStoreScanner.kt - интеграция с системным хранилищем Media3/MediaStore Android
+│   │   │           │   └── MusicLibrarySource.android.kt - источник музыкальных данных, специфичный для Android
+│   │   │           ├── playback/ - управление аудио-движком на уровне ОС Android
+│   │   │           │   ├── AudioPlayer.android.kt - низкоуровневая реализация плеера на базе Android ExoPlayer / Media3
+│   │   │           │   └── PlaybackService.kt - фоновая Android Service для непрерывного воспроизведения и интеграции с уведомлениями
+│   │   │           └── Platform.android.kt - получение системных параметров Android (версия SDK, модель устройства)
+│   │   ├── appleMain/ - платформенная реализация бизнес-логики под Apple-экосистему (iOS/macOS)
+│   │   │   └── kotlin/
+│   │   │       └── org.milkdev.dreamplayer/
+│   │   │           ├── database/ - инициализация Room и DataStore в директориях Apple Sandbox
+│   │   │           │   ├── AppDatabase.apple.kt
+│   │   │           │   ├── DataStore.apple.kt
+│   │   │           │   └── Database.apple.kt
+│   │   │           ├── diagnostics/
+│   │   │           │   └── AppDebugLog.apple.kt - логирование через os_log и запись во внутренние файлы Apple-приложения
+│   │   │           ├── extensions/
+│   │   │           │   ├── ai/
+│   │   │           │   │   └── AiPlaylistSecretStore.apple.kt - безопасное хранение API токенов ИИ в системном Keychain
+│   │   │           │   ├── data/
+│   │   │           │   │   └── AlbumArtFileStore.apple.kt - сохранение и чтение файлов обложек в кэш-директории Apple
+│   │   │           │   └── secrets/
+│   │   │           │       └── LastFmSecretStore.apple.kt - безопасное хранение ключей Last.fm в Keychain
+│   │   │           ├── features/
+│   │   │           │   └── PlatformFeatureProvider.apple.kt - управление доступными возможностями для iOS/macOS систем
+│   │   │           ├── library/
+│   │   │           │   ├── metadata/
+│   │   │           │   │   └── EmbeddedMetadata.apple.kt - чтение тегов (ID3/MP4) средствами фреймворка AVFoundation
+│   │   │           │   └── MusicLibrarySource.apple.kt - интеграция с файлами Sandbox или системной медиатекой Apple Music
+│   │   │           ├── playback/
+│   │   │           │   └── AudioPlayer.apple.kt - реализация аудио-плеера на базе AVQueuePlayer / AVPlayer под Apple платформы
+│   │   │           └── Platform.apple.kt - получение системных параметров Apple-устройств
+│   │   ├── commonMain/ - общая, полностью независимая от платформ бизнес-логика (ядро приложения)
+│   │   │   └── kotlin/
+│   │   │       └── org.milkdev.dreamplayer/
+│   │   │           ├── database/ - общая конфигурация базы данных, интерфейсов доступа (DAO) и таблиц
+│   │   │           │   ├── dao/ - интерфейсы доступа к таблицам базы данных (Data Access Objects)
+│   │   │           │   │   ├── MusicDao.kt - запросы для работы с треками, альбомами, артистами и жанрами
+│   │   │           │   │   └── PlaylistDao.kt - запросы для управления пользовательскими и системными плейлистами
+│   │   │           │   ├── entities/ - сущности (схемы таблиц) базы данных Room
+│   │   │           │   │   ├── AlbumEntity.kt - таблица музыкальных альбомов
+│   │   │           │   │   ├── ArtistEntity.kt - table исполнителей/групп
+│   │   │           │   │   ├── GenreEntities.kt - таблицы музыкальных жанров и связей
+│   │   │           │   │   ├── MetadataEntities.kt - расширенные метаданные аудиофайлов
+│   │   │           │   │   ├── PlaybackHistoryEntity.kt - история воспроизведения треков для формирования статистики
+│   │   │           │   │   ├── PlaylistEntity.kt - таблица заголовков и метаданных плейлистов
+│   │   │           │   │   ├── PlaylistTrackCrossRef.kt - таблица связи "многие-ко-многим" для треков внутри плейлистов
+│   │   │           │   │   ├── SyncAuditEntity.kt - логи и аудит синхронизации локальной медиатеки с файлами
+│   │   │           │   │   └── TrackEntity.kt - основная таблица музыкальных треков (пути к файлам, длительность, флаги)
+│   │   │           │   ├── AppDatabase.kt - корневой абстрактный класс конфигурации RoomDatabase
+│   │   │           │   ├── DataStore.kt - общие настройки Preferences DataStore для хранения флагов и простых конфигураций
+│   │   │           │   ├── Database.kt - точка конфигурации общих драйверов и билдеров базы данных
+│   │   │           │   └── SystemPlaylists.kt - управление встроенными плейлистами ("Избранное", "История", "Часто прослушиваемые")
+│   │   │           ├── diagnostics/ - подсистема трассировки, мониторинга и отладки проекта
+│   │   │           │   ├── AppDebugLog.kt - кроссплатформенный интерфейс для логирования событий ядра приложения
+│   │   │           │   ├── LogStorage.kt - логика персистентного хранения логов на диске для последующего анализа ошибок
+│   │   │           │   └── NetworkTraceLog.kt - перехватчик (Interceptor) и логер сетевой активности Ktor HTTP-клиента
+│   │   │           ├── extensions/ - модули расширенных внешних интеграций
+│   │   │           │   ├── ai/ - модуль генерации умного "плейлиста дня" на основе искусственного интеллекта
+│   │   │           │   │   ├── AiPlaylistFormatter.kt - подготовка истории прослушиваний и форматирование промптов для ИИ
+│   │   │           │   │   ├── AiPlaylistModels.kt - data-классы структур данных сетевых запросов и ответов ИИ-моделей
+│   │   │           │   │   ├── AiPlaylistRecommender.kt - координатор процесса подбора рекомендаций на базе ИИ
+│   │   │           │   │   ├── AiPlaylistResponseParser.kt - парсинг и валидация ответов ИИ (структурированный JSON/текст)
+│   │   │           │   │   ├── AiPlaylistSecretStore.kt - кроссплатформенная абстракция безопасного хранения API-ключей для ИИ
+│   │   │           │   │   └── AiPlaylistSelection.kt - алгоритм сопоставления рекомендаций ИИ с локальной базой треков
+│   │   │           │   ├── data/ - репозитории внешних музыкальных сервисов и метаданных
+│   │   │           │   │   ├── AlbumArtFileStore.kt - кроссплатформенное управление файлами обложек треков на диске
+│   │   │           │   │   ├── CoverArtRepository.kt - загрузчик обложек альбомов из внешних веб-ресурсов
+│   │   │           │   │   ├── LastFmDto.kt - сетевые модели данных (Data Transfer Objects) для API Last.fm
+│   │   │           │   │   ├── LastFmRepository.kt - бизнес-логика скробблинга, отметки треков "love" и получения инфо из Last.fm
+│   │   │           │   │   └── MusicBrainzMetadataRepository.kt - обогащение локальных тегов аудио через базу данных MusicBrainz
+│   │   │           │   ├── network/ - сетевой слой приложения на базе Ktor HttpClient
+│   │   │           │   │   ├── AiNetworkDiagnosticsService.kt - проверка доступности и пинг эндпоинтов ИИ-провайдеров
+│   │   │           │   │   ├── AiPromptService.kt - выполнение прямых сетевых запросов к языковым моделям
+│   │   │           │   │   ├── HttpClient.kt - фабрика конфигурации Ktor клиента (таймауты, сериализация, логи)
+│   │   │           │   │   ├── LastFmNetworkDiagnosticsService.kt - диагностика стабильности соединения с серверами Last.fm
+│   │   │           │   │   ├── LastfmService.kt - выполнение низкоуровневых API-запросов к сервису Last.fm
+│   │   │           │   │   ├── NetworkDiagnostics.kt - общие утилиты для проверки сетевого статуса и трассировки путей
+│   │   │           │   │   └── RequestRateLimiter.kt - ограничение частоты запросов к внешним API во избежание блокировок
+│   │   │           │   └── secrets/
+│   │   │           │       └── LastFmSecretStore.kt - абстракция для безопасного хранения ключей сессий Last.fm
+│   │   │           ├── features/ - управление доступностью платформенных функций
+│   │   │           │   └── PlatformFeatureProvider.kt - expected-интерфейс динамического определения фич текущей ОС
+│   │   │           ├── library/ - управление музыкальной библиотекой (Data + Domain слои медиатеки)
+│   │   │           │   ├── metadata/ - синхронизация файловых метаданных с базой данных приложения
+│   │   │           │   │   ├── EmbeddedMetadata.kt - expected-интерфейс извлечения встроенных тегов файлов
+│   │   │           │   │   └── MetadataSyncService.kt - сервис обновления записей в БД при обнаружении изменений в файлах
+│   │   │           │   ├── DailyPlaylistRepository.kt - управление состоянием и генерацией умного ежедневного плейлиста
+│   │   │           │   ├── DailyPlaylistState.kt - модели состояний процесса генерации ежедневных подборок
+│   │   │           │   ├── LibraryModels.kt - чистые доменные модели сущностей медиатеки для использования в логике
+│   │   │           │   ├── MusicLibrarySource.kt - общая абстракция источника музыкальных директорий
+│   │   │           │   ├── MusicRepository.kt - центральный репозиторий управления музыкой (треки, альбомы, исполнители)
+│   │   │           │   ├── MusicScanner.kt - оркестратор и планировщик сканирования папок на наличие новых аудиофайлов
+│   │   │           │   ├── PlaylistRepository.kt - репозиторий для создания, удаления и ручного изменения плейлистов
+│   │   │           │   ├── SettingsRepository.kt - управление пользовательскими настройками плеера через DataStore
+│   │   │           │   └── TrackSearch.kt - подсистема локального поиска и умной фильтрации треков медиатеки
+│   │   │           ├── model/ - архитектурная прослойка связи State-логики и UI (Кастомная архитектура)
+│   │   │           │   ├── LibraryUiModels.kt - UI-ориентированные обёртки и стейт-модели музыкальных сущностей
+│   │   │           │   ├── PlayerViewModel.kt - кастомный мультиплатформенный презентер/ViewModel управления плеером
+│   │   │           │   └── TrackSortOrder.kt - перечисления правил сортировки треков в списках (алфавит, дата, индекс)
+│   │   │           ├── playback/ - архитектура управления воспроизведением и очередью аудио-движка
+│   │   │           │   ├── AudioPlayer.kt - expected-класс плеера, координирующий воспроизведение на уровне конкретной ОС
+│   │   │           │   ├── AudioPlayerState.kt - внутренний стейт аудио-движка (позиция, буферизация, ошибки плеера)
+│   │   │           │   ├── PlaybackModels.kt - модели режимов воспроизведения (повтор трека, повтор списка, перемешивание)
+│   │   │           │   ├── PlaybackQueueController.kt - логика управления очередью (добавление, удаление, перетаскивание треков)
+│   │   │           │   ├── PlaybackResolver.kt - разрешение путей файлов, проверка локальной доступности трека перед стартом
+│   │   │           │   └── PlayerUiState.kt - итоговый атомарный UI-стейт воспроизведения для подписки из Compose-интерфейса
+│   │   │           └── Platform.kt - ожидаемый (expected) интерфейс получения метаданных о текущей операционной системе
+│   │   ├── commonTest/ - общие юнит-тесты бизнес-логики приложения
 │   │   │   └── kotlin/
 │   │   │       └── org.milkdev.dreamplayer/
 │   │   │           ├── ComposeAppCommonTest.kt
 │   │   │           └── NetworkDiagnosticsTest.kt
-│   │   └── jvmMain/ - модуль desktop логики
+│   │   └── jvmMain/ - платформенная реализация логики под Desktop (JVM)
 │   │       └── kotlin/
-│   │           ├── app/
-│   │           │   └── Theme.jvm.kt
 │   │           └── org.milkdev.dreamplayer/
 │   │               ├── audio/
-│   │               │   └── DesktopAudioFiles.kt
-│   │               ├── database/
+│   │               │   └── DesktopAudioFiles.kt - низкоуровневое чтение аудиофайлов с диска ПК средствами Java NIO/IO
+│   │               ├── database/ - инициализация Room и DataStore в системных папках пользователя ПК (например, AppData)
 │   │               │   ├── ApplicationDirectory.kt
 │   │               │   ├── DataStore.jvm.kt
 │   │               │   └── Database.jvm.kt
 │   │               ├── diagnostics/
-│   │               │   └── AppDebugLog.jvm.kt
+│   │               │   └── AppDebugLog.jvm.kt - вывод логов десктопа в стандартный системный поток и запись в файлы логирования
 │   │               ├── extensions/
 │   │               │   ├── ai/
-│   │               │   │   └── AiPlaylistSecretStore.jvm.kt
+│   │               │   │   └── AiPlaylistSecretStore.jvm.kt - локальное хранение ИИ-токенов в файлах конфигурации ПК
 │   │               │   ├── data/
-│   │               │   │   └── AlbumArtFileStore.jvm.kt
+│   │               │   │   └── AlbumArtFileStore.jvm.kt - сохранение и чтение кэшированных обложек в файловой системе десктопа
 │   │               │   └── secrets/
-│   │               │       └── LastFmSecretStore.jvm.kt
+│   │               │       └── LastFmSecretStore.jvm.kt - безопасное хранение ключей сессий Last.fm на ПК
 │   │               ├── features/
-│   │               │   └── PlatformFeatureProvider.jvm.kt
+│   │               │   └── PlatformFeatureProvider.jvm.kt - конфигурация фич, доступных на десктопной платформе
 │   │               ├── library/
 │   │               │   ├── metadata/
-│   │               │   │   └── EmbeddedMetadataReader.jvm.kt
-│   │               │   ├── JvmMusicScanner.kt
-│   │               │   └── MusicLibrarySource.jvm.kt
+│   │               │   │   └── EmbeddedMetadataReader.jvm.kt - парсинг тегов аудио (mp3, flac) через десктопные библиотеки
+│   │               │   ├── JvmMusicScanner.kt - рекурсивный обход папок файловой системы ПК для поиска музыкальных файлов
+│   │               │   └── MusicLibrarySource.jvm.kt - источник музыкальных файлов для ПК-версии приложения
 │   │               ├── playback/
-│   │               │   └── AudioPlayer.jvm.kt
-│   │               ├── ui/
-│   │               │   ├── PlatformBackHandler.jvm.kt
-│   │               │   └── TrackImage.jvm.kt
-│   │               └── Platform.jvm.kt
-│   └── build.gradle.kts
-├── desktopApp/ - модуль входа в desktop
-│   ├── src/main/kotlin/org.milkdev.dreamplayer/
-│   │   └── Main.kt
-│   └── build.gradle.kts
+│   │               │   └── AudioPlayer.jvm.kt - реализация аудио-плеера под JVM (на базе JavaFX Media, VLCJ или внешних библиотек)
+│   │               └── Platform.jvm.kt - определение параметров текущей ОС (Windows, Linux, macOS) десктопа
