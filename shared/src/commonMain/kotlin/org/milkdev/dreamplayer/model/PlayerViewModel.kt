@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.joinAll
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import org.milkdev.dreamplayer.database.DailyPlaylistGenerationMode
@@ -368,15 +369,16 @@ class PlayerViewModel {
         }
     }
 
-    fun loadNextTracksPage(reset: Boolean = false) {
+    fun loadNextTracksPage(reset: Boolean = false): Job? {
         val currentState = _state.value
-        if (currentState.isTrackPageLoading) return
-        if (!reset && !currentState.hasMoreTracks) return
+        if (currentState.isTrackPageLoading) return null
+        if (!reset && !currentState.hasMoreTracks) return null
 
         if (reset) {
             trackPageCursor = null
         }
-        storeScope.launch {
+
+        return storeScope.launch {
             _state.update {
                 it.copy(
                     isTrackPageLoading = true,
@@ -385,11 +387,15 @@ class PlayerViewModel {
                 )
             }
             val order = _state.value.trackSortOrder
-            val page = MusicLibrarySource.getTrackPage(
-                order = order,
-                cursor = trackPageCursor,
-                limit = PageSize,
-            )
+
+            val page = withContext(Dispatchers.IO) {
+                MusicLibrarySource.getTrackPage(
+                    order = order,
+                    cursor = trackPageCursor,
+                    limit = PageSize,
+                )
+            }
+
             trackPageCursor = page.nextCursor
             _state.update {
                 it.copy(
@@ -401,15 +407,16 @@ class PlayerViewModel {
         }
     }
 
-    fun loadNextAlbumsPage(reset: Boolean = false) {
+    fun loadNextAlbumsPage(reset: Boolean = false): Job? {
         val currentState = _state.value
-        if (currentState.isAlbumPageLoading) return
-        if (!reset && !currentState.hasMoreAlbums) return
+        if (currentState.isAlbumPageLoading) return null
+        if (!reset && !currentState.hasMoreAlbums) return null
 
         if (reset) {
             albumPageCursor = null
         }
-        storeScope.launch {
+
+        return storeScope.launch {
             _state.update {
                 it.copy(
                     isAlbumPageLoading = true,
@@ -417,11 +424,16 @@ class PlayerViewModel {
                     hasMoreAlbums = if (reset) true else it.hasMoreAlbums,
                 )
             }
-            val page = MusicLibrarySource.getAlbumPage(
-                order = _state.value.albumSortOrder,
-                cursor = albumPageCursor,
-                limit = PageSize,
-            )
+            val order = _state.value.albumSortOrder
+
+            val page = withContext(Dispatchers.IO) {
+                MusicLibrarySource.getAlbumPage(
+                    order = order,
+                    cursor = albumPageCursor,
+                    limit = PageSize,
+                )
+            }
+
             albumPageCursor = page.nextCursor
             _state.update {
                 it.copy(
@@ -433,15 +445,16 @@ class PlayerViewModel {
         }
     }
 
-    fun loadNextArtistsPage(reset: Boolean = false) {
+    fun loadNextArtistsPage(reset: Boolean = false): Job? {
         val currentState = _state.value
-        if (currentState.isArtistPageLoading) return
-        if (!reset && !currentState.hasMoreArtists) return
+        if (currentState.isArtistPageLoading) return null
+        if (!reset && !currentState.hasMoreArtists) return null
 
         if (reset) {
             artistPageCursor = null
         }
-        storeScope.launch {
+
+        return storeScope.launch {
             _state.update {
                 it.copy(
                     isArtistPageLoading = true,
@@ -449,10 +462,14 @@ class PlayerViewModel {
                     hasMoreArtists = if (reset) true else it.hasMoreArtists,
                 )
             }
-            val page = MusicLibrarySource.getArtistPage(
-                cursor = artistPageCursor,
-                limit = PageSize,
-            )
+
+            val page = withContext(Dispatchers.IO) {
+                MusicLibrarySource.getArtistPage(
+                    cursor = artistPageCursor,
+                    limit = PageSize,
+                )
+            }
+
             artistPageCursor = page.nextCursor
             _state.update {
                 it.copy(
@@ -464,15 +481,16 @@ class PlayerViewModel {
         }
     }
 
-    fun loadNextGenresPage(reset: Boolean = false) {
+    fun loadNextGenresPage(reset: Boolean = false): Job? {
         val currentState = _state.value
-        if (currentState.isGenrePageLoading) return
-        if (!reset && !currentState.hasMoreGenres) return
+        if (currentState.isGenrePageLoading) return null
+        if (!reset && !currentState.hasMoreGenres) return null
 
         if (reset) {
             genrePageCursor = null
         }
-        storeScope.launch {
+
+        return storeScope.launch {
             _state.update {
                 it.copy(
                     isGenrePageLoading = true,
@@ -480,10 +498,13 @@ class PlayerViewModel {
                     hasMoreGenres = if (reset) true else it.hasMoreGenres,
                 )
             }
-            val page = MusicLibrarySource.getGenrePage(
-                cursor = genrePageCursor,
-                limit = PageSize,
-            )
+            val page = withContext(Dispatchers.IO) {
+                MusicLibrarySource.getGenrePage(
+                    cursor = genrePageCursor,
+                    limit = PageSize,
+                )
+            }
+
             genrePageCursor = page.nextCursor
             _state.update {
                 it.copy(
@@ -495,12 +516,62 @@ class PlayerViewModel {
         }
     }
 
+    fun loadPlaylistPickerPage(reset: Boolean = false): Job? {
+        val currentState = _state.value
+        if (currentState.isPlaylistPickerPageLoading) return null
+        if (!reset && !currentState.hasMorePlaylistPickerTracks) return null
+
+        if (reset) {
+            playlistPickerPageCursor = null
+        }
+
+        return storeScope.launch {
+            _state.update {
+                it.copy(
+                    isPlaylistPickerPageLoading = true,
+                    playlistPickerTrackItems = if (reset) emptyList() else it.playlistPickerTrackItems,
+                    hasMorePlaylistPickerTracks = if (reset) true else it.hasMorePlaylistPickerTracks,
+                )
+            }
+
+            val order = TrackSortOrder.TRACK_NAME
+
+            val page = withContext(Dispatchers.IO) {
+                MusicLibrarySource.getTrackPage(
+                    order = order,
+                    cursor = playlistPickerPageCursor,
+                    limit = PageSize,
+                )
+            }
+
+            playlistPickerPageCursor = page.nextCursor
+            _state.update {
+                it.copy(
+                    playlistPickerTrackItems = if (reset) page.items else it.playlistPickerTrackItems + page.items,
+                    hasMorePlaylistPickerTracks = page.hasMore,
+                    isPlaylistPickerPageLoading = false,
+                )
+            }
+        }
+    }
+
     private fun reloadLibraryPages() {
-        loadNextTracksPage(reset = true)
-        loadNextAlbumsPage(reset = true)
-        loadNextArtistsPage(reset = true)
-        loadNextGenresPage(reset = true)
-        loadPlaylistPickerPage(reset = true)
+        storeScope.launch {
+
+            _state.update { it.copy(isLoading = true) }
+
+            val jobs: List<Job> = listOfNotNull(
+                loadNextTracksPage(reset = true),
+                loadNextAlbumsPage(reset = true),
+                loadNextArtistsPage(reset = true),
+                loadNextGenresPage(reset = true),
+                loadPlaylistPickerPage(reset = true)
+            )
+
+            jobs.joinAll()
+
+            _state.update { it.copy(isLoading = false) }
+        }
     }
 
     private fun refreshLibrarySummary() {
@@ -764,38 +835,6 @@ class PlayerViewModel {
                         )
                     }
                 }
-        }
-    }
-
-    fun loadPlaylistPickerPage(reset: Boolean = false) {
-        val currentState = _state.value
-        if (currentState.isPlaylistPickerPageLoading) return
-        if (!reset && !currentState.hasMorePlaylistPickerTracks) return
-
-        if (reset) {
-            playlistPickerPageCursor = null
-        }
-        storeScope.launch {
-            _state.update {
-                it.copy(
-                    isPlaylistPickerPageLoading = true,
-                    playlistPickerTrackItems = if (reset) emptyList() else it.playlistPickerTrackItems,
-                    hasMorePlaylistPickerTracks = if (reset) true else it.hasMorePlaylistPickerTracks,
-                )
-            }
-            val page = MusicLibrarySource.getTrackPage(
-                order = TrackSortOrder.TRACK_NAME,
-                cursor = playlistPickerPageCursor,
-                limit = PageSize,
-            )
-            playlistPickerPageCursor = page.nextCursor
-            _state.update {
-                it.copy(
-                    playlistPickerTrackItems = if (reset) page.items else it.playlistPickerTrackItems + page.items,
-                    hasMorePlaylistPickerTracks = page.hasMore,
-                    isPlaylistPickerPageLoading = false,
-                )
-            }
         }
     }
 
