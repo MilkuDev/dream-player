@@ -18,13 +18,13 @@ internal fun rememberLazyArtworkLoadingEnabled(
     listState: LazyListState,
     idleDelayMillis: Long = 0L,
 ): Boolean {
-    var canLoadArtwork by remember(listState) { mutableStateOf(false) }
+    var canLoadArtwork by remember(listState) { mutableStateOf(true) }
 
     LaunchedEffect(listState, idleDelayMillis) {
         snapshotFlow { listState.isScrollInProgress }
             .collectLatest { isScrolling ->
                 if (isScrolling) {
-                    canLoadArtwork = false
+                    canLoadArtwork = true
                 } else {
                     delay(idleDelayMillis.milliseconds)
                     canLoadArtwork = true
