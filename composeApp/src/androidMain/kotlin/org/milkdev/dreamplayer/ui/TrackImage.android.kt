@@ -15,6 +15,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.first
 import org.jetbrains.compose.resources.DrawableResource
 import org.jetbrains.compose.resources.painterResource
 import androidx.core.net.toUri
@@ -28,7 +29,7 @@ import kotlin.math.max
 import kotlin.math.roundToInt
 import androidx.core.graphics.scale
 
-private val imageDecodeSemaphore = Semaphore(permits = 1)
+private val imageDecodeSemaphore = Semaphore(permits = 4)
 private val imageCacheSizeKb = ((Runtime.getRuntime().maxMemory() / 1024) / 8)
     .coerceIn(4 * 1024L, 32 * 1024L)
     .toInt()
@@ -59,7 +60,10 @@ actual fun TrackImage(
     val cachedImageBitmap = remember(cacheKey) {
         cacheKey?.let(::getCachedBitmap)?.asImageBitmap()
     }
-    val imageBitmap by produceState<ImageBitmap?>(cachedImageBitmap, cacheKey, loadUncached) {
+
+    val loadUncachedState = rememberUpdatedState(loadUncached)
+
+    val imageBitmap by produceState<ImageBitmap?>(cachedImageBitmap, cacheKey) {
 
         if (uri == null || cacheKey == null) {
             value = null
@@ -76,10 +80,7 @@ actual fun TrackImage(
             return@produceState
         }
 
-        if (!loadUncached) {
-            value = null
-            return@produceState
-        }
+        snapshotFlow { loadUncachedState.value }.first { isUncachedAllowed -> isUncachedAllowed }
 
         if (isFailedImage(cacheKey)) {
             value = null

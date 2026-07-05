@@ -121,28 +121,35 @@ fun LibraryScreen(
         }
     }
 
-    val shouldLoadMoreTracks by remember {
+    val trackCount = state.trackListItems.size
+    val shouldLoadMoreTracks by remember(trackCount) {
         derivedStateOf {
             val lastVisible = lazyListState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            lastVisible >= state.trackListItems.lastIndex - 8
+            lastVisible >= trackCount - 8
         }
     }
-    val shouldLoadMoreAlbums by remember {
+
+    val albumCount = state.albumListItems.size
+    val shouldLoadMoreAlbums by remember(albumCount) {
         derivedStateOf {
             val lastVisible = lazyGridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            lastVisible >= state.albumListItems.lastIndex - 8
+            lastVisible >= albumCount - 8
         }
     }
-    val shouldLoadMoreArtists by remember {
+
+    val artistCount = state.artistListItems.size
+    val shouldLoadMoreArtists by remember(artistCount) {
         derivedStateOf {
             val lastVisible = lazyGridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            lastVisible >= state.artistListItems.lastIndex - 8
+            lastVisible >= artistCount - 8
         }
     }
-    val shouldLoadMoreGenres by remember {
+
+    val genreCount = state.genreListItems.size
+    val shouldLoadMoreGenres by remember(genreCount) {
         derivedStateOf {
             val lastVisible = lazyGridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            lastVisible >= state.genreListItems.lastIndex - 8
+            lastVisible >= genreCount - 8
         }
     }
 
