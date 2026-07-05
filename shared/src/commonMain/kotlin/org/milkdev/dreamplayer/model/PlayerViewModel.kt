@@ -1,5 +1,6 @@
 package org.milkdev.dreamplayer.model
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -54,7 +55,6 @@ import org.milkdev.dreamplayer.library.SettingsRepository
 import org.milkdev.dreamplayer.library.ShuffleAnchor
 import org.milkdev.dreamplayer.library.UserPlaylist
 import org.milkdev.dreamplayer.library.dailyPlaylistRepository
-
 import org.milkdev.dreamplayer.playback.AudioPlayer
 import org.milkdev.dreamplayer.playback.DailyPlaylistUiState
 import org.milkdev.dreamplayer.playback.PlaybackQueueController
@@ -928,10 +928,12 @@ class PlayerViewModel {
     }
 
     fun toggleRepeat() {
-        val nextState = _state.value.withRepeatToggled()
-        _state.value = nextState
-        AudioPlayer.setRepeatMode(nextState.repeatMode)
-        AppDebugLog.log("repeat_toggle mode=${nextState.repeatMode}")
+        _state.update { currentState ->
+            val nextState = currentState.withRepeatToggled()
+            AudioPlayer.setRepeatMode(nextState.repeatMode)
+            nextState
+        }
+        AppDebugLog.log("repeat_toggle mode=${_state.value.repeatMode}")
     }
 
     fun moveTrack(fromIndex: Int, toIndex: Int) {
@@ -1070,7 +1072,7 @@ class PlayerViewModel {
                     ?.takeIf { it.isNotBlank() }
                     ?: return@withContext "API-ключ не задан"
 
-                runCatching {
+                suspendRunCatching {
                     aiNetworkDiagnosticsService.testApiKey(provider, apiKey)
                 }.fold(
                     onSuccess = { it.toDisplayText() },
@@ -1101,7 +1103,7 @@ class PlayerViewModel {
                 val recommender = AiPlaylistRecommenderRegistry.get(provider.id)
                     ?: return@withContext "Провайдер не найден"
 
-                runCatching {
+                suspendRunCatching {
                     recommender.recommend(
                         AiPlaylistRequest(
                             apiKey = apiKey,
@@ -1161,7 +1163,7 @@ class PlayerViewModel {
                 it.copy(aiPlaylistApiTestStatus = "Генерирую плейлист дня...")
             }
 
-            val status = runCatching {
+            val status = suspendRunCatching {
                 val currentEpochDay = Clock.System.now()
                     .toLocalDateTime(TimeZone.currentSystemDefault())
                     .date
@@ -1206,7 +1208,7 @@ class PlayerViewModel {
                     ?.takeIf { it.isNotBlank() }
                     ?: return@withContext "API-ключ не задан"
 
-                runCatching {
+                suspendRunCatching {
                     aiPromptService.sendPrompt(
                         provider = provider,
                         apiKey = apiKey,
@@ -1560,7 +1562,7 @@ class PlayerViewModel {
 
         checkedDailyPlaylistEpochDay = currentEpochDay
         dailyPlaylistGenerationJob = storeScope.launch {
-            runCatching {
+            suspendRunCatching {
                 dailyPlaylistRepository.checkAndGenerateDailyPlaylist(currentEpochDay)
             }
         }
@@ -1853,6 +1855,16 @@ internal fun List<LibraryTrack>.movedQueueItemOrNull(
         val track = removeAt(fromIndex)
         add(toIndex, track)
     }.toList()
+}
+
+inline fun <R> suspendRunCatching(block: () -> R): Result<R> {
+    return try {
+        Result.success(block())
+    } catch (c: CancellationException) {
+        throw c
+    } catch (e: Throwable) {
+        Result.failure(e)
+    }
 }
 
 private fun PlaybackSnapshot.currentItem(): ResolvedPlaybackItem? {
