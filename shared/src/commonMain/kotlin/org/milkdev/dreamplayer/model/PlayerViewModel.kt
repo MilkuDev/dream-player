@@ -10,7 +10,6 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -899,7 +898,6 @@ class PlayerViewModel {
             )
             _state.update {
                 it.copy(
-                    playbackQueue = emptyList(),
                     currentQueueIndex = snapshot.currentIndex,
                     queueVersion = snapshot.queueVersion,
                     isShuffleEnabled = false,
@@ -942,9 +940,15 @@ class PlayerViewModel {
         if (AudioPlayer.state.value.currentTrackId == null) {
             val snapshot = playbackQueueController.snapshot()
             if (snapshot.trackIds.isNotEmpty()) {
-                applyQueueSnapshot(snapshot, PlaybackSnapshotApplyMode.Play)
+                val restoredPosition = _state.value.playbackProgressMs
+                applyQueueSnapshot(
+                    snapshot,
+                    PlaybackSnapshotApplyMode.Play,
+                    startPositionMs = restoredPosition,
+                )
                 return
             }
+            return
         }
         AudioPlayer.resume()
         _state.update { it.copy(isPlaying = true) }
@@ -1436,6 +1440,7 @@ class PlayerViewModel {
         mode: PlaybackSnapshotApplyMode,
         moveRequest: QueueMoveRequest? = null,
         shuffleApplyMode: ShuffleApplyMode = ShuffleApplyMode.QueueVisible,
+        startPositionMs: Long = 0L,
     ) {
         val isUpdate = mode == PlaybackSnapshotApplyMode.Update
 
@@ -1470,7 +1475,11 @@ class PlayerViewModel {
                     currentTrack = currentTrack,
                     isPlaying = if (mode == PlaybackSnapshotApplyMode.Play) true else currentState.isPlaying,
                     totalDurationMs = currentTrack?.durationMs ?: currentState.totalDurationMs,
-                    playbackProgressMs = if (mode == PlaybackSnapshotApplyMode.Play) 0L else currentState.playbackProgressMs,
+                    playbackProgressMs = if (mode == PlaybackSnapshotApplyMode.Play) {
+                        startPositionMs.coerceIn(0L, (currentTrack?.durationMs ?: 0L).coerceAtLeast(0L))
+                    } else {
+                        currentState.playbackProgressMs
+                    },
                     playbackQueue = resolvedQueue,
                     currentQueueIndex = currentQueueSnapshot.currentIndex,
                     queueVersion = currentQueueSnapshot.queueVersion,
@@ -1483,7 +1492,7 @@ class PlayerViewModel {
             }
 
             when (mode) {
-                PlaybackSnapshotApplyMode.Play -> AudioPlayer.play(playbackSnapshot)
+                PlaybackSnapshotApplyMode.Play -> AudioPlayer.play(playbackSnapshot, startPositionMs)
                 PlaybackSnapshotApplyMode.Update -> AudioPlayer.updateQueue(playbackSnapshot)
                 PlaybackSnapshotApplyMode.Move -> {
                     val request = moveRequest ?: return@launch
@@ -1527,9 +1536,11 @@ class PlayerViewModel {
         val snapshot = playbackQueueController.snapshot()
         if (snapshot.trackIds.isEmpty()) return
         val currentState = _state.value
-        val positionMs = AudioPlayer.getCurrentPosition().coerceAtLeast(
-            currentState.playbackProgressMs,
-        )
+        val positionMs = if (AudioPlayer.state.value.currentTrackId != null) {
+            AudioPlayer.getCurrentPosition()
+        } else {
+            currentState.playbackProgressMs
+        }
         SettingsRepository.savePlaybackState(
             SettingsRepository.SavedPlaybackState(
                 queueTrackIds = playbackQueueController.originalTrackIdsSnapshot().toList(),

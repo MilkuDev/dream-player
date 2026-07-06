@@ -72,13 +72,13 @@ actual object AudioPlayer {
         }
     }
 
-    actual fun play(snapshot: PlaybackSnapshot) {
+    actual fun play(snapshot: PlaybackSnapshot, startPositionMs: Long) {
         setSnapshot(snapshot)
         withController { mediaController ->
             replaceControllerQueue(
                 mediaController = mediaController,
                 snapshot = snapshot,
-                startPositionMs = 0L,
+                startPositionMs = startPositionMs,
                 playWhenReady = true,
                 reason = "play_snapshot",
             )

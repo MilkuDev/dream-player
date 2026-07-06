@@ -35,7 +35,7 @@ actual object AudioPlayer {
 
     actual val state: StateFlow<AudioPlayerState> = _state.asStateFlow()
 
-    actual fun play(snapshot: PlaybackSnapshot) {
+    actual fun play(snapshot: PlaybackSnapshot, startPositionMs: Long) {
         if (snapshot.items.isEmpty()) {
             stop()
             return
@@ -43,7 +43,7 @@ actual object AudioPlayer {
 
         synchronized(lock) {
             setSnapshotLocked(snapshot)
-            playCurrentTrackLocked()
+            playCurrentTrackLocked(startPositionMs)
         }
     }
 
@@ -144,7 +144,7 @@ actual object AudioPlayer {
         }
     }
 
-    private fun playCurrentTrackLocked() {
+    private fun playCurrentTrackLocked(startPositionMs: Long = 0L) {
         val item = queue.getOrNull(currentIndex) ?: return
         if (item.ref.availability != TrackAvailability.AVAILABLE || item.ref.uri.isBlank()) return
 
@@ -163,6 +163,9 @@ actual object AudioPlayer {
         )
         playbackSession?.close()
         playbackSession = nextSession
+        if (startPositionMs > 0L) {
+            nextSession.seekTo(startPositionMs)
+        }
         val queueSnapshot = playbackSnapshot?.queue
             ?.copy(
                 currentIndex = currentIndex,

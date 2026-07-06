@@ -6,7 +6,7 @@ package org.milkdev.dreamplayer.playback
  * Правила:
  * - Длительность < 5_000ms — не сохранять (пустой список).
  * - Длительность 5_000–30_000ms — 3 точки: 3s от начала, середина, за 3s до конца.
- * - Длительность ≥ 30_000ms — 7 точек: 5s от начала, 5 равноудалённых, за 5s до конца.
+ * - Длительность ≥ 30_000ms — 6 точек: 5s от начала, 4 равноудалённых, за 5s до конца.
  */
 object SavePointCalculator {
 
@@ -38,8 +38,8 @@ object SavePointCalculator {
         val end = durationMs - LONG_TRACK_SAVE_MARGIN_MS
         if (start >= end) return emptyList()
 
-        // 7 точек: start + 5 равноудалённых + end
-        val step = (end - start) / 6
-        return (0..6).map { i -> start + step * i }.distinct().sorted()
+        // 6 точек: start + 4 равноудалённых + end
+        val step = (end - start) / 5
+        return (0..5).map { i -> start + step * i }.distinct().sorted()
     }
 }
