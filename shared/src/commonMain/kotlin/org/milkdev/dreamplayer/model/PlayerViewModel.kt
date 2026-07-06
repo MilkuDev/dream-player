@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -66,7 +67,9 @@ import org.milkdev.dreamplayer.playback.PlaybackSnapshot
 import org.milkdev.dreamplayer.playback.PlayerPresentation
 import org.milkdev.dreamplayer.playback.PlayerUiState
 import org.milkdev.dreamplayer.playback.ResolvedPlaybackItem
+import org.milkdev.dreamplayer.playback.SavePointCalculator
 import org.milkdev.dreamplayer.playback.Screen
+import org.milkdev.dreamplayer.playback.TrackAvailability
 import org.milkdev.dreamplayer.playback.matchesQueue
 import org.milkdev.dreamplayer.playback.movedCopy
 import org.milkdev.dreamplayer.playback.shuffledWithCurrentFirst
@@ -97,6 +100,12 @@ class PlayerViewModel {
     private var genrePageCursor: LibraryPageCursor? = null
     private var searchPageCursor: LibraryPageCursor? = null
     private var playlistPickerPageCursor: LibraryPageCursor? = null
+
+    // Save-point tracking for playback progress persistence
+    private var currentSavePoints: List<Long> = emptyList()
+    private var hitSavePointIndices: MutableSet<Int> = mutableSetOf()
+    private var restoreAttempted = false
+    private var lastSavedTrackId: Long? = null
 
     init {
         _state.update {
@@ -157,6 +166,15 @@ class PlayerViewModel {
                 }
 
                 val currentQueueSnapshot = playbackQueueController.snapshot()
+
+                // Track change detection — save and reset save-points
+                val previousTrackId = _state.value.currentTrack?.id
+                val newTrackId = currentQueueSnapshot.currentTrackId
+                val trackChanged = previousTrackId != null && newTrackId != null && previousTrackId != newTrackId
+                if (trackChanged) {
+                    savePlaybackState()
+                    resetSavePoints(newTrackId, _state.value.totalDurationMs)
+                }
 
                 val queueTracks = when {
                     currentQueueSnapshot.trackIds.isEmpty() -> emptyList()
@@ -844,6 +862,7 @@ class PlayerViewModel {
             MusicLibrarySource.loadTracks()
             refreshLibrarySummary()
             reloadLibraryPages()
+            restorePlaybackState()
             _state.update { it.copy(isLoading = false) }
         } catch (e: Exception) {
             _state.update { it.copy(isLoading = false, error = e.message ?: "Unknown error") }
@@ -916,9 +935,17 @@ class PlayerViewModel {
     fun pause() {
         AudioPlayer.pause()
         _state.update { it.copy(isPlaying = false) }
+        savePlaybackState()
     }
 
     fun resume() {
+        if (AudioPlayer.state.value.currentTrackId == null) {
+            val snapshot = playbackQueueController.snapshot()
+            if (snapshot.trackIds.isNotEmpty()) {
+                applyQueueSnapshot(snapshot, PlaybackSnapshotApplyMode.Play)
+                return
+            }
+        }
         AudioPlayer.resume()
         _state.update { it.copy(isPlaying = true) }
     }
@@ -980,6 +1007,7 @@ class PlayerViewModel {
             AppDebugLog.log(
                 "shuffle_toggle enabled=${playbackQueueController.isShuffleEnabled} tracks=${snapshot.trackIds.size}"
             )
+            savePlaybackState()
         }
     }
 
@@ -989,6 +1017,7 @@ class PlayerViewModel {
             AudioPlayer.setRepeatMode(nextState.repeatMode)
             nextState
         }
+        savePlaybackState()
         AppDebugLog.log("repeat_toggle mode=${_state.value.repeatMode}")
     }
 
@@ -1035,6 +1064,7 @@ class PlayerViewModel {
                 isShuffleEnabled = false,
             ).withNavigationState(navigationState)
         }
+        SettingsRepository.clearPlaybackState()
     }
 
     fun setBlurEnabled(enabled: Boolean) {
@@ -1491,6 +1521,128 @@ class PlayerViewModel {
         }
     }
 
+    // ── Playback state persistence ──────────────────────────────────────────────
+
+    private fun savePlaybackState() {
+        val snapshot = playbackQueueController.snapshot()
+        if (snapshot.trackIds.isEmpty()) return
+        val currentState = _state.value
+        val positionMs = AudioPlayer.getCurrentPosition().coerceAtLeast(
+            currentState.playbackProgressMs,
+        )
+        SettingsRepository.savePlaybackState(
+            SettingsRepository.SavedPlaybackState(
+                queueTrackIds = playbackQueueController.originalTrackIdsSnapshot().toList(),
+                queueShuffledIds = if (playbackQueueController.isShuffleEnabled) {
+                    snapshot.trackIds.toList()
+                } else null,
+                queueIndex = snapshot.currentIndex,
+                trackPositionMs = positionMs,
+                shuffleEnabled = playbackQueueController.isShuffleEnabled,
+                repeatMode = currentState.repeatMode.name,
+            )
+        )
+    }
+
+    private fun savePlaybackPositionOnly(positionMs: Long) {
+        SettingsRepository.saveTrackPositionOnly(positionMs)
+    }
+
+    private fun resetSavePoints(trackId: Long, durationMs: Long) {
+        currentSavePoints = SavePointCalculator.calculate(durationMs)
+        hitSavePointIndices.clear()
+        lastSavedTrackId = trackId
+    }
+
+    private suspend fun restorePlaybackState() {
+        if (restoreAttempted) return
+        restoreAttempted = true
+
+        val savedState = SettingsRepository.restorePlaybackState() ?: return
+        var savedTrackIds = savedState.queueTrackIds.toLongArray()
+        if (savedTrackIds.isEmpty()) return
+
+        // Filter out missing tracks via resolver
+        val resolvedItems = withContext(Dispatchers.Default) {
+            MusicLibrarySource.resolvePlayableItems(savedTrackIds)
+        }
+        val availableIds = resolvedItems
+            .filter { it.ref.availability != TrackAvailability.MISSING }
+            .map { it.trackId }
+
+        if (availableIds.isEmpty()) {
+            SettingsRepository.clearPlaybackState()
+            return
+        }
+
+        val filteredIds = availableIds.toLongArray()
+        var queueIndex = savedState.queueIndex.coerceIn(0, filteredIds.lastIndex)
+        val currentId = filteredIds.getOrNull(queueIndex) ?: return
+
+        val snapshot = playbackQueueController.setQueue(filteredIds, queueIndex)
+
+        // Restore shuffle order if it was enabled
+        if (savedState.shuffleEnabled) {
+            val shuffledIds = savedState.queueShuffledIds
+                ?.filter { it in availableIds.toSet() }
+                ?.toLongArray()
+            if (shuffledIds != null && shuffledIds.size == filteredIds.size) {
+                playbackQueueController.replaceActiveOrder(
+                    expectedQueueVersion = snapshot.queueVersion,
+                    orderedTrackIds = shuffledIds,
+                    currentTrackId = currentId,
+                    shuffleEnabled = true,
+                    updateOriginalOrder = false,
+                )
+            } else {
+                playbackQueueController.shuffle()
+            }
+        }
+
+        // Resolve display queue and update state
+        val finalSnapshot = playbackQueueController.snapshot()
+        val displayQueue = withContext(Dispatchers.Default) {
+            MusicLibrarySource.resolveDisplayQueue(finalSnapshot.trackIds)
+        }
+        val resolvedTrack = resolvedItems.firstOrNull { it.trackId == currentId }
+        val libraryTrack = resolvedTrack?.let { item ->
+            LibraryTrack(
+                id = item.trackId,
+                title = item.metadata.title,
+                artistName = item.metadata.artistName,
+                albumName = item.metadata.albumName,
+                durationMs = item.metadata.durationMs,
+                albumArtUri = item.metadata.albumArtUri,
+            )
+        }
+
+        val repeatMode = try {
+            PlaybackRepeatMode.valueOf(savedState.repeatMode)
+        } catch (_: IllegalArgumentException) {
+            PlaybackRepeatMode.Off
+        }
+        val maxDuration = displayQueue.firstOrNull { it.id == currentId }?.durationMs ?: 0L
+        val clampedPosition = savedState.trackPositionMs.coerceIn(0L, maxDuration)
+
+        _state.update {
+            it.copy(
+                currentTrack = libraryTrack,
+                playbackQueue = displayQueue,
+                currentQueueIndex = finalSnapshot.currentIndex,
+                queueVersion = finalSnapshot.queueVersion,
+                isShuffleEnabled = playbackQueueController.isShuffleEnabled,
+                repeatMode = repeatMode,
+                playbackProgressMs = clampedPosition,
+                totalDurationMs = maxDuration,
+                isPlaying = false,
+            )
+        }
+
+        if (libraryTrack != null) {
+            resetSavePoints(libraryTrack.id, maxDuration)
+        }
+    }
+
     private fun startProgressUpdates() {
         progressJob?.cancel()
         progressJob = storeScope.launch {
@@ -1500,16 +1652,34 @@ class PlayerViewModel {
                 if (currentTrack != null && !currentState.isQueueSheetVisible) {
                     val maxDuration = currentState.totalDurationMs
                         .takeIf { it > 0L } ?: currentTrack.durationMs
-                    val nextProgress = AudioPlayer.getCurrentPosition().coerceIn(
-                        0L,
-                        maxDuration.coerceAtLeast(0L),
-                    )
 
-                    _state.update { state ->
-                        if (state.playbackProgressMs == nextProgress) {
-                            state
-                        } else {
-                            state.copy(playbackProgressMs = nextProgress)
+                    if (AudioPlayer.state.value.currentTrackId != null) {
+                        val nextProgress = AudioPlayer.getCurrentPosition().coerceIn(
+                            0L,
+                            maxDuration.coerceAtLeast(0L),
+                        )
+
+                        _state.update { state ->
+                            if (state.playbackProgressMs == nextProgress) {
+                                state
+                            } else {
+                                state.copy(playbackProgressMs = nextProgress)
+                            }
+                        }
+
+                        // Check save-points for playback progress
+                        if (currentState.isPlaying && currentSavePoints.isNotEmpty()) {
+                            val trackId = currentTrack.id
+                            for (i in currentSavePoints.indices) {
+                                if (i in hitSavePointIndices) continue
+                                val point = currentSavePoints[i]
+                                if (nextProgress >= point && nextProgress - point < 500L) {
+                                    hitSavePointIndices.add(i)
+                                    lastSavedTrackId = trackId
+                                    savePlaybackPositionOnly(nextProgress)
+                                    break
+                                }
+                            }
                         }
                     }
                 }
