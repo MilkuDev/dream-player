@@ -10,6 +10,9 @@ local.properties
 captures
 .externalNativeBuild
 .cxx
+QWEN
+opencode.json
+AGENTS.md
 *.xcodeproj/*
 !*.xcodeproj/project.pbxproj
 !*.xcodeproj/xcshareddata/
@@ -18,3 +21,4 @@ captures
 **/xcshareddata/WorkspaceSettings.xcsettings
 node_modules/
 /index/
+/.qwen/

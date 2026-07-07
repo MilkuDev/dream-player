@@ -172,18 +172,7 @@ fun App(
                             )
                             Screen.Library -> LibraryScreen(
                                 state = state,
-                                onTrackClick = playerViewModel::playFromVisibleTracks,
-                                onAlbumItemClick = playerViewModel::openAlbumDetails,
-                                onArtistClick = playerViewModel::openArtistDetails,
-                                onGenreClick = playerViewModel::openGenreDetails,
-                                onCreatePlaylist = playerViewModel::createPlaylist,
-                                onPlaylistClick = playerViewModel::openPlaylist,
-                                onSortTrack = playerViewModel::setTrackSortOrder,
-                                onSortAlbum = playerViewModel::setAlbumSortOrder,
-                                onLoadNextTracks = { playerViewModel.loadNextTracksPage() },
-                                onLoadNextAlbums = { playerViewModel.loadNextAlbumsPage() },
-                                onLoadNextArtists = { playerViewModel.loadNextArtistsPage() },
-                                onLoadNextGenres = { playerViewModel.loadNextGenresPage() },
+                                onIntent = playerViewModel::onLibraryIntent,
                                 contentPadding = paddingValues,
                             )
                             Screen.PlaylistDetails -> PlaylistDetailsScreen(

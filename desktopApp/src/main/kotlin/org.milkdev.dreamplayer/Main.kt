@@ -9,7 +9,7 @@ import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.rememberWindowState
 
 fun main() = application {
-    val windowState = rememberWindowState(width = 400.dp, height = 800.dp)
+    val windowState = rememberWindowState(width = 370.dp, height = 750.dp)
 
     LaunchedEffect(windowState.placement) {
         if (windowState.placement == WindowPlacement.Maximized) {

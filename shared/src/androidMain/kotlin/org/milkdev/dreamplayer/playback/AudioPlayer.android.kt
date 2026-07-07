@@ -6,6 +6,7 @@ import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.os.Bundle
 import android.util.Log
+import android.util.LruCache
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -33,7 +34,7 @@ actual object AudioPlayer {
     private val pendingActions = ArrayDeque<(MediaController) -> Unit>()
     private val _state = MutableStateFlow(AudioPlayerState())
     private val playerScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-    private val mediaItemCache = mutableMapOf<MediaItemCacheKey, MediaItem>()
+    private val mediaItemCache = LruCache<MediaItemCacheKey, MediaItem>(367)
 
     private var controller: MediaController? = null
     private var controllerFuture: ListenableFuture<MediaController>? = null
@@ -71,13 +72,13 @@ actual object AudioPlayer {
         }
     }
 
-    actual fun play(snapshot: PlaybackSnapshot) {
+    actual fun play(snapshot: PlaybackSnapshot, startPositionMs: Long) {
         setSnapshot(snapshot)
         withController { mediaController ->
             replaceControllerQueue(
                 mediaController = mediaController,
                 snapshot = snapshot,
-                startPositionMs = 0L,
+                startPositionMs = startPositionMs,
                 playWhenReady = true,
                 reason = "play_snapshot",
             )
@@ -223,31 +224,6 @@ actual object AudioPlayer {
             if (mediaController.mediaItemCount == 0) return@withController
 
             mediaController.seekTo(positionMs.coerceAtLeast(0L))
-            syncStateFromController(mediaController)
-        }
-    }
-
-    actual fun skipToPrevious() {
-        seekControllerByQueueOffset(offset = -1, reason = "skip_previous")
-    }
-
-    actual fun skipToNext() {
-        seekControllerByQueueOffset(offset = 1, reason = "skip_next")
-    }
-
-    actual fun skipToQueueIndex(index: Int) {
-        AppDebugLog.log("audio_skip_to_queue_index index=$index")
-        withController { mediaController ->
-            val snapshot = synchronized(lock) { playbackSnapshot } ?: return@withController
-            val availableItems = snapshot.items.mapIndexed { idx, item -> idx to item }
-                .filter { (_, item) -> item.ref.availability == TrackAvailability.AVAILABLE && item.ref.uri.isNotBlank() }
-
-            val mediaIndex = availableItems.indexOfFirst { (queueIndex, _) -> queueIndex == index }
-            if (mediaIndex < 0 || mediaIndex >= mediaController.mediaItemCount) return@withController
-
-            mediaController.seekTo(mediaIndex, 0L)
-            mediaController.play()
-            syncCurrentTrackFromController(mediaController)
             syncStateFromController(mediaController)
         }
     }
@@ -444,7 +420,12 @@ actual object AudioPlayer {
     private fun ResolvedPlaybackItem.toCachedMediaItem(queueIndex: Int): MediaItem {
         val key = MediaItemCacheKey(trackId = trackId, contentVersion = ref.contentVersion, queueIndex = queueIndex)
         return synchronized(lock) {
-            mediaItemCache.getOrPut(key) { toMediaItem(queueIndex) }
+            var item = mediaItemCache.get(key)
+            if (item == null) {
+                item = toMediaItem(queueIndex)
+                mediaItemCache.put(key, item)
+            }
+            item
         }
     }
 

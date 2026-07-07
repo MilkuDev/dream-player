@@ -2,20 +2,11 @@ package org.milkdev.dreamplayer.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
@@ -23,179 +14,57 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.Icon
-import androidx.compose.material3.LoadingIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.delay
 import org.jetbrains.compose.resources.painterResource
 import org.milkdev.dreamplayer.app.AppTheme
 import org.milkdev.dreamplayer.generated.resources.Res
 import org.milkdev.dreamplayer.generated.resources.artist
-import org.milkdev.dreamplayer.library.GenreListItem
 import org.milkdev.dreamplayer.generated.resources.playlist_add
 import org.milkdev.dreamplayer.generated.resources.playlist_play_24dp
-import org.milkdev.dreamplayer.library.ArtistListItem
-import org.milkdev.dreamplayer.library.LibraryTrack
-import org.milkdev.dreamplayer.library.UserPlaylist
-import org.milkdev.dreamplayer.model.AlbumSortOrder
-import org.milkdev.dreamplayer.model.LibraryCategory
-import org.milkdev.dreamplayer.model.TrackSortOrder
-import org.milkdev.dreamplayer.library.AlbumListItem
+import org.milkdev.dreamplayer.library.*
+import org.milkdev.dreamplayer.model.*
 import org.milkdev.dreamplayer.playback.PlayerUiState
-import kotlin.time.Duration.Companion.seconds
 
 private val TrackSortOrders = listOf(
-    TrackSortOrder.TRACK_NAME,
-    TrackSortOrder.ALBUM,
-    TrackSortOrder.ARTIST,
-    TrackSortOrder.YEAR,
-    TrackSortOrder.GENRE,
+    TrackSortOrder.TRACK_NAME, TrackSortOrder.ALBUM, TrackSortOrder.ARTIST,
+    TrackSortOrder.YEAR, TrackSortOrder.GENRE,
 )
 
 private val AlbumSortOrders = listOf(
-    AlbumSortOrder.TITLE,
-    AlbumSortOrder.ARTIST,
-    AlbumSortOrder.YEAR,
-    AlbumSortOrder.GENRE,
+    AlbumSortOrder.TITLE, AlbumSortOrder.ARTIST,
+    AlbumSortOrder.YEAR, AlbumSortOrder.GENRE,
 )
-
-private var isFirstLaunchDebug = true
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun LibraryScreen(
-    modifier: Modifier = Modifier,
     state: PlayerUiState,
-    onTrackClick: (List<LibraryTrack>, LibraryTrack) -> Unit,
-    onPlaylistClick: (UserPlaylist) -> Unit,
-    onCreatePlaylist: (String) -> Unit,
-    onArtistClick: (ArtistListItem) -> Unit = {},
-    onAlbumItemClick: (AlbumListItem) -> Unit = {},
-    onGenreClick: (GenreListItem) -> Unit = {},
-    onSortTrack: (TrackSortOrder) -> Unit = {},
-    onSortAlbum: (AlbumSortOrder) -> Unit = {},
-    onLoadNextTracks: () -> Unit = {},
-    onLoadNextAlbums: () -> Unit = {},
-    onLoadNextArtists: () -> Unit = {},
-    onLoadNextGenres: () -> Unit = {},
+    onIntent: (LibraryIntent) -> Unit,
+    modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues.Zero,
 ) {
-    var currentCategory by rememberSaveable { mutableStateOf(LibraryCategory.TRACKS) }
-
-    val sortedPlaylists = remember(state.playlists) {
-        state.playlists.sortedBy { it.name.lowercase() }
-    }
-
     val lazyListState = rememberLazyListState()
     val lazyGridState = rememberLazyGridState()
+
     val loadUncachedListArtwork = rememberLazyArtworkLoadingEnabled(listState = lazyListState)
     val loadUncachedGridArtwork = rememberLazyArtworkLoadingEnabled(gridState = lazyGridState)
 
-    var isDebugLoading by remember { mutableStateOf(isFirstLaunchDebug) }
-
-    LaunchedEffect(state.isLoading) {
+    LaunchedEffect(state.currentCategory) {
         if (!state.isLoading) {
-            if (isFirstLaunchDebug) {
-                delay(1.seconds)
-                isFirstLaunchDebug = false
-            }
-            isDebugLoading = false
-        }
-    }
-
-    val trackCount = state.trackListItems.size
-    val shouldLoadMoreTracks by remember(trackCount) {
-        derivedStateOf {
-            val lastVisible = lazyListState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            lastVisible >= trackCount - 8
-        }
-    }
-
-    val albumCount = state.albumListItems.size
-    val shouldLoadMoreAlbums by remember(albumCount) {
-        derivedStateOf {
-            val lastVisible = lazyGridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            lastVisible >= albumCount - 8
-        }
-    }
-
-    val artistCount = state.artistListItems.size
-    val shouldLoadMoreArtists by remember(artistCount) {
-        derivedStateOf {
-            val lastVisible = lazyGridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            lastVisible >= artistCount - 8
-        }
-    }
-
-    val genreCount = state.genreListItems.size
-    val shouldLoadMoreGenres by remember(genreCount) {
-        derivedStateOf {
-            val lastVisible = lazyGridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            lastVisible >= genreCount - 8
-        }
-    }
-
-    LaunchedEffect(currentCategory) {
-        if (!isDebugLoading) {
             lazyListState.scrollToItem(0)
             lazyGridState.scrollToItem(0)
         }
     }
 
-    LaunchedEffect(currentCategory, shouldLoadMoreTracks, state.hasMoreTracks, state.isTrackPageLoading) {
-        if (currentCategory == LibraryCategory.TRACKS && shouldLoadMoreTracks && state.hasMoreTracks && !state.isTrackPageLoading) {
-            onLoadNextTracks()
-        }
-    }
-
-    LaunchedEffect(currentCategory, shouldLoadMoreAlbums, state.hasMoreAlbums, state.isAlbumPageLoading) {
-        if (currentCategory == LibraryCategory.ALBUMS && shouldLoadMoreAlbums && state.hasMoreAlbums && !state.isAlbumPageLoading) {
-            onLoadNextAlbums()
-        }
-    }
-
-    LaunchedEffect(currentCategory, shouldLoadMoreArtists, state.hasMoreArtists, state.isArtistPageLoading) {
-        if (currentCategory == LibraryCategory.ARTISTS && shouldLoadMoreArtists && state.hasMoreArtists && !state.isArtistPageLoading) {
-            onLoadNextArtists()
-        }
-    }
-
-    LaunchedEffect(
-        currentCategory,
-        state.trackSortOrder,
-        state.albumSortOrder,
-        shouldLoadMoreGenres,
-        state.hasMoreGenres,
-        state.isGenrePageLoading,
-    ) {
-        val isGenreMode =
-            (currentCategory == LibraryCategory.TRACKS && state.trackSortOrder == TrackSortOrder.GENRE) ||
-                (currentCategory == LibraryCategory.ALBUMS && state.albumSortOrder == AlbumSortOrder.GENRE)
-        if (isGenreMode && shouldLoadMoreGenres && state.hasMoreGenres && !state.isGenrePageLoading) {
-            onLoadNextGenres()
-        }
-    }
-
     Box(modifier = modifier.fillMaxSize()) {
-        if (isDebugLoading) {
+        if (state.isLoading) {
             LoadingIndicator(modifier = Modifier.align(Alignment.Center))
         } else {
             Column(
@@ -211,76 +80,97 @@ fun LibraryScreen(
                 }
 
                 LibraryCategoryRow(
-                    selectedCategory = currentCategory,
-                    onCategorySelected = { currentCategory = it },
+                    selectedCategory = state.currentCategory,
+                    onCategorySelected = { onIntent(LibraryIntent.SelectCategory(it)) },
                     modifier = Modifier.padding(bottom = 16.dp),
                 )
 
-                when (currentCategory) {
+                when (state.currentCategory) {
                     LibraryCategory.TRACKS -> SortButtonGroupRow(
                         selectedSort = state.trackSortOrder,
-                        onSortSelected = onSortTrack,
+                        onSortSelected = { onIntent(LibraryIntent.ChangeTrackSort(it)) },
                         entries = TrackSortOrders,
                         modifier = Modifier.padding(bottom = 16.dp),
                     )
                     LibraryCategory.ALBUMS -> SortButtonGroupRow(
                         selectedSort = state.albumSortOrder,
-                        onSortSelected = onSortAlbum,
+                        onSortSelected = { onIntent(LibraryIntent.ChangeAlbumSort(it)) },
                         entries = AlbumSortOrders,
                         modifier = Modifier.padding(bottom = 16.dp),
                     )
-                    LibraryCategory.ARTISTS,
-                    LibraryCategory.PLAYLISTS -> Spacer(modifier = Modifier.padding(bottom = 0.dp))
+                    else -> Spacer(modifier = Modifier.padding(bottom = 0.dp))
                 }
 
-                when (currentCategory) {
-                    LibraryCategory.TRACKS -> if (state.trackSortOrder == TrackSortOrder.GENRE) {
-                        LibraryGenreGrid(
-                            genres = state.genreListItems,
-                            onGenreClick = onGenreClick,
+                when (state.currentCategory) {
+                    LibraryCategory.TRACKS -> {
+
+                        val mappedTracks = remember(state.trackListItems) {
+                            state.trackListItems.map { it.toLibraryTrack() }
+                        }
+
+                        if (state.trackSortOrder == TrackSortOrder.GENRE) {
+                            InfiniteGridHandler(lazyGridState) { onIntent(LibraryIntent.LoadNextGenres) }
+                            LibraryGenreGrid(
+                                genres = state.genreListItems,
+                                onIntent = onIntent,
+                                gridState = lazyGridState,
+                                contentPadding = contentPadding
+                            )
+                        } else {
+                            InfiniteListHandler(lazyListState) { onIntent(LibraryIntent.LoadNextTracks) }
+                            LibraryTrackList(
+                                tracks = mappedTracks,
+                                currentTrack = state.currentTrack,
+                                onIntent = onIntent,
+                                loadUncachedArtwork = loadUncachedListArtwork,
+                                listState = lazyListState,
+                                contentPadding = contentPadding
+                            )
+                        }
+                    }
+                    LibraryCategory.ALBUMS -> {
+                        if (state.albumSortOrder == AlbumSortOrder.GENRE) {
+                            InfiniteGridHandler(lazyGridState) { onIntent(LibraryIntent.LoadNextGenres) }
+                            LibraryGenreGrid(
+                                genres = state.genreListItems,
+                                onIntent = onIntent,
+                                gridState = lazyGridState,
+                                contentPadding = contentPadding
+                            )
+                        } else {
+                            InfiniteGridHandler(lazyGridState) { onIntent(LibraryIntent.LoadNextAlbums) }
+                            LibraryAlbumGrid(
+                                albums = state.albumListItems,
+                                onIntent = onIntent,
+                                loadUncachedArtwork = loadUncachedGridArtwork,
+                                gridState = lazyGridState,
+                                contentPadding = contentPadding
+                            )
+                        }
+                    }
+                    LibraryCategory.ARTISTS -> {
+                        InfiniteGridHandler(lazyGridState) { onIntent(LibraryIntent.LoadNextArtists) }
+                        LibraryArtistGrid(
+                            artists = state.artistListItems,
+                            onIntent = onIntent,
+                            loadUncachedArtwork = loadUncachedGridArtwork,
                             gridState = lazyGridState,
-                            contentPadding = contentPadding,
+                            contentPadding = contentPadding
                         )
-                    } else {
-                        LibraryTrackList(
-                            tracks = state.trackListItems.map { it.toLibraryTrack() },
-                            currentTrack = state.currentTrack,
-                            onTrackClick = onTrackClick,
-                            loadUncachedArtwork = loadUncachedListArtwork,
+                    }
+                    LibraryCategory.PLAYLISTS -> {
+
+                        val sortedPlaylists = remember(state.playlists) {
+                            state.playlists.sortedBy { it.name.lowercase() }
+                        }
+
+                        LibraryPlaylistList(
+                            playlists = sortedPlaylists,
+                            onIntent = onIntent,
                             listState = lazyListState,
                             contentPadding = contentPadding,
                         )
                     }
-                    LibraryCategory.ALBUMS -> if (state.albumSortOrder == AlbumSortOrder.GENRE) {
-                        LibraryGenreGrid(
-                            genres = state.genreListItems,
-                            onGenreClick = onGenreClick,
-                            gridState = lazyGridState,
-                            contentPadding = contentPadding,
-                        )
-                    } else {
-                        LibraryAlbumGrid(
-                            albums = state.albumListItems,
-                            onAlbumClick = onAlbumItemClick,
-                            loadUncachedArtwork = loadUncachedGridArtwork,
-                            gridState = lazyGridState,
-                            contentPadding = contentPadding,
-                        )
-                    }
-                    LibraryCategory.ARTISTS -> LibraryArtistGrid(
-                        artists = state.artistListItems,
-                        onArtistClick = onArtistClick,
-                        loadUncachedArtwork = loadUncachedGridArtwork,
-                        gridState = lazyGridState,
-                        contentPadding = contentPadding,
-                    )
-                    LibraryCategory.PLAYLISTS -> LibraryPlaylistList(
-                        playlists = sortedPlaylists,
-                        onPlaylistClick = onPlaylistClick,
-                        onCreatePlaylist = onCreatePlaylist,
-                        listState = lazyListState,
-                        contentPadding = contentPadding,
-                    )
                 }
             }
         }
@@ -291,32 +181,26 @@ fun LibraryScreen(
 private fun LibraryTrackList(
     tracks: List<LibraryTrack>,
     currentTrack: LibraryTrack?,
-    onTrackClick: (List<LibraryTrack>, LibraryTrack) -> Unit,
+    onIntent: (LibraryIntent) -> Unit,
     loadUncachedArtwork: Boolean,
-    listState: androidx.compose.foundation.lazy.LazyListState,
+    listState: LazyListState,
     contentPadding: PaddingValues,
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         state = listState,
         contentPadding = PaddingValues(
-            start = 16.dp,
-            end = 16.dp,
-            top = 8.dp,
+            start = 16.dp, end = 16.dp, top = 8.dp,
             bottom = contentPadding.calculateBottomPadding() + 16.dp,
         ),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        items(
-            items = tracks,
-            key = { it.id },
-            contentType = { "library_track" },
-        ) { track ->
+        items(items = tracks, key = { it.id }, contentType = { "library_track" }) { track ->
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
                     .animateItem()
-                    .clickable { onTrackClick(tracks, track) },
+                    .clickable { onIntent(LibraryIntent.PlayTrack(tracks, track)) },
                 colors = CardDefaults.cardColors(
                     containerColor = if (track.id == currentTrack?.id) {
                         MaterialTheme.colorScheme.primaryContainer
@@ -366,9 +250,9 @@ private fun LibraryTrackList(
 @Composable
 private fun LibraryAlbumGrid(
     albums: List<AlbumListItem>,
-    onAlbumClick: (AlbumListItem) -> Unit,
+    onIntent: (LibraryIntent) -> Unit,
     loadUncachedArtwork: Boolean,
-    gridState: androidx.compose.foundation.lazy.grid.LazyGridState,
+    gridState: LazyGridState,
     contentPadding: PaddingValues,
 ) {
     LazyVerticalGrid(
@@ -384,25 +268,14 @@ private fun LibraryAlbumGrid(
         horizontalArrangement = Arrangement.spacedBy(16.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
-        gridItems(
-            items = albums,
-            key = { it.id },
-            contentType = { "library_album" },
-        ) { album ->
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .animateItem(),
-                contentAlignment = Alignment.TopCenter,
-            ) {
-                RecommendationCard(
-                    title = album.title,
-                    subtitle = "${album.artistName}${album.year?.let { " • $it" } ?: ""}",
-                    artworkUri = album.artworkUri,
-                    onClick = { onAlbumClick(album) },
-                    loadUncached = loadUncachedArtwork,
-                )
-            }
+        gridItems(items = albums, key = { it.id }, contentType = { "library_album" }) { album ->
+            RecommendationCard(
+                title = album.title,
+                subtitle = "${album.artistName}${album.year?.let { " • $it" } ?: ""}",
+                artworkUri = album.artworkUri,
+                onClick = { onIntent(LibraryIntent.OpenAlbum(album)) },
+                loadUncached = loadUncachedArtwork,
+            )
         }
     }
 }
@@ -410,9 +283,9 @@ private fun LibraryAlbumGrid(
 @Composable
 private fun LibraryArtistGrid(
     artists: List<ArtistListItem>,
-    onArtistClick: (ArtistListItem) -> Unit,
+    onIntent: (LibraryIntent) -> Unit,
     loadUncachedArtwork: Boolean,
-    gridState: androidx.compose.foundation.lazy.grid.LazyGridState,
+    gridState: LazyGridState,
     contentPadding: PaddingValues,
 ) {
     LazyVerticalGrid(
@@ -445,7 +318,7 @@ private fun LibraryArtistGrid(
                     artworkUri = artist.artworkUri,
                     fallbackIcon = Res.drawable.artist,
                     imageShape = CircleShape,
-                    onClick = { onArtistClick(artist) },
+                    onClick = { onIntent(LibraryIntent.OpenArtist(artist)) },
                     loadUncached = loadUncachedArtwork,
                 )
             }
@@ -456,8 +329,8 @@ private fun LibraryArtistGrid(
 @Composable
 private fun LibraryGenreGrid(
     genres: List<GenreListItem>,
-    onGenreClick: (GenreListItem) -> Unit,
-    gridState: androidx.compose.foundation.lazy.grid.LazyGridState,
+    onIntent: (LibraryIntent) -> Unit,
+    gridState: LazyGridState,
     contentPadding: PaddingValues,
 ) {
     LazyVerticalGrid(
@@ -482,7 +355,7 @@ private fun LibraryGenreGrid(
                 modifier = Modifier
                     .fillMaxWidth()
                     .animateItem()
-                    .clickable { onGenreClick(genre) },
+                    .clickable { onIntent(LibraryIntent.OpenGenre(genre)) },
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
             ) {
                 Column(
@@ -511,9 +384,8 @@ private fun LibraryGenreGrid(
 @Composable
 private fun LibraryPlaylistList(
     playlists: List<UserPlaylist>,
-    onPlaylistClick: (UserPlaylist) -> Unit,
-    onCreatePlaylist: (String) -> Unit,
-    listState: androidx.compose.foundation.lazy.LazyListState,
+    onIntent: (LibraryIntent) -> Unit,
+    listState: LazyListState,
     contentPadding: PaddingValues,
 ) {
     LazyColumn(
@@ -532,7 +404,7 @@ private fun LibraryPlaylistList(
                 modifier = Modifier
                     .fillMaxWidth()
                     .animateItem()
-                    .clickable { onCreatePlaylist("Новый плейлист") },
+                    .clickable { onIntent(LibraryIntent.CreatePlaylist("Новый плейлист")) },
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
             ) {
                 Row(
@@ -564,7 +436,7 @@ private fun LibraryPlaylistList(
                 modifier = Modifier
                     .fillMaxWidth()
                     .animateItem()
-                    .clickable { onPlaylistClick(playlist) },
+                    .clickable { onIntent(LibraryIntent.OpenPlaylist(playlist)) },
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
             ) {
                 Row(
