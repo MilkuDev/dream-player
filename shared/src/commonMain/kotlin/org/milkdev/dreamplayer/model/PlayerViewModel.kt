@@ -668,22 +668,29 @@ class PlayerViewModel {
 
     fun openAlbumDetails(album: AlbumListItem) {
         AppDebugLog.log("open_album_details id=${album.id}")
+
+        setNavigationState(
+            navigationState.navigateTo(AppDestination.LibraryCollectionDetails),
+        ) {
+            it.copy(
+                selectedPlaylist = null,
+                selectedPlaylistTracks = emptyList(),
+                selectedLibraryCollection = LibraryCollectionDetailsUiModel(
+                    type = LibraryCollectionType.ALBUM,
+                    title = album.title,
+                    subtitle = "${album.artistName}${album.year?.let { year -> " • $year" } ?: ""}",
+                    artworkUri = album.artworkUri,
+                    tracks = emptyList(),
+                ),
+            )
+        }
+
         playlistTracksJob?.cancel()
         playlistTracksJob = storeScope.launch {
             MusicLibrarySource.getTracksByAlbum(album.id).collect { tracks ->
-                setNavigationState(
-                    navigationState.navigateTo(AppDestination.LibraryCollectionDetails),
-                ) { state ->
-                    state.copy(
-                        selectedPlaylist = null,
-                        selectedPlaylistTracks = emptyList(),
-                        selectedLibraryCollection = LibraryCollectionDetailsUiModel(
-                            type = LibraryCollectionType.ALBUM,
-                            title = album.title,
-                            subtitle = "${album.artistName}${album.year?.let { year -> " • $year" } ?: ""}",
-                            artworkUri = album.artworkUri,
-                            tracks = tracks,
-                        ),
+                _state.update {
+                    it.copy(
+                        selectedLibraryCollection = it.selectedLibraryCollection?.copy(tracks = tracks),
                     )
                 }
             }
@@ -804,22 +811,29 @@ class PlayerViewModel {
 
     fun openArtistDetails(artist: ArtistListItem) {
         AppDebugLog.log("open_artist_details id=${artist.id}")
+
+        setNavigationState(
+            navigationState.navigateTo(AppDestination.LibraryCollectionDetails),
+        ) {
+            it.copy(
+                selectedPlaylist = null,
+                selectedPlaylistTracks = emptyList(),
+                selectedLibraryCollection = LibraryCollectionDetailsUiModel(
+                    type = LibraryCollectionType.ARTIST,
+                    title = artist.name,
+                    subtitle = "${artist.albumCount} альбомов • ${artist.trackCount} треков",
+                    artworkUri = artist.artworkUri,
+                    tracks = emptyList(),
+                ),
+            )
+        }
+
         playlistTracksJob?.cancel()
         playlistTracksJob = storeScope.launch {
             MusicLibrarySource.getTracksByArtist(artist.id).collect { tracks ->
-                setNavigationState(
-                    navigationState.navigateTo(AppDestination.LibraryCollectionDetails),
-                ) {
+                _state.update {
                     it.copy(
-                        selectedPlaylist = null,
-                        selectedPlaylistTracks = emptyList(),
-                        selectedLibraryCollection = LibraryCollectionDetailsUiModel(
-                            type = LibraryCollectionType.ARTIST,
-                            title = artist.name,
-                            subtitle = "${artist.albumCount} альбомов • ${artist.trackCount} треков",
-                            artworkUri = artist.artworkUri,
-                            tracks = tracks,
-                        ),
+                        selectedLibraryCollection = it.selectedLibraryCollection?.copy(tracks = tracks),
                     )
                 }
             }
@@ -828,6 +842,24 @@ class PlayerViewModel {
 
     fun openGenreDetails(genre: GenreListItem) {
         AppDebugLog.log("open_genre_details id=${genre.id}")
+
+        setNavigationState(
+            navigationState.navigateTo(AppDestination.LibraryCollectionDetails),
+        ) {
+            it.copy(
+                selectedPlaylist = null,
+                selectedPlaylistTracks = emptyList(),
+                selectedLibraryCollection = LibraryCollectionDetailsUiModel(
+                    type = LibraryCollectionType.GENRE,
+                    title = genre.name,
+                    subtitle = "${genre.albumCount} альбомов • ${genre.trackCount} треков",
+                    artworkUri = null,
+                    albums = emptyList(),
+                    tracks = emptyList(),
+                ),
+            )
+        }
+
         playlistTracksJob?.cancel()
         playlistTracksJob = storeScope.launch {
             combine(
@@ -835,16 +867,9 @@ class PlayerViewModel {
                 MusicLibrarySource.getTracksByGenre(genre.id),
             ) { albums, tracks -> albums to tracks }
                 .collect { (albums, tracks) ->
-                    setNavigationState(
-                        navigationState.navigateTo(AppDestination.LibraryCollectionDetails),
-                    ) {
+                    _state.update {
                         it.copy(
-                            selectedPlaylist = null,
-                            selectedPlaylistTracks = emptyList(),
-                            selectedLibraryCollection = LibraryCollectionDetailsUiModel(
-                                type = LibraryCollectionType.GENRE,
-                                title = genre.name,
-                                subtitle = "${genre.albumCount} альбомов • ${genre.trackCount} треков",
+                            selectedLibraryCollection = it.selectedLibraryCollection?.copy(
                                 artworkUri = albums.firstOrNull()?.artworkUri,
                                 albums = albums,
                                 tracks = tracks,
@@ -1770,8 +1795,10 @@ class PlayerViewModel {
     ) {
         val previousNavigationState = navigationState
         if (
-            previousNavigationState.contains(AppDestination.PlaylistDetails) &&
-            !nextNavigationState.contains(AppDestination.PlaylistDetails)
+            (previousNavigationState.contains(AppDestination.PlaylistDetails) &&
+             !nextNavigationState.contains(AppDestination.PlaylistDetails)) ||
+            (previousNavigationState.contains(AppDestination.LibraryCollectionDetails) &&
+             !nextNavigationState.contains(AppDestination.LibraryCollectionDetails))
         ) {
             playlistTracksJob?.cancel()
             playlistTracksJob = null

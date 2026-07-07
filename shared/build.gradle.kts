@@ -19,12 +19,8 @@ kotlin {
 
     jvm()
 
-    listOf(
-        iosArm64(),
-        iosSimulatorArm64(),
-        macosArm64()
-    ).forEach {
-        it.binaries.framework {
+    configure(listOf(iosArm64(), iosSimulatorArm64(), macosArm64(), iosX64())) {
+        binaries.framework {
             baseName = "Shared"
             isStatic = true
         }
@@ -48,6 +44,9 @@ kotlin {
         }
         appleMain.dependencies {
             implementation(libs.ktor.client.darwin)
+        }
+        appleTest.dependencies {
+            // TODO: not implemented yet
         }
         jvmMain.dependencies {
             implementation(libs.ktor.client.cio)
