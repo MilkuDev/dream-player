@@ -13,21 +13,22 @@ The design prioritizes explicit declarations and native language capabilities ov
 
 ## Technical Stack
 
-* **UI Interface:** Compose Multiplatform (Material 3).
-* **Storage:** Room (SQLite) backed by a bundled driver. Write-Ahead Logging (WAL) is enabled to ensure concurrent read/write operations without blocking.
+* **UI Interface:** Compose Multiplatform (Material 3) and Swift UI (liquid glass).
+* **Storage:** Room backed by a bundled driver. Write-Ahead Logging (WAL) is enabled to ensure concurrent read/write operations without blocking.
 * **Preferences:** DataStore.
 * **Networking:** Ktor Client paired with `kotlinx.serialization`.
 * **Android Audio:** Media3 ExoPlayer integrated with `MediaSession`.
 * **Desktop Audio:** Java Sound API utilizing custom Service Provider Interfaces (`mp3spi` and `flannel` for FLAC decoding).
+* **Apple Audio:** AVPlayer
 
 ## Source Structure
 
-Platform-specific entry points are kept minimal. The vast majority of the logic resides in the common module.
+Platform-specific entry points are kept minimal. The vast majority of the logic resides in the shared module.
 
     KotlinMPDreamPlayer/
     ├── androidApp/          (Minimal Android launcher)
     ├── desktopApp/          (Minimal Desktop launcher)
-    └── composeApp/          (Shared logic and UI)
+    └── composeApp/          (Compose UI)
         ├── schemas/         (Room DB migration files)
         └── src/
             ├── commonMain/  (ViewModels, Repositories, DB setup)
