@@ -52,7 +52,11 @@ class MusicRepository(
     private val scope: CoroutineScope
 ) {
     private val _isSyncing = MutableStateFlow(false)
-    private val playbackItemCache = mutableMapOf<Long, ResolvedPlaybackItem>()
+    private val playbackItemCache = object : LinkedHashMap<Long, ResolvedPlaybackItem>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, ResolvedPlaybackItem>?): Boolean {
+            return size > MAX_PLAYBACK_ITEM_CACHE_SIZE
+        }
+    }
     private val playbackItemCacheMutex = Mutex()
     private val metadataSyncService = MetadataSyncService(
         musicDao = musicDao,
@@ -828,6 +832,7 @@ class MusicRepository(
     private companion object {
         const val BATCH_SIZE = 500
         const val QUERY_BATCH_SIZE = 500
+        const val MAX_PLAYBACK_ITEM_CACHE_SIZE = 500
         const val TOMBSTONE_RETENTION_MS = 14L * 24 * 60 * 60 * 1000
         const val TRUST_EMBEDDED_IDENTITY = 100
         const val TRUST_EMBEDDED_GENRE = 80

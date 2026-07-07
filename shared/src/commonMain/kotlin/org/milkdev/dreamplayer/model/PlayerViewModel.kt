@@ -1573,7 +1573,6 @@ class PlayerViewModel {
         var savedTrackIds = savedState.queueTrackIds.toLongArray()
         if (savedTrackIds.isEmpty()) return
 
-        // Filter out missing tracks via resolver
         val resolvedItems = withContext(Dispatchers.Default) {
             MusicLibrarySource.resolvePlayableItems(savedTrackIds)
         }
@@ -1592,7 +1591,6 @@ class PlayerViewModel {
 
         val snapshot = playbackQueueController.setQueue(filteredIds, queueIndex)
 
-        // Restore shuffle order if it was enabled
         if (savedState.shuffleEnabled) {
             val shuffledIds = savedState.queueShuffledIds
                 ?.filter { it in availableIds.toSet() }
@@ -1610,7 +1608,6 @@ class PlayerViewModel {
             }
         }
 
-        // Resolve display queue and update state
         val finalSnapshot = playbackQueueController.snapshot()
         val displayQueue = withContext(Dispatchers.Default) {
             MusicLibrarySource.resolveDisplayQueue(finalSnapshot.trackIds)
