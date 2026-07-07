@@ -228,31 +228,6 @@ actual object AudioPlayer {
         }
     }
 
-    actual fun skipToPrevious() {
-        seekControllerByQueueOffset(offset = -1, reason = "skip_previous")
-    }
-
-    actual fun skipToNext() {
-        seekControllerByQueueOffset(offset = 1, reason = "skip_next")
-    }
-
-    actual fun skipToQueueIndex(index: Int) {
-        AppDebugLog.log("audio_skip_to_queue_index index=$index")
-        withController { mediaController ->
-            val snapshot = synchronized(lock) { playbackSnapshot } ?: return@withController
-            val availableItems = snapshot.items.mapIndexed { idx, item -> idx to item }
-                .filter { (_, item) -> item.ref.availability == TrackAvailability.AVAILABLE && item.ref.uri.isNotBlank() }
-
-            val mediaIndex = availableItems.indexOfFirst { (queueIndex, _) -> queueIndex == index }
-            if (mediaIndex < 0 || mediaIndex >= mediaController.mediaItemCount) return@withController
-
-            mediaController.seekTo(mediaIndex, 0L)
-            mediaController.play()
-            syncCurrentTrackFromController(mediaController)
-            syncStateFromController(mediaController)
-        }
-    }
-
     actual fun setRepeatMode(mode: PlaybackRepeatMode) {
         AppDebugLog.log("audio_repeat_mode mode=$mode")
         synchronized(lock) {

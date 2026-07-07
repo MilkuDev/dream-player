@@ -52,11 +52,10 @@ class MusicRepository(
     private val scope: CoroutineScope
 ) {
     private val _isSyncing = MutableStateFlow(false)
-    private val playbackItemCache = object : LinkedHashMap<Long, ResolvedPlaybackItem>(64, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, ResolvedPlaybackItem>?): Boolean {
-            return size > MAX_PLAYBACK_ITEM_CACHE_SIZE
-        }
-    }
+
+    // ПОСТАВЬ ВОТ ЭТО:
+    private val playbackItemCache = KmpLruCache<Long, ResolvedPlaybackItem>(MAX_PLAYBACK_ITEM_CACHE_SIZE)
+
     private val playbackItemCacheMutex = Mutex()
     private val metadataSyncService = MetadataSyncService(
         musicDao = musicDao,
@@ -617,7 +616,7 @@ class MusicRepository(
         return withContext(Dispatchers.IO) {
             val uniqueIds = ids.distinct()
             val cachedById = playbackItemCacheMutex.withLock {
-                uniqueIds.mapNotNull { id -> playbackItemCache[id]?.let { id to it } }.toMap()
+                uniqueIds.mapNotNull { id -> playbackItemCache.get(id)?.let { id to it } }.toMap()
             }
             val cacheMisses = uniqueIds.filter { it !in cachedById }
             val loadedById = cacheMisses
@@ -795,6 +794,36 @@ class MusicRepository(
                 albumArtUri = null,
             ),
         )
+    }
+
+    private class KmpLruCache<K, V>(private val maxSize: Int) {
+        private val map = LinkedHashMap<K, V>()
+
+        fun get(key: K): V? {
+            val value = map.remove(key) ?: return null
+            map[key] = value
+            return value
+        }
+
+        fun putAll(from: Map<K, V>) {
+            for ((key, value) in from) {
+                map.remove(key)
+                map[key] = value
+            }
+            trimToSize()
+        }
+
+        fun clear() {
+            map.clear()
+        }
+
+        private fun trimToSize() {
+            val iterator = map.iterator()
+            while (map.size > maxSize && iterator.hasNext()) {
+                iterator.next()
+                iterator.remove()
+            }
+        }
     }
 
     private fun String.toTrackAvailability(): TrackAvailability {

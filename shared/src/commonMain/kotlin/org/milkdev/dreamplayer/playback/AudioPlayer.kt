@@ -13,10 +13,6 @@ expect object AudioPlayer {
     fun resume()
     fun stop()
     fun seekTo(positionMs: Long)
-    fun skipToPrevious() // TODO: something
-    fun skipToNext() // TODO: something
-    fun skipToQueueIndex(index: Int) // TODO: something
     fun setRepeatMode(mode: PlaybackRepeatMode)
     fun getCurrentPosition(): Long
-    // fun release()
 }

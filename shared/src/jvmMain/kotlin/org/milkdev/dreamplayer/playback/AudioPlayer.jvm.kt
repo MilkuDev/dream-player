@@ -103,41 +103,6 @@ actual object AudioPlayer {
         }
     }
 
-    actual fun skipToPrevious() {
-        synchronized(lock) {
-            if (queue.isEmpty()) return
-
-            currentIndex = if (currentIndex <= 0) {
-                queue.lastIndex
-            } else {
-                currentIndex - 1
-            }
-            playCurrentTrackLocked()
-        }
-    } // TODO: something
-
-    actual fun skipToNext() {
-        synchronized(lock) {
-            if (queue.isEmpty()) return
-
-            currentIndex = if (currentIndex >= queue.lastIndex || currentIndex < 0) {
-                0
-            } else {
-                currentIndex + 1
-            }
-            playCurrentTrackLocked()
-        }
-    } // TODO: something
-
-    actual fun skipToQueueIndex(index: Int) {
-        synchronized(lock) {
-            if (index !in queue.indices) return
-
-            currentIndex = index
-            playCurrentTrackLocked()
-        }
-    } // TODO: something
-
     actual fun setRepeatMode(mode: PlaybackRepeatMode) {
         synchronized(lock) {
             repeatMode = mode
@@ -160,6 +125,7 @@ actual object AudioPlayer {
             title = item.metadata.title,
             logger = logger,
             onPlaybackCompleted = ::handlePlaybackCompleted,
+            onPlaybackError = ::handlePlaybackError,
         )
         playbackSession?.close()
         playbackSession = nextSession
@@ -217,6 +183,17 @@ actual object AudioPlayer {
                     }
                 }
             }
+        }
+    }
+
+    private fun handlePlaybackError(failedSession: PlaybackSession, error: Exception) {
+        synchronized(lock) {
+            if (playbackSession !== failedSession) return@synchronized
+
+            playbackSession = null
+            _state.value = _state.value.copy(isPlaying = false)
+
+            logger.log(Level.SEVERE, "Playback session failed, player stopped: ${error.message}", error)
         }
     }
 
@@ -284,6 +261,7 @@ private class PlaybackSession(
     private val title: String,
     private val logger: Logger,
     private val onPlaybackCompleted: (PlaybackSession) -> Unit,
+    private val onPlaybackError: (PlaybackSession, Exception) -> Unit,
 ) : Runnable {
     private val controlLock = ReentrantLock()
     private val playbackChanged = controlLock.newCondition()
@@ -381,6 +359,7 @@ private class PlaybackSession(
         } catch (error: Exception) {
             if (!closed) {
                 logger.log(Level.WARNING, "Unable to play $title", error)
+                onPlaybackError(this, error)
             }
             closed = true
         } finally {
