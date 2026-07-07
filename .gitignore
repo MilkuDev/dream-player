@@ -10,6 +10,7 @@ local.properties
 captures
 .externalNativeBuild
 .cxx
+opencode.json
 AGENTS.md
 README.md
 *.xcodeproj/*
