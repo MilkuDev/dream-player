@@ -356,17 +356,22 @@ class MusicRepository(
                     timestamp = now,
                 )
                 metadata?.genres?.takeIf { it.isNotEmpty() }?.let { genres ->
-                    musicDao.replaceTrackGenres(
-                        trackId = track.id,
-                        genres = genres.map { genre ->
-                            GenreEntity(
-                                name = genre,
-                                sortKey = genre.toSortKey(),
-                                createdAt = now,
-                            )
-                        },
-                        sourceTrust = TRUST_EMBEDDED_GENRE,
-                    )
+                    val parentGenres = genres.flatMap {
+                        GenreDictionary.resolveParentGenres(it)
+                    }.distinct()
+                    if (parentGenres.isNotEmpty()) {
+                        musicDao.replaceTrackGenres(
+                            trackId = track.id,
+                            genres = parentGenres.map { genre ->
+                                GenreEntity(
+                                    name = genre,
+                                    sortKey = genre.toSortKey(),
+                                    createdAt = now,
+                                )
+                            },
+                            sourceTrust = TRUST_EMBEDDED_GENRE,
+                        )
+                    }
                 }
             }
         }
