@@ -6,11 +6,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -21,7 +20,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import org.milkdev.dreamplayer.database.DailyPlaylistGenerationMode
@@ -73,9 +72,6 @@ import org.milkdev.dreamplayer.playback.SavePointCalculator
 import org.milkdev.dreamplayer.playback.Screen
 import org.milkdev.dreamplayer.playback.SettingsUiState
 import org.milkdev.dreamplayer.playback.TrackAvailability
-import org.milkdev.dreamplayer.playback.toLibraryUiState
-import org.milkdev.dreamplayer.playback.toPlaybackUiState
-import org.milkdev.dreamplayer.playback.toSettingsUiState
 import org.milkdev.dreamplayer.playback.matchesQueue
 import org.milkdev.dreamplayer.playback.movedCopy
 import org.milkdev.dreamplayer.playback.shuffledWithCurrentFirst
@@ -87,22 +83,15 @@ private const val PageSize = 60
 
 class PlayerViewModel {
     private val storeScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-    private val _state = MutableStateFlow(PlayerUiState())
 
-    val playbackState: StateFlow<PlaybackUiState> = _state
-        .map { it.toPlaybackUiState() }
-        .distinctUntilChanged()
-        .stateIn(storeScope, SharingStarted.Eagerly, _state.value.toPlaybackUiState())
+    private val _playbackState = MutableStateFlow(PlaybackUiState())
+    val playbackState: StateFlow<PlaybackUiState> = _playbackState.asStateFlow()
 
-    val libraryState: StateFlow<LibraryUiState> = _state
-        .map { it.toLibraryUiState() }
-        .distinctUntilChanged()
-        .stateIn(storeScope, SharingStarted.Eagerly, _state.value.toLibraryUiState())
+    private val _libraryState = MutableStateFlow(LibraryUiState())
+    val libraryState: StateFlow<LibraryUiState> = _libraryState.asStateFlow()
 
-    val settingsState: StateFlow<SettingsUiState> = _state
-        .map { it.toSettingsUiState() }
-        .distinctUntilChanged()
-        .stateIn(storeScope, SharingStarted.Eagerly, _state.value.toSettingsUiState())
+    private val _settingsState = MutableStateFlow(SettingsUiState())
+    val settingsState: StateFlow<SettingsUiState> = _settingsState.asStateFlow()
     private val aiDailyPlaylistFeature = PlatformFeatureProvider.aiDailyPlaylistApi
     private val aiNetworkDiagnosticsService = AiNetworkDiagnosticsService()
     private val aiPromptService = AiPromptService()
@@ -127,7 +116,7 @@ class PlayerViewModel {
     private var lastSavedTrackId: Long? = null
 
     init {
-        _state.update {
+        _settingsState.update {
             it.copy(
                 aiDailyPlaylistFeature = aiDailyPlaylistFeature,
                 lastFmSettings = it.lastFmSettings.copy(
@@ -145,7 +134,7 @@ class PlayerViewModel {
 
         storeScope.launch {
             MusicLibrarySource.dailyPlaylistTracks.collect { tracks ->
-                _state.update { currentState ->
+                _libraryState.update { currentState ->
                     currentState.copy(
                         dailyPlaylistState = if (tracks.isEmpty()) {
                             DailyPlaylistUiState.Empty
@@ -164,7 +153,7 @@ class PlayerViewModel {
 
         storeScope.launch {
             PlaylistRepository.visiblePlaylists.collect { playlists ->
-                _state.update { currentState ->
+                _libraryState.update { currentState ->
                     val selectedPlaylist = currentState.selectedPlaylist?.let { selected ->
                         playlists.firstOrNull { it.id == selected.id } ?: selected
                     }
@@ -187,38 +176,38 @@ class PlayerViewModel {
                 val currentQueueSnapshot = playbackQueueController.snapshot()
 
                 // Track change detection — save and reset save-points
-                val previousTrackId = _state.value.currentTrack?.id
+                val previousTrackId = _playbackState.value.currentTrack?.id
                 val newTrackId = currentQueueSnapshot.currentTrackId
                 val trackChanged = previousTrackId != null && newTrackId != null && previousTrackId != newTrackId
                 if (trackChanged) {
                     savePlaybackState()
-                    resetSavePoints(newTrackId, _state.value.totalDurationMs)
+                    resetSavePoints(newTrackId, _playbackState.value.totalDurationMs)
                 }
 
                 val queueTracks = when {
                     currentQueueSnapshot.trackIds.isEmpty() -> emptyList()
-                    _state.value.isQueueSheetVisible -> {
+                    _playbackState.value.isQueueSheetVisible -> {
                         withContext(Dispatchers.Default) {
-                            _state.value.findTracksForIds(currentQueueSnapshot.trackIds)
+                            _playbackState.value.findTracksForIds(currentQueueSnapshot.trackIds)
                         }
                     }
-                    else -> _state.value.playbackQueue
+                    else -> _playbackState.value.playbackQueue
                 }
 
-                _state.update { currentState ->
-                    val currentTrack = currentQueueSnapshot.currentTrackId?.let { trackId ->
-                        queueTracks.firstOrNull { it.id == trackId }
-                            ?: currentState.currentTrack?.takeIf { it.id == trackId }
-                    }
+                val currentTrack = currentQueueSnapshot.currentTrackId?.let { trackId ->
+                    queueTracks.firstOrNull { it.id == trackId }
+                        ?: _playbackState.value.currentTrack?.takeIf { it.id == trackId }
+                }
 
-                    val resolvedDurationMs = playbackState.totalDurationMs
-                        .takeIf { it > 0L }
-                        ?: currentTrack?.durationMs
-                        ?: 0L
+                val resolvedDurationMs = playbackState.totalDurationMs
+                    .takeIf { it > 0L }
+                    ?: currentTrack?.durationMs
+                    ?: 0L
 
-                    val trackChanged = currentState.currentTrack?.id != currentTrack?.id
+                val trackChangeCheck = _playbackState.value.currentTrack?.id != currentTrack?.id
 
-                    val updatedState = currentState.copy(
+                _playbackState.update { currentState ->
+                    currentState.copy(
                         currentTrack = currentTrack,
                         isPlaying = playbackState.isPlaying,
                         totalDurationMs = resolvedDurationMs,
@@ -227,35 +216,33 @@ class PlayerViewModel {
                         queueVersion = currentQueueSnapshot.queueVersion,
                         playbackProgressMs = when {
                             currentTrack == null -> 0L
-                            trackChanged -> 0L
+                            trackChangeCheck -> 0L
                             else -> currentState.playbackProgressMs.coerceIn(
                                 0L,
                                 resolvedDurationMs.coerceAtLeast(0L),
                             )
                         },
                     )
+                }
 
-                    if (currentTrack == null) {
-                        navigationState = navigationState.withoutPlaybackDestinations()
-                    }
-
-                    updatedState.withNavigationState(navigationState)
+                if (currentTrack == null) {
+                    navigationState = navigationState.withoutPlaybackDestinations()
                 }
             }
         }
 
         storeScope.launch {
             MusicLibrarySource.getRecentlyPlayedTracks().collect { tracks ->
-                _state.update { it.copy(recentlyPlayedTracks = tracks) }
+                _libraryState.update { it.copy(recentlyPlayedTracks = tracks) }
             }
         }
 
         storeScope.launch {
             val randomGenre = MusicLibrarySource.getRandomGenreWithTracks()
             if (randomGenre != null) {
-                _state.update { it.copy(homeGenreTitle = randomGenre.name) }
+                _libraryState.update { it.copy(homeGenreTitle = randomGenre.name) }
                 MusicLibrarySource.getTracksByGenre(randomGenre.id).collect { tracks ->
-                    _state.update { it.copy(homeGenreTracks = tracks) }
+                    _libraryState.update { it.copy(homeGenreTracks = tracks) }
                 }
             }
         }
@@ -266,7 +253,7 @@ class PlayerViewModel {
                 .map { it.currentTrackId }
                 .distinctUntilChanged()
                 .collect { trackId ->
-                    if (trackId != null && !_state.value.recentlyPlayedTracks.any { it.id == trackId }) {
+                    if (trackId != null && !_libraryState.value.recentlyPlayedTracks.any { it.id == trackId }) {
                         MusicLibrarySource.addTrackToHistory(trackId)
                     }
                 }
@@ -274,13 +261,13 @@ class PlayerViewModel {
 
         storeScope.launch {
             SettingsRepository.isBlurEnabled.collect { enabled ->
-                _state.update { it.copy(isBlurEnabled = enabled) }
+                _settingsState.update { it.copy(isBlurEnabled = enabled) }
             }
         }
 
         storeScope.launch {
             SettingsRepository.isForceNightMode.collect { enabled ->
-                _state.update { it.copy(isForceNightMode = enabled) }
+                _settingsState.update { it.copy(isForceNightMode = enabled) }
             }
         }
 
@@ -291,7 +278,7 @@ class PlayerViewModel {
                 } else {
                     DailyPlaylistGenerationMode.LOCAL_DAILY
                 }
-                _state.update {
+                _settingsState.update {
                     it.copy(dailyPlaylistGenerationMode = effectiveMode)
                 }
             }
@@ -300,7 +287,7 @@ class PlayerViewModel {
         storeScope.launch {
             SettingsRepository.aiPlaylistSettings.collect { settings ->
                 if (!aiDailyPlaylistFeature.enabled) {
-                    _state.update {
+                    _settingsState.update {
                         it.copy(
                             aiPlaylistProviderId = AiPlaylistProviders.OpenAi.id,
                             aiPlaylistModel = AiPlaylistProviders.OpenAi.defaultModelId,
@@ -315,7 +302,7 @@ class PlayerViewModel {
                 }
 
                 val provider = AiPlaylistProviders.byId(settings.providerId)
-                _state.update {
+                _settingsState.update {
                     it.copy(
                         aiPlaylistProviderId = provider.id,
                         aiPlaylistModel = settings.model.ifBlank { provider.defaultModelId },
@@ -334,7 +321,7 @@ class PlayerViewModel {
 
         storeScope.launch {
             MusicLibrarySource.metadataSyncState.collect { syncState ->
-                _state.update { state ->
+                _settingsState.update { state ->
                     state.copy(
                         lastFmSettings = state.lastFmSettings.copy(
                             isMetadataSyncing = syncState.isSyncing,
@@ -362,14 +349,14 @@ class PlayerViewModel {
                     }
                 }
                 .collect { isFavorite ->
-                    _state.update { it.copy(isCurrentTrackFavorite = isFavorite) }
+                    _playbackState.update { it.copy(isCurrentTrackFavorite = isFavorite) }
                 }
         }
     }
 
     fun onLibraryIntent(intent: LibraryIntent) {
         when (intent) {
-            is LibraryIntent.SelectCategory -> _state.update { it.copy(currentCategory = intent.category) }
+            is LibraryIntent.SelectCategory -> _libraryState.update { it.copy(currentCategory = intent.category) }
             is LibraryIntent.ChangeTrackSort -> setTrackSortOrder(intent.order)
             is LibraryIntent.ChangeAlbumSort -> setAlbumSortOrder(intent.order)
             is LibraryIntent.LoadNextTracks -> loadNextTracksPage()
@@ -387,8 +374,8 @@ class PlayerViewModel {
     }
 
     fun setTrackSortOrder(order: TrackSortOrder) {
-        if (_state.value.trackSortOrder == order) return
-        _state.update { it.copy(trackSortOrder = order) }
+        if (_libraryState.value.trackSortOrder == order) return
+        _libraryState.update { it.copy(trackSortOrder = order) }
         if (order == TrackSortOrder.GENRE) {
             loadNextGenresPage(reset = true)
         } else {
@@ -397,8 +384,8 @@ class PlayerViewModel {
     }
 
     fun setAlbumSortOrder(order: AlbumSortOrder) {
-        if (_state.value.albumSortOrder == order) return
-        _state.update { it.copy(albumSortOrder = order) }
+        if (_libraryState.value.albumSortOrder == order) return
+        _libraryState.update { it.copy(albumSortOrder = order) }
         if (order == AlbumSortOrder.GENRE) {
             loadNextGenresPage(reset = true)
         } else {
@@ -406,208 +393,195 @@ class PlayerViewModel {
         }
     }
 
-    fun loadNextTracksPage(reset: Boolean = false): Job? {
-        val currentState = _state.value
-        if (currentState.isTrackPageLoading) return null
-        if (!reset && !currentState.hasMoreTracks) return null
+    fun loadNextTracksPage(reset: Boolean = false) {
+        if (_libraryState.value.isTrackPageLoading) return
+        if (!reset && !_libraryState.value.hasMoreTracks) return
 
         if (reset) {
             trackPageCursor = null
         }
 
-        return storeScope.launch {
-            _state.update {
-                it.copy(
-                    isTrackPageLoading = true,
-                    trackListItems = if (reset) emptyList() else it.trackListItems,
-                    hasMoreTracks = if (reset) true else it.hasMoreTracks,
-                )
-            }
-            val order = _state.value.trackSortOrder
+        _libraryState.update { it.copy(isTrackPageLoading = true) }
 
-            val page = withContext(Dispatchers.IO) {
-                MusicLibrarySource.getTrackPage(
-                    order = order,
-                    cursor = trackPageCursor,
-                    limit = PageSize,
-                )
-            }
+        storeScope.launch {
+            try {
+                val order = _libraryState.value.trackSortOrder
+                val page = withContext(Dispatchers.IO) {
+                    MusicLibrarySource.getTrackPage(
+                        order = order,
+                        cursor = trackPageCursor,
+                        limit = PageSize,
+                    )
+                }
 
-            trackPageCursor = page.nextCursor
-            _state.update {
-                it.copy(
-                    trackListItems = if (reset) page.items else it.trackListItems + page.items,
-                    hasMoreTracks = page.hasMore,
-                    isTrackPageLoading = false,
-                )
+                trackPageCursor = page.nextCursor
+                _libraryState.update {
+                    it.copy(
+                        trackListItems = if (reset) page.items else it.trackListItems + page.items,
+                        hasMoreTracks = page.hasMore,
+                    )
+                }
+            } catch (e: Exception) {
+                AppDebugLog.log("Error loading tracks: ${e.message}")
+            } finally {
+                _libraryState.update { it.copy(isTrackPageLoading = false) }
             }
         }
     }
 
-    fun loadNextAlbumsPage(reset: Boolean = false): Job? {
-        val currentState = _state.value
-        if (currentState.isAlbumPageLoading) return null
-        if (!reset && !currentState.hasMoreAlbums) return null
+    fun loadNextAlbumsPage(reset: Boolean = false) {
+        if (_libraryState.value.isAlbumPageLoading) return
+        if (!reset && !_libraryState.value.hasMoreAlbums) return
 
         if (reset) {
             albumPageCursor = null
         }
 
-        return storeScope.launch {
-            _state.update {
-                it.copy(
-                    isAlbumPageLoading = true,
-                    albumListItems = if (reset) emptyList() else it.albumListItems,
-                    hasMoreAlbums = if (reset) true else it.hasMoreAlbums,
-                )
-            }
-            val order = _state.value.albumSortOrder
+        _libraryState.update { it.copy(isAlbumPageLoading = true) }
 
-            val page = withContext(Dispatchers.IO) {
-                MusicLibrarySource.getAlbumPage(
-                    order = order,
-                    cursor = albumPageCursor,
-                    limit = PageSize,
-                )
-            }
+        storeScope.launch {
+            try {
+                val order = _libraryState.value.albumSortOrder
+                val page = withContext(Dispatchers.IO) {
+                    MusicLibrarySource.getAlbumPage(
+                        order = order,
+                        cursor = albumPageCursor,
+                        limit = PageSize,
+                    )
+                }
 
-            albumPageCursor = page.nextCursor
-            _state.update {
-                it.copy(
-                    albumListItems = if (reset) page.items else it.albumListItems + page.items,
-                    hasMoreAlbums = page.hasMore,
-                    isAlbumPageLoading = false,
-                )
+                albumPageCursor = page.nextCursor
+                _libraryState.update {
+                    it.copy(
+                        albumListItems = if (reset) page.items else it.albumListItems + page.items,
+                        hasMoreAlbums = page.hasMore,
+                    )
+                }
+            } catch (e: Exception) {
+                AppDebugLog.log("Error loading albums: ${e.message}")
+            } finally {
+                _libraryState.update { it.copy(isAlbumPageLoading = false) }
             }
         }
     }
 
-    fun loadNextArtistsPage(reset: Boolean = false): Job? {
-        val currentState = _state.value
-        if (currentState.isArtistPageLoading) return null
-        if (!reset && !currentState.hasMoreArtists) return null
+    fun loadNextArtistsPage(reset: Boolean = false) {
+        if (_libraryState.value.isArtistPageLoading) return
+        if (!reset && !_libraryState.value.hasMoreArtists) return
 
         if (reset) {
             artistPageCursor = null
         }
 
-        return storeScope.launch {
-            _state.update {
-                it.copy(
-                    isArtistPageLoading = true,
-                    artistListItems = if (reset) emptyList() else it.artistListItems,
-                    hasMoreArtists = if (reset) true else it.hasMoreArtists,
-                )
-            }
+        _libraryState.update { it.copy(isArtistPageLoading = true) }
 
-            val page = withContext(Dispatchers.IO) {
-                MusicLibrarySource.getArtistPage(
-                    cursor = artistPageCursor,
-                    limit = PageSize,
-                )
-            }
+        storeScope.launch {
+            try {
+                val page = withContext(Dispatchers.IO) {
+                    MusicLibrarySource.getArtistPage(
+                        cursor = artistPageCursor,
+                        limit = PageSize,
+                    )
+                }
 
-            artistPageCursor = page.nextCursor
-            _state.update {
-                it.copy(
-                    artistListItems = if (reset) page.items else it.artistListItems + page.items,
-                    hasMoreArtists = page.hasMore,
-                    isArtistPageLoading = false,
-                )
+                artistPageCursor = page.nextCursor
+                _libraryState.update {
+                    it.copy(
+                        artistListItems = if (reset) page.items else it.artistListItems + page.items,
+                        hasMoreArtists = page.hasMore,
+                    )
+                }
+            } catch (e: Exception) {
+                AppDebugLog.log("Error loading artists: ${e.message}")
+            } finally {
+                _libraryState.update { it.copy(isArtistPageLoading = false) }
             }
         }
     }
 
-    fun loadNextGenresPage(reset: Boolean = false): Job? {
-        val currentState = _state.value
-        if (currentState.isGenrePageLoading) return null
-        if (!reset && !currentState.hasMoreGenres) return null
+    fun loadNextGenresPage(reset: Boolean = false) {
+        if (_libraryState.value.isGenrePageLoading) return
+        if (!reset && !_libraryState.value.hasMoreGenres) return
 
         if (reset) {
             genrePageCursor = null
         }
 
-        return storeScope.launch {
-            _state.update {
-                it.copy(
-                    isGenrePageLoading = true,
-                    genreListItems = if (reset) emptyList() else it.genreListItems,
-                    hasMoreGenres = if (reset) true else it.hasMoreGenres,
-                )
-            }
-            val page = withContext(Dispatchers.IO) {
-                MusicLibrarySource.getGenrePage(
-                    cursor = genrePageCursor,
-                    limit = PageSize,
-                )
-            }
+        _libraryState.update { it.copy(isGenrePageLoading = true) }
 
-            genrePageCursor = page.nextCursor
-            _state.update {
-                it.copy(
-                    genreListItems = if (reset) page.items else it.genreListItems + page.items,
-                    hasMoreGenres = page.hasMore,
-                    isGenrePageLoading = false,
-                )
+        storeScope.launch {
+            try {
+                val page = withContext(Dispatchers.IO) {
+                    MusicLibrarySource.getGenrePage(
+                        cursor = genrePageCursor,
+                        limit = PageSize,
+                    )
+                }
+
+                genrePageCursor = page.nextCursor
+                _libraryState.update {
+                    it.copy(
+                        genreListItems = if (reset) page.items else it.genreListItems + page.items,
+                        hasMoreGenres = page.hasMore,
+                    )
+                }
+            } catch (e: Exception) {
+                AppDebugLog.log("Error loading genres: ${e.message}")
+            } finally {
+                _libraryState.update { it.copy(isGenrePageLoading = false) }
             }
         }
     }
 
-    fun loadPlaylistPickerPage(reset: Boolean = false): Job? {
-        val currentState = _state.value
-        if (currentState.isPlaylistPickerPageLoading) return null
-        if (!reset && !currentState.hasMorePlaylistPickerTracks) return null
+    fun loadPlaylistPickerPage(reset: Boolean = false) {
+        if (_libraryState.value.isPlaylistPickerPageLoading) return
+        if (!reset && !_libraryState.value.hasMorePlaylistPickerTracks) return
 
         if (reset) {
             playlistPickerPageCursor = null
         }
 
-        return storeScope.launch {
-            _state.update {
-                it.copy(
-                    isPlaylistPickerPageLoading = true,
-                    playlistPickerTrackItems = if (reset) emptyList() else it.playlistPickerTrackItems,
-                    hasMorePlaylistPickerTracks = if (reset) true else it.hasMorePlaylistPickerTracks,
-                )
-            }
+        _libraryState.update { it.copy(isPlaylistPickerPageLoading = true) }
 
-            val order = TrackSortOrder.TRACK_NAME
+        storeScope.launch {
+            try {
+                val order = TrackSortOrder.TRACK_NAME
+                val page = withContext(Dispatchers.IO) {
+                    MusicLibrarySource.getTrackPage(
+                        order = order,
+                        cursor = playlistPickerPageCursor,
+                        limit = PageSize,
+                    )
+                }
 
-            val page = withContext(Dispatchers.IO) {
-                MusicLibrarySource.getTrackPage(
-                    order = order,
-                    cursor = playlistPickerPageCursor,
-                    limit = PageSize,
-                )
-            }
-
-            playlistPickerPageCursor = page.nextCursor
-            _state.update {
-                it.copy(
-                    playlistPickerTrackItems = if (reset) page.items else it.playlistPickerTrackItems + page.items,
-                    hasMorePlaylistPickerTracks = page.hasMore,
-                    isPlaylistPickerPageLoading = false,
-                )
+                playlistPickerPageCursor = page.nextCursor
+                _libraryState.update {
+                    it.copy(
+                        playlistPickerTrackItems = if (reset) page.items else it.playlistPickerTrackItems + page.items,
+                        hasMorePlaylistPickerTracks = page.hasMore,
+                    )
+                }
+            } catch (e: Exception) {
+                AppDebugLog.log("Error loading playlist picker: ${e.message}")
+            } finally {
+                _libraryState.update { it.copy(isPlaylistPickerPageLoading = false) }
             }
         }
     }
 
     private fun reloadLibraryPages() {
         storeScope.launch {
+            _libraryState.update { it.copy(isLoading = true) }
+            
+            coroutineScope {
+                launch { loadNextTracksPage(reset = true) }
+                launch { loadNextAlbumsPage(reset = true) }
+                launch { loadNextArtistsPage(reset = true) }
+                launch { loadNextGenresPage(reset = true) }
+                launch { loadPlaylistPickerPage(reset = true) }
+            }
 
-            _state.update { it.copy(isLoading = true) }
-
-            val jobs: List<Job> = listOfNotNull(
-                loadNextTracksPage(reset = true),
-                loadNextAlbumsPage(reset = true),
-                loadNextArtistsPage(reset = true),
-                loadNextGenresPage(reset = true),
-                loadPlaylistPickerPage(reset = true)
-            )
-
-            jobs.joinAll()
-
-            _state.update { it.copy(isLoading = false) }
+            _libraryState.update { it.copy(isLoading = false) }
         }
     }
 
@@ -616,9 +590,9 @@ class PlayerViewModel {
             val summary = withContext(Dispatchers.IO) {
                 MusicLibrarySource.getLibrarySummary()
             }
-            _state.update { state ->
+            _libraryState.update { it.copy(librarySummary = summary) }
+            _settingsState.update { state ->
                 state.copy(
-                    librarySummary = summary,
                     lastFmSettings = state.lastFmSettings.copy(
                         pendingCount = summary.pendingMetadataCount,
                         coverPendingCount = summary.pendingMetadataCount,
@@ -633,7 +607,7 @@ class PlayerViewModel {
         setNavigationState(
             navigationState.navigateTo(
                 destination = screen.toAppDestination(),
-                hasCurrentTrack = _state.value.currentTrack != null,
+                hasCurrentTrack = _playbackState.value.currentTrack != null,
             )
         )
         if (screen == Screen.Queue) {
@@ -652,21 +626,21 @@ class PlayerViewModel {
     }
 
     fun openPlayer() {
-        AppDebugLog.log("open_player tracks=${_state.value.librarySummary.trackCount}")
+        AppDebugLog.log("open_player tracks=${_libraryState.value.librarySummary.trackCount}")
         setNavigationState(
             navigationState.navigateTo(
                 destination = AppDestination.Player,
-                hasCurrentTrack = _state.value.currentTrack != null,
+                hasCurrentTrack = _playbackState.value.currentTrack != null,
             )
         )
     }
 
     fun openQueueSheet() {
-        AppDebugLog.log("open_queue_sheet tracks=${_state.value.playbackQueue.size}")
+        AppDebugLog.log("open_queue_sheet tracks=${_playbackState.value.playbackQueue.size}")
         setNavigationState(
             navigationState.navigateTo(
                 destination = AppDestination.Queue,
-                hasCurrentTrack = _state.value.currentTrack != null ,
+                hasCurrentTrack = _playbackState.value.currentTrack != null ,
             )
         )
         refreshQueueDisplay(playbackQueueController.snapshot())
@@ -676,7 +650,8 @@ class PlayerViewModel {
         AppDebugLog.log("open_playlist id=${playlist.id}")
         setNavigationState(
             navigationState.navigateTo(AppDestination.PlaylistDetails),
-        ) {
+        )
+        _libraryState.update {
             it.copy(
                 selectedPlaylist = playlist,
                 selectedPlaylistTracks = emptyList(),
@@ -689,26 +664,30 @@ class PlayerViewModel {
     fun openAlbumDetails(album: AlbumListItem) {
         AppDebugLog.log("open_album_details id=${album.id}")
 
+        val libraryCollection = LibraryCollectionDetailsUiModel(
+            type = LibraryCollectionType.ALBUM,
+            title = album.title,
+            subtitle = "${album.artistName}${album.year?.let { year -> " • $year" } ?: ""}",
+            artworkUri = album.artworkUri,
+            tracks = emptyList(),
+        )
+
         setNavigationState(
             navigationState.navigateTo(AppDestination.LibraryCollectionDetails),
-        ) {
+        )
+
+        _libraryState.update {
             it.copy(
                 selectedPlaylist = null,
                 selectedPlaylistTracks = emptyList(),
-                selectedLibraryCollection = LibraryCollectionDetailsUiModel(
-                    type = LibraryCollectionType.ALBUM,
-                    title = album.title,
-                    subtitle = "${album.artistName}${album.year?.let { year -> " • $year" } ?: ""}",
-                    artworkUri = album.artworkUri,
-                    tracks = emptyList(),
-                ),
+                selectedLibraryCollection = libraryCollection,
             )
         }
 
         playlistTracksJob?.cancel()
         playlistTracksJob = storeScope.launch {
             MusicLibrarySource.getTracksByAlbum(album.id).collect { tracks ->
-                _state.update {
+                _libraryState.update {
                     it.copy(
                         selectedLibraryCollection = it.selectedLibraryCollection?.copy(tracks = tracks),
                     )
@@ -720,19 +699,24 @@ class PlayerViewModel {
     fun openDailyPlaylist() {
         val dailyPlaylist = SystemPlaylists.DailyPlaylist
         AppDebugLog.log("open_system_playlist id=${dailyPlaylist.id}")
+
+        val selectedPlaylist = UserPlaylist(
+            id = dailyPlaylist.id,
+            name = dailyPlaylist.name,
+            createdAt = dailyPlaylist.createdAt,
+            isSystem = true,
+            canEditTracks = dailyPlaylist.permissions.canEditTracks,
+            canRename = dailyPlaylist.permissions.canRename,
+        )
+
         setNavigationState(
             navigationState.navigateTo(AppDestination.PlaylistDetails),
-        ) { currentState ->
-            currentState.copy(
-                selectedPlaylist = UserPlaylist(
-                    id = dailyPlaylist.id,
-                    name = dailyPlaylist.name,
-                    createdAt = dailyPlaylist.createdAt,
-                    isSystem = true,
-                    canEditTracks = dailyPlaylist.permissions.canEditTracks,
-                    canRename = dailyPlaylist.permissions.canRename,
-                ),
-                selectedPlaylistTracks = (currentState.dailyPlaylistState as? DailyPlaylistUiState.Available)
+        )
+
+        _libraryState.update {
+            it.copy(
+                selectedPlaylist = selectedPlaylist,
+                selectedPlaylistTracks = (_libraryState.value.dailyPlaylistState as? DailyPlaylistUiState.Available)
                     ?.tracks
                     .orEmpty(),
                 selectedLibraryCollection = null,
@@ -759,8 +743,8 @@ class PlayerViewModel {
     }
 
     fun favorite() {
-        val track = _state.value.currentTrack ?: return
-        val currentlyFavorite = _state.value.isCurrentTrackFavorite
+        val track = _playbackState.value.currentTrack ?: return
+        val currentlyFavorite = _playbackState.value.isCurrentTrackFavorite
 
         storeScope.launch {
             if (currentlyFavorite) {
@@ -778,16 +762,13 @@ class PlayerViewModel {
     }
 
     fun openLibrarySearch() {
-        setNavigationState(navigationState.navigateTo(AppDestination.Search)) { currentState ->
-            currentState.copy(
-                librarySearch = currentState.librarySearch.copy(isActive = true),
-            )
-        }
+        setNavigationState(navigationState.navigateTo(AppDestination.Search))
+        _libraryState.update { it.copy(librarySearch = it.librarySearch.copy(isActive = true)) }
         loadNextSearchPage(reset = true)
     }
 
     fun updateLibrarySearchQuery(query: String) {
-        _state.update { currentState ->
+        _libraryState.update { currentState ->
             currentState.copy(
                 librarySearch = currentState.librarySearch.copy(query = query),
             )
@@ -796,7 +777,7 @@ class PlayerViewModel {
     }
 
     fun loadNextSearchPage(reset: Boolean = false) {
-        val currentState = _state.value
+        val currentState = _libraryState.value
         if (currentState.isSearchPageLoading) return
         if (!reset && !currentState.hasMoreSearchTracks) return
 
@@ -804,22 +785,22 @@ class PlayerViewModel {
             searchPageCursor = null
         }
         storeScope.launch {
-            _state.update {
+            _libraryState.update {
                 it.copy(
                     isSearchPageLoading = true,
                     searchTrackListItems = if (reset) emptyList() else it.searchTrackListItems,
                     hasMoreSearchTracks = if (reset) true else it.hasMoreSearchTracks,
                 )
             }
-            val state = _state.value
+            val searchState = _libraryState.value
             val page = MusicLibrarySource.searchTrackPage(
-                query = state.librarySearch.query,
-                mode = state.librarySearch.mode,
+                query = searchState.librarySearch.query,
+                mode = searchState.librarySearch.mode,
                 cursor = searchPageCursor,
                 limit = PageSize,
             )
             searchPageCursor = page.nextCursor
-            _state.update {
+            _libraryState.update {
                 it.copy(
                     searchTrackListItems = if (reset) page.items else it.searchTrackListItems + page.items,
                     hasMoreSearchTracks = page.hasMore,
@@ -832,26 +813,30 @@ class PlayerViewModel {
     fun openArtistDetails(artist: ArtistListItem) {
         AppDebugLog.log("open_artist_details id=${artist.id}")
 
+        val libraryCollection = LibraryCollectionDetailsUiModel(
+            type = LibraryCollectionType.ARTIST,
+            title = artist.name,
+            subtitle = "${artist.albumCount} альбомов • ${artist.trackCount} треков",
+            artworkUri = artist.artworkUri,
+            tracks = emptyList(),
+        )
+
         setNavigationState(
             navigationState.navigateTo(AppDestination.LibraryCollectionDetails),
-        ) {
+        )
+
+        _libraryState.update {
             it.copy(
                 selectedPlaylist = null,
                 selectedPlaylistTracks = emptyList(),
-                selectedLibraryCollection = LibraryCollectionDetailsUiModel(
-                    type = LibraryCollectionType.ARTIST,
-                    title = artist.name,
-                    subtitle = "${artist.albumCount} альбомов • ${artist.trackCount} треков",
-                    artworkUri = artist.artworkUri,
-                    tracks = emptyList(),
-                ),
+                selectedLibraryCollection = libraryCollection,
             )
         }
 
         playlistTracksJob?.cancel()
         playlistTracksJob = storeScope.launch {
             MusicLibrarySource.getTracksByArtist(artist.id).collect { tracks ->
-                _state.update {
+                _libraryState.update {
                     it.copy(
                         selectedLibraryCollection = it.selectedLibraryCollection?.copy(tracks = tracks),
                     )
@@ -863,20 +848,24 @@ class PlayerViewModel {
     fun openGenreDetails(genre: GenreListItem) {
         AppDebugLog.log("open_genre_details id=${genre.id}")
 
+        val libraryCollection = LibraryCollectionDetailsUiModel(
+            type = LibraryCollectionType.GENRE,
+            title = genre.name,
+            subtitle = "${genre.albumCount} альбомов • ${genre.trackCount} треков",
+            artworkUri = null,
+            albums = emptyList(),
+            tracks = emptyList(),
+        )
+
         setNavigationState(
             navigationState.navigateTo(AppDestination.LibraryCollectionDetails),
-        ) {
+        )
+
+        _libraryState.update {
             it.copy(
                 selectedPlaylist = null,
                 selectedPlaylistTracks = emptyList(),
-                selectedLibraryCollection = LibraryCollectionDetailsUiModel(
-                    type = LibraryCollectionType.GENRE,
-                    title = genre.name,
-                    subtitle = "${genre.albumCount} альбомов • ${genre.trackCount} треков",
-                    artworkUri = null,
-                    albums = emptyList(),
-                    tracks = emptyList(),
-                ),
+                selectedLibraryCollection = libraryCollection,
             )
         }
 
@@ -887,7 +876,7 @@ class PlayerViewModel {
                 MusicLibrarySource.getTracksByGenre(genre.id),
             ) { albums, tracks -> albums to tracks }
                 .collect { (albums, tracks) ->
-                    _state.update {
+                    _libraryState.update {
                         it.copy(
                             selectedLibraryCollection = it.selectedLibraryCollection?.copy(
                                 artworkUri = albums.firstOrNull()?.artworkUri,
@@ -901,21 +890,21 @@ class PlayerViewModel {
     }
 
     suspend fun loadLibrary() {
-        _state.update { it.copy(isLoading = true, error = null) }
+        _libraryState.update { it.copy(isLoading = true, error = null) }
         try {
             MusicLibrarySource.loadTracks()
             refreshLibrarySummary()
             reloadLibraryPages()
             restorePlaybackState()
-            _state.update { it.copy(isLoading = false) }
+            _libraryState.update { it.copy(isLoading = false) }
         } catch (e: Exception) {
-            _state.update { it.copy(isLoading = false, error = e.message ?: "Unknown error") }
+            _libraryState.update { it.copy(isLoading = false, error = e.message ?: "Unknown error") }
             AppDebugLog.log("library_load_error message=${e.message.orEmpty()}")
         }
     }
 
     fun shuffleDailyPlaylist() {
-        val dailyTracks = (_state.value.dailyPlaylistState as? DailyPlaylistUiState.Available)
+        val dailyTracks = (_libraryState.value.dailyPlaylistState as? DailyPlaylistUiState.Available)
             ?.tracks
             .orEmpty()
 
@@ -933,7 +922,7 @@ class PlayerViewModel {
 
     fun playFromLibrary(trackId: Long) {
         storeScope.launch {
-            val order = _state.value.trackSortOrder
+            val order = _libraryState.value.trackSortOrder
             val allIds = MusicLibrarySource.getAllTrackIds(order)
             val startIndex = allIds.indexOf(trackId).coerceAtLeast(0)
 
@@ -941,7 +930,7 @@ class PlayerViewModel {
                 trackIds = allIds,
                 startIndex = startIndex,
             )
-            _state.update {
+            _playbackState.update {
                 it.copy(
                     currentQueueIndex = snapshot.currentIndex,
                     queueVersion = snapshot.queueVersion,
@@ -963,11 +952,11 @@ class PlayerViewModel {
     }
 
     fun playFromSelectedPlaylist(track: LibraryTrack) {
-        playFromVisibleTracks(_state.value.selectedPlaylistTracks, track)
+        playFromVisibleTracks(_libraryState.value.selectedPlaylistTracks, track)
     }
 
     fun playFromSelectedLibraryCollection(track: LibraryTrack) {
-        playFromVisibleTracks(_state.value.selectedLibraryCollection?.tracks.orEmpty(), track)
+        playFromVisibleTracks(_libraryState.value.selectedLibraryCollection?.tracks.orEmpty(), track)
     }
 
     fun playQueueItem(index: Int) {
@@ -977,7 +966,7 @@ class PlayerViewModel {
 
     fun pause() {
         AudioPlayer.pause()
-        _state.update { it.copy(isPlaying = false) }
+        _playbackState.update { it.copy(isPlaying = false) }
         savePlaybackState()
     }
 
@@ -985,7 +974,7 @@ class PlayerViewModel {
         if (AudioPlayer.state.value.currentTrackId == null) {
             val snapshot = playbackQueueController.snapshot()
             if (snapshot.trackIds.isNotEmpty()) {
-                val restoredPosition = _state.value.playbackProgressMs
+                val restoredPosition = _playbackState.value.playbackProgressMs
                 applyQueueSnapshot(
                     snapshot,
                     PlaybackSnapshotApplyMode.Play,
@@ -996,7 +985,7 @@ class PlayerViewModel {
             return
         }
         AudioPlayer.resume()
-        _state.update { it.copy(isPlaying = true) }
+        _playbackState.update { it.copy(isPlaying = true) }
     }
 
     fun playPrevious() {
@@ -1011,7 +1000,7 @@ class PlayerViewModel {
 
     fun seekTo(positionMs: Long) {
         AudioPlayer.seekTo(positionMs)
-        _state.update { it.copy(playbackProgressMs = positionMs) }
+        _playbackState.update { it.copy(playbackProgressMs = positionMs) }
     }
 
     fun toggleShuffle() {
@@ -1024,7 +1013,7 @@ class PlayerViewModel {
             } else {
                 null
             }
-            val shouldResolveDisplayQueue = _state.value.isQueueSheetVisible
+            val shouldResolveDisplayQueue = _playbackState.value.isQueueSheetVisible
 
             val orderedIds = withContext(Dispatchers.Default) {
                 originalIds ?: baseSnapshot.trackIds.shuffledWithCurrentFirst(currentTrackId)
@@ -1037,7 +1026,7 @@ class PlayerViewModel {
                 updateOriginalOrder = false,
             ) ?: return@launch
 
-            _state.update {
+            _playbackState.update {
                 it.copy(
                     isShuffleEnabled = playbackQueueController.isShuffleEnabled,
                     currentQueueIndex = snapshot.currentIndex,
@@ -1061,13 +1050,10 @@ class PlayerViewModel {
     }
 
     fun toggleRepeat() {
-        _state.update { currentState ->
-            val nextState = currentState.withRepeatToggled()
-            AudioPlayer.setRepeatMode(nextState.repeatMode)
-            nextState
-        }
+        _playbackState.update { it.copy(repeatMode = it.repeatMode.next()) }
+        AudioPlayer.setRepeatMode(_playbackState.value.repeatMode)
         savePlaybackState()
-        AppDebugLog.log("repeat_toggle mode=${_state.value.repeatMode}")
+        AppDebugLog.log("repeat_toggle mode=${_playbackState.value.repeatMode}")
     }
 
     fun moveTrack(fromIndex: Int, toIndex: Int) {
@@ -1101,7 +1087,7 @@ class PlayerViewModel {
         playbackQueueController.clear()
         AudioPlayer.stop()
         navigationState = navigationState.withoutPlaybackDestinations()
-        _state.update {
+        _playbackState.update {
             it.copy(
                 currentTrack = null,
                 isPlaying = false,
@@ -1111,7 +1097,11 @@ class PlayerViewModel {
                 currentQueueIndex = -1,
                 queueVersion = playbackQueueController.snapshot().queueVersion,
                 isShuffleEnabled = false,
-            ).withNavigationState(navigationState)
+                currentScreen = navigationState.currentContentDestination.toScreen(),
+                canNavigateBack = navigationState.canNavigateBack,
+                playerPresentation = PlayerPresentation.Mini,
+                isQueueSheetVisible = false,
+            )
         }
         SettingsRepository.clearPlaybackState()
     }
@@ -1153,10 +1143,10 @@ class PlayerViewModel {
         if (!aiDailyPlaylistFeature.enabled) return
 
         storeScope.launch {
-            val providerId = _state.value.aiPlaylistProviderId
+            val providerId = _settingsState.value.aiPlaylistProviderId
             AiPlaylistSecretStore.setApiKey(providerId, apiKey)
             refreshAiPlaylistApiKeyConfigured(providerId)
-            _state.update {
+            _settingsState.update {
                 it.copy(
                     aiPlaylistApiTestStatus =
                         "API-ключ сохранен. Поле ввода очищено намеренно; сохраненная копия зашифрована в хранилище приложения."
@@ -1169,10 +1159,10 @@ class PlayerViewModel {
         if (!aiDailyPlaylistFeature.enabled) return
 
         storeScope.launch {
-            val providerId = _state.value.aiPlaylistProviderId
+            val providerId = _settingsState.value.aiPlaylistProviderId
             AiPlaylistSecretStore.clearApiKey(providerId)
             refreshAiPlaylistApiKeyConfigured(providerId)
-            _state.update {
+            _settingsState.update {
                 it.copy(aiPlaylistApiTestStatus = "API-ключ выбранного провайдера очищен")
             }
         }
@@ -1185,8 +1175,8 @@ class PlayerViewModel {
             AiPlaylistProviders.all.forEach { provider ->
                 AiPlaylistSecretStore.clearApiKey(provider.id)
             }
-            refreshAiPlaylistApiKeyConfigured(_state.value.aiPlaylistProviderId)
-            _state.update {
+            refreshAiPlaylistApiKeyConfigured(_settingsState.value.aiPlaylistProviderId)
+            _settingsState.update {
                 it.copy(aiPlaylistApiTestStatus = "Все сохраненные AI-ключи очищены")
             }
         }
@@ -1196,12 +1186,12 @@ class PlayerViewModel {
         if (!aiDailyPlaylistFeature.enabled) return
 
         storeScope.launch {
-            _state.update {
+            _settingsState.update {
                 it.copy(aiPlaylistApiTestStatus = "Проверяю AI API...")
             }
 
             val status = withContext(Dispatchers.IO) {
-                val currentState = _state.value
+                val currentState = _settingsState.value
                 val provider = AiPlaylistProviders.byId(currentState.aiPlaylistProviderId)
                 val apiKey = AiPlaylistSecretStore.getApiKey(provider.id)
                     ?.takeIf { it.isNotBlank() }
@@ -1215,7 +1205,7 @@ class PlayerViewModel {
                 )
             }
 
-            _state.update {
+            _settingsState.update {
                 it.copy(aiPlaylistApiTestStatus = status)
             }
         }
@@ -1225,12 +1215,12 @@ class PlayerViewModel {
         if (!aiDailyPlaylistFeature.enabled) return
 
         storeScope.launch {
-            _state.update {
+            _settingsState.update {
                 it.copy(aiPlaylistApiTestStatus = "Проверяю ответ модели...")
             }
 
             val status = withContext(Dispatchers.IO) {
-                val currentState = _state.value
+                val currentState = _settingsState.value
                 val provider = AiPlaylistProviders.byId(currentState.aiPlaylistProviderId)
                 val apiKey = AiPlaylistSecretStore.getApiKey(provider.id)
                     ?.takeIf { it.isNotBlank() }
@@ -1286,7 +1276,7 @@ class PlayerViewModel {
                 )
             }
 
-            _state.update {
+            _settingsState.update {
                 it.copy(aiPlaylistApiTestStatus = status)
             }
         }
@@ -1294,7 +1284,7 @@ class PlayerViewModel {
 
     fun forceGenerateDailyPlaylist() {
         storeScope.launch {
-            _state.update {
+            _settingsState.update {
                 it.copy(aiPlaylistApiTestStatus = "Генерирую плейлист дня...")
             }
 
@@ -1314,7 +1304,7 @@ class PlayerViewModel {
                 },
             )
 
-            _state.update {
+            _settingsState.update {
                 it.copy(aiPlaylistApiTestStatus = status)
             }
         }
@@ -1325,19 +1315,19 @@ class PlayerViewModel {
 
         val trimmedPrompt = prompt.trim()
         if (trimmedPrompt.isBlank()) {
-            _state.update {
+            _settingsState.update {
                 it.copy(aiPlaylistApiTestStatus = "Промпт пустой")
             }
             return
         }
 
         storeScope.launch {
-            _state.update {
+            _settingsState.update {
                 it.copy(aiPlaylistApiTestStatus = "Отправляю промпт...")
             }
 
             val status = withContext(Dispatchers.IO) {
-                val currentState = _state.value
+                val currentState = _settingsState.value
                 val provider = AiPlaylistProviders.byId(currentState.aiPlaylistProviderId)
                 val apiKey = AiPlaylistSecretStore.getApiKey(provider.id)
                     ?.takeIf { it.isNotBlank() }
@@ -1364,7 +1354,7 @@ class PlayerViewModel {
                 )
             }
 
-            _state.update {
+            _settingsState.update {
                 it.copy(aiPlaylistApiTestStatus = status)
             }
         }
@@ -1376,7 +1366,7 @@ class PlayerViewModel {
         storeScope.launch {
             LastFmSecretStore.setApiKey(apiKey)
             refreshLastFmApiKeyConfigured()
-            _state.update { state ->
+            _settingsState.update { state ->
                 state.copy(
                     lastFmSettings = state.lastFmSettings.copy(
                         testStatus = lastFmStatus(
@@ -1394,7 +1384,7 @@ class PlayerViewModel {
         storeScope.launch {
             LastFmSecretStore.clearApiKey()
             refreshLastFmApiKeyConfigured()
-            _state.update { state ->
+            _settingsState.update { state ->
                 state.copy(
                     lastFmSettings = state.lastFmSettings.copy(
                         testStatus = lastFmStatus("API-ключ Last.fm очищен"),
@@ -1408,7 +1398,7 @@ class PlayerViewModel {
         if (!LastFmSecretStore.supportsSecrets) return
 
         storeScope.launch {
-            _state.update { state ->
+            _settingsState.update { state ->
                 state.copy(
                     lastFmSettings = state.lastFmSettings.copy(
                         isTestInProgress = true,
@@ -1426,7 +1416,7 @@ class PlayerViewModel {
                 lastFmNetworkDiagnosticsService.testApiKey(apiKey)
             }
 
-            _state.update { state ->
+            _settingsState.update { state ->
                 state.copy(
                     lastFmSettings = state.lastFmSettings.copy(
                         isTestInProgress = false,
@@ -1450,7 +1440,7 @@ class PlayerViewModel {
             trackIds = tracks.map { it.id }.toLongArray(),
             startIndex = startIndex,
         )
-        _state.update {
+        _playbackState.update {
             it.copy(
                 playbackQueue = tracks,
                 currentQueueIndex = snapshot.currentIndex,
@@ -1467,7 +1457,7 @@ class PlayerViewModel {
         playlistTracksJob?.cancel()
         playlistTracksJob = storeScope.launch {
             PlaylistRepository.tracksForPlaylist(playlistId).collect { tracks ->
-                _state.update { currentState ->
+                _libraryState.update { currentState ->
                     if (currentState.selectedPlaylist?.id == playlistId) {
                         currentState.copy(selectedPlaylistTracks = tracks)
                     } else {
@@ -1505,17 +1495,17 @@ class PlayerViewModel {
 
             val resolvedQueue = if (shuffleApplyMode == ShuffleApplyMode.QueueVisible) {
                 withContext(Dispatchers.Default) {
-                    _state.value.findTracksForIds(currentQueueSnapshot.trackIds)
+                    _playbackState.value.findTracksForIds(currentQueueSnapshot.trackIds)
                 }
             } else {
-                _state.value.playbackQueue
+                _playbackState.value.playbackQueue
             }
 
             if (isUpdate && !isActive) return@launch
 
             val hasMissingTracks = resolvedQueue.size != currentQueueSnapshot.trackIds.size
 
-            _state.update { currentState ->
+            _playbackState.update { currentState ->
                 currentState.copy(
                     currentTrack = currentTrack,
                     isPlaying = if (mode == PlaybackSnapshotApplyMode.Play) true else currentState.isPlaying,
@@ -1560,7 +1550,7 @@ class PlayerViewModel {
             val latestQueueSnapshot = playbackQueueController.snapshot()
             if (!latestQueueSnapshot.matchesDisplayRequest(currentQueueSnapshot)) return@launch
 
-            _state.update { currentState ->
+            _playbackState.update { currentState ->
                 if (!currentState.isQueueSheetVisible) {
                     currentState
                 } else {
@@ -1580,11 +1570,11 @@ class PlayerViewModel {
     private fun savePlaybackState() {
         val snapshot = playbackQueueController.snapshot()
         if (snapshot.trackIds.isEmpty()) return
-        val currentState = _state.value
+        val currentPlaybackState = _playbackState.value
         val positionMs = if (AudioPlayer.state.value.currentTrackId != null) {
             AudioPlayer.getCurrentPosition()
         } else {
-            currentState.playbackProgressMs
+            currentPlaybackState.playbackProgressMs
         }
         SettingsRepository.savePlaybackState(
             SettingsRepository.SavedPlaybackState(
@@ -1595,7 +1585,7 @@ class PlayerViewModel {
                 queueIndex = snapshot.currentIndex,
                 trackPositionMs = positionMs,
                 shuffleEnabled = playbackQueueController.isShuffleEnabled,
-                repeatMode = currentState.repeatMode.name,
+                repeatMode = currentPlaybackState.repeatMode.name,
             )
         )
     }
@@ -1677,7 +1667,7 @@ class PlayerViewModel {
         val maxDuration = displayQueue.firstOrNull { it.id == currentId }?.durationMs ?: 0L
         val clampedPosition = savedState.trackPositionMs.coerceIn(0L, maxDuration)
 
-        _state.update {
+        _playbackState.update {
             it.copy(
                 currentTrack = libraryTrack,
                 playbackQueue = displayQueue,
@@ -1700,10 +1690,10 @@ class PlayerViewModel {
         progressJob?.cancel()
         progressJob = storeScope.launch {
             while (isActive) {
-                val currentState = _state.value
-                val currentTrack = currentState.currentTrack
-                if (currentTrack != null && !currentState.isQueueSheetVisible) {
-                    val maxDuration = currentState.totalDurationMs
+                val currentPlaybackState = _playbackState.value
+                val currentTrack = currentPlaybackState.currentTrack
+                if (currentTrack != null && !currentPlaybackState.isQueueSheetVisible) {
+                    val maxDuration = currentPlaybackState.totalDurationMs
                         .takeIf { it > 0L } ?: currentTrack.durationMs
 
                     if (AudioPlayer.state.value.currentTrackId != null) {
@@ -1712,7 +1702,7 @@ class PlayerViewModel {
                             maxDuration.coerceAtLeast(0L),
                         )
 
-                        _state.update { state ->
+                        _playbackState.update { state ->
                             if (state.playbackProgressMs == nextProgress) {
                                 state
                             } else {
@@ -1721,7 +1711,7 @@ class PlayerViewModel {
                         }
 
                         // Check save-points for playback progress
-                        if (currentState.isPlaying && currentSavePoints.isNotEmpty()) {
+                        if (currentPlaybackState.isPlaying && currentSavePoints.isNotEmpty()) {
                             val trackId = currentTrack.id
                             for (i in currentSavePoints.indices) {
                                 if (i in hitSavePointIndices) continue
@@ -1743,7 +1733,7 @@ class PlayerViewModel {
 
     private suspend fun refreshAiPlaylistApiKeyConfigured(providerId: String) {
         if (!aiDailyPlaylistFeature.enabled) {
-            _state.update { it.copy(isAiPlaylistApiKeyConfigured = false) }
+            _settingsState.update { it.copy(isAiPlaylistApiKeyConfigured = false) }
             return
         }
 
@@ -1754,7 +1744,7 @@ class PlayerViewModel {
             }
             selectedConfigured to anyConfigured
         }
-        _state.update { currentState ->
+        _settingsState.update { currentState ->
             if (currentState.aiPlaylistProviderId != providerId) {
                 currentState.copy(isAnyAiPlaylistApiKeyConfigured = configuredState.second)
             } else {
@@ -1768,7 +1758,7 @@ class PlayerViewModel {
 
     private suspend fun refreshLastFmApiKeyConfigured() {
         if (!LastFmSecretStore.supportsSecrets) {
-            _state.update { state ->
+            _settingsState.update { state ->
                 state.copy(
                     lastFmSettings = state.lastFmSettings.copy(
                         supportsSecrets = false,
@@ -1783,7 +1773,7 @@ class PlayerViewModel {
         val isConfigured = withContext(Dispatchers.IO) {
             LastFmSecretStore.isApiKeyConfigured()
         }
-        _state.update { state ->
+        _settingsState.update { state ->
             state.copy(
                 lastFmSettings = state.lastFmSettings.copy(
                     supportsSecrets = true,
@@ -1811,7 +1801,6 @@ class PlayerViewModel {
 
     private fun setNavigationState(
         nextNavigationState: AppNavigationState,
-        stateTransform: (PlayerUiState) -> PlayerUiState = { it },
     ) {
         val previousNavigationState = navigationState
         if (
@@ -1825,8 +1814,23 @@ class PlayerViewModel {
         }
 
         navigationState = nextNavigationState
-        _state.update { currentState ->
-            stateTransform(currentState).withNavigationState(navigationState)
+        _playbackState.update {
+            val hasPlaybackDestination = it.currentTrack != null &&
+                (
+                    nextNavigationState.contains(AppDestination.Player) ||
+                        nextNavigationState.contains(AppDestination.Queue)
+                )
+            it.copy(
+                currentScreen = nextNavigationState.currentContentDestination.toScreen(),
+                canNavigateBack = nextNavigationState.canNavigateBack,
+                playerPresentation = if (hasPlaybackDestination) {
+                    PlayerPresentation.Fullscreen
+                } else {
+                    PlayerPresentation.Mini
+                },
+                isQueueSheetVisible = it.currentTrack != null &&
+                    nextNavigationState.currentDestination == AppDestination.Queue,
+            )
         }
     }
 
@@ -1995,9 +1999,6 @@ private fun AppDestination.toScreen(): Screen {
 internal fun PlayerUiState.withNavigationState(
     navigationState: AppNavigationState,
 ): PlayerUiState {
-    val hasPlaylistDetails = navigationState.contains(AppDestination.PlaylistDetails)
-    val hasLibraryCollectionDetails = navigationState.contains(AppDestination.LibraryCollectionDetails)
-    val hasSearch = navigationState.contains(AppDestination.Search)
     val hasPlaybackDestination = currentTrack != null &&
         (
             navigationState.contains(AppDestination.Player) ||
@@ -2007,17 +2008,6 @@ internal fun PlayerUiState.withNavigationState(
     return copy(
         currentScreen = navigationState.currentContentDestination.toScreen(),
         canNavigateBack = navigationState.canNavigateBack,
-        selectedPlaylist = if (hasPlaylistDetails) selectedPlaylist else null,
-        selectedPlaylistTracks = if (hasPlaylistDetails) selectedPlaylistTracks else emptyList(),
-        selectedLibraryCollection = if (hasLibraryCollectionDetails) selectedLibraryCollection else null,
-        librarySearch = if (hasSearch) {
-            librarySearch.copy(isActive = true)
-        } else {
-            librarySearch.copy(
-                isActive = false,
-                query = "",
-            )
-        },
         playerPresentation = if (hasPlaybackDestination) {
             PlayerPresentation.Fullscreen
         } else {
@@ -2165,7 +2155,7 @@ private fun ResolvedPlaybackItem.toLibraryTrack(): LibraryTrack {
     )
 }
 
-private fun PlayerUiState.findTracksForIds(ids: LongArray): List<LibraryTrack> {
+private fun PlaybackUiState.findTracksForIds(ids: LongArray): List<LibraryTrack> {
     val queueById = playbackQueue.associateBy { it.id }
     val currentById = currentTrack?.let { mapOf(it.id to it) }.orEmpty()
     return buildList(ids.size) {
@@ -2176,7 +2166,6 @@ private fun PlayerUiState.findTracksForIds(ids: LongArray): List<LibraryTrack> {
             }
         }
     }
-
 }
 
 private fun PlaybackQueueSnapshot.matchesDisplayRequest(request: PlaybackQueueSnapshot): Boolean {
