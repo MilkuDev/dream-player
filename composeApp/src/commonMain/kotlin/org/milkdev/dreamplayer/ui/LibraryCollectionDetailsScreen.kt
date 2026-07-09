@@ -47,19 +47,20 @@ import org.milkdev.dreamplayer.generated.resources.artist
 import org.milkdev.dreamplayer.library.AlbumListItem
 import org.milkdev.dreamplayer.library.LibraryTrack
 import org.milkdev.dreamplayer.model.LibraryCollectionType
-import org.milkdev.dreamplayer.playback.PlayerUiState
+import org.milkdev.dreamplayer.playback.LibraryUiState
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LibraryCollectionDetailsScreen(
     modifier: Modifier = Modifier,
-    state: PlayerUiState,
+    libraryState: LibraryUiState,
     onBackClick: () -> Unit,
     onTrackClick: (LibraryTrack) -> Unit,
     onAlbumClick: (AlbumListItem) -> Unit = {},
     contentPadding: PaddingValues = PaddingValues.Zero,
+    currentTrackId: Long? = null,
 ) {
-    val collection = state.selectedLibraryCollection
+    val collection = libraryState.selectedLibraryCollection
     var selectedGenreTab by remember(collection?.title) { mutableStateOf(0) }
 
     Scaffold(
@@ -182,7 +183,7 @@ fun LibraryCollectionDetailsScreen(
                             ) { track ->
                                 LibraryCollectionTrackItem(
                                     track = track,
-                                    selected = track.id == state.currentTrack?.id,
+                                    selected = track.id == currentTrackId,
                                     fallbackIcon = when (collection?.type) {
                                         LibraryCollectionType.ARTIST -> Res.drawable.artist
                                         LibraryCollectionType.ALBUM,

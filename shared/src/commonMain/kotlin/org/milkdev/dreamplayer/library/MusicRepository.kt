@@ -52,7 +52,10 @@ class MusicRepository(
     private val scope: CoroutineScope
 ) {
     private val _isSyncing = MutableStateFlow(false)
-    private val playbackItemCache = mutableMapOf<Long, ResolvedPlaybackItem>()
+
+    // ПОСТАВЬ ВОТ ЭТО:
+    private val playbackItemCache = KmpLruCache<Long, ResolvedPlaybackItem>(MAX_PLAYBACK_ITEM_CACHE_SIZE)
+
     private val playbackItemCacheMutex = Mutex()
     private val metadataSyncService = MetadataSyncService(
         musicDao = musicDao,
@@ -221,6 +224,17 @@ class MusicRepository(
         return albumMap
     }
 
+    suspend fun getAllTrackIds(order: TrackSortOrder): LongArray = withContext(Dispatchers.IO) {
+        val idList = when (order) {
+            TrackSortOrder.TRACK_NAME -> musicDao.getAllTrackIdsSortedByTitle()
+            TrackSortOrder.ARTIST -> musicDao.getAllTrackIdsSortedByArtist()
+            TrackSortOrder.ALBUM -> musicDao.getAllTrackIdsSortedByAlbum()
+            TrackSortOrder.YEAR -> musicDao.getAllTrackIdsSortedByYear()
+            TrackSortOrder.GENRE -> musicDao.getAllTrackIdsSortedByGenre()
+        }
+        idList.toLongArray()
+    }
+
     suspend fun addTrackToHistory(trackId: Long) = withContext(Dispatchers.IO) {
         val now = currentTimeMillis()
         musicDao.insertHistoryEntry(
@@ -342,17 +356,22 @@ class MusicRepository(
                     timestamp = now,
                 )
                 metadata?.genres?.takeIf { it.isNotEmpty() }?.let { genres ->
-                    musicDao.replaceTrackGenres(
-                        trackId = track.id,
-                        genres = genres.map { genre ->
-                            GenreEntity(
-                                name = genre,
-                                sortKey = genre.toSortKey(),
-                                createdAt = now,
-                            )
-                        },
-                        sourceTrust = TRUST_EMBEDDED_GENRE,
-                    )
+                    val parentGenres = genres.flatMap {
+                        GenreDictionary.resolveParentGenres(it)
+                    }.distinct()
+                    if (parentGenres.isNotEmpty()) {
+                        musicDao.replaceTrackGenres(
+                            trackId = track.id,
+                            genres = parentGenres.map { genre ->
+                                GenreEntity(
+                                    name = genre,
+                                    sortKey = genre.toSortKey(),
+                                    createdAt = now,
+                                )
+                            },
+                            sourceTrust = TRUST_EMBEDDED_GENRE,
+                        )
+                    }
                 }
             }
         }
@@ -602,7 +621,7 @@ class MusicRepository(
         return withContext(Dispatchers.IO) {
             val uniqueIds = ids.distinct()
             val cachedById = playbackItemCacheMutex.withLock {
-                uniqueIds.mapNotNull { id -> playbackItemCache[id]?.let { id to it } }.toMap()
+                uniqueIds.mapNotNull { id -> playbackItemCache.get(id)?.let { id to it } }.toMap()
             }
             val cacheMisses = uniqueIds.filter { it !in cachedById }
             val loadedById = cacheMisses
@@ -782,6 +801,36 @@ class MusicRepository(
         )
     }
 
+    private class KmpLruCache<K, V>(private val maxSize: Int) {
+        private val map = LinkedHashMap<K, V>()
+
+        fun get(key: K): V? {
+            val value = map.remove(key) ?: return null
+            map[key] = value
+            return value
+        }
+
+        fun putAll(from: Map<K, V>) {
+            for ((key, value) in from) {
+                map.remove(key)
+                map[key] = value
+            }
+            trimToSize()
+        }
+
+        fun clear() {
+            map.clear()
+        }
+
+        private fun trimToSize() {
+            val iterator = map.iterator()
+            while (map.size > maxSize && iterator.hasNext()) {
+                iterator.next()
+                iterator.remove()
+            }
+        }
+    }
+
     private fun String.toTrackAvailability(): TrackAvailability {
         return TrackAvailability.entries.firstOrNull { it.name == this }
             ?: TrackAvailability.NEEDS_RESOLVE
@@ -817,6 +866,7 @@ class MusicRepository(
     private companion object {
         const val BATCH_SIZE = 500
         const val QUERY_BATCH_SIZE = 500
+        const val MAX_PLAYBACK_ITEM_CACHE_SIZE = 500
         const val TOMBSTONE_RETENTION_MS = 14L * 24 * 60 * 60 * 1000
         const val TRUST_EMBEDDED_IDENTITY = 100
         const val TRUST_EMBEDDED_GENRE = 80

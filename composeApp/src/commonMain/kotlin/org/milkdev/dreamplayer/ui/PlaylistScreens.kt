@@ -48,20 +48,21 @@ import org.milkdev.dreamplayer.generated.resources.arrow_back
 import org.milkdev.dreamplayer.generated.resources.music_note
 import org.milkdev.dreamplayer.generated.resources.playlist_add
 import org.milkdev.dreamplayer.library.LibraryTrack
-import org.milkdev.dreamplayer.playback.PlayerUiState
+import org.milkdev.dreamplayer.playback.LibraryUiState
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PlaylistDetailsScreen(
     modifier: Modifier = Modifier,
-    state: PlayerUiState,
+    libraryState: LibraryUiState,
     onBackClick: () -> Unit,
     onTrackClick: (LibraryTrack) -> Unit,
     onSaveTracks: (Long, List<Long>) -> Unit,
     onLoadNextPickerTracks: () -> Unit = {},
     contentPadding: PaddingValues = PaddingValues.Zero,
+    currentTrackId: Long? = null,
 ) {
-    val playlist = state.selectedPlaylist
+    val playlist = libraryState.selectedPlaylist
     val editablePlaylist = playlist?.takeIf { it.canEditTracks }
     var isTrackPickerVisible by remember { mutableStateOf(false) }
 
@@ -107,7 +108,7 @@ fun PlaylistDetailsScreen(
             }
         },
     ) { innerPadding ->
-        if (state.selectedPlaylistTracks.isEmpty()) {
+        if (libraryState.selectedPlaylistTracks.isEmpty()) {
             EmptyPlaylistMessage(
                 modifier = Modifier
                     .fillMaxSize()
@@ -128,13 +129,13 @@ fun PlaylistDetailsScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(
-                    items = state.selectedPlaylistTracks,
+                    items = libraryState.selectedPlaylistTracks,
                     key = { it.id },
                     contentType = { "playlist_track" },
                 ) { track ->
                     PlaylistTrackItem(
                         track = track,
-                        selected = track.id == state.currentTrack?.id,
+                        selected = track.id == currentTrackId,
                         onClick = { onTrackClick(track) },
                     )
                 }
@@ -144,10 +145,10 @@ fun PlaylistDetailsScreen(
 
     if (isTrackPickerVisible && editablePlaylist != null) {
         PlaylistTrackPickerDialog(
-            allTracks = state.playlistPickerTrackItems.map { it.toLibraryTrack() },
-            currentPlaylistTracks = state.selectedPlaylistTracks,
-            hasMoreTracks = state.hasMorePlaylistPickerTracks,
-            isLoadingMore = state.isPlaylistPickerPageLoading,
+            allTracks = libraryState.playlistPickerTrackItems.map { it.toLibraryTrack() },
+            currentPlaylistTracks = libraryState.selectedPlaylistTracks,
+            hasMoreTracks = libraryState.hasMorePlaylistPickerTracks,
+            isLoadingMore = libraryState.isPlaylistPickerPageLoading,
             onLoadMore = onLoadNextPickerTracks,
             onDismiss = { isTrackPickerVisible = false },
             onSave = { trackIds ->

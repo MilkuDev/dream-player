@@ -39,7 +39,11 @@ private val imageCache = object : LruCache<String, Bitmap>(imageCacheSizeKb) {
     }
 }
 private const val MaxFailedImageCacheEntries = 4096
-private val failedImageCache = LinkedHashSet<String>()
+private val failedImageCache = object : LinkedHashMap<String, Boolean>(64, 0.75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?): Boolean {
+        return size > MaxFailedImageCacheEntries
+    }
+}
 
 @Composable
 actual fun TrackImage(
@@ -168,13 +172,7 @@ private fun isFailedImage(cacheKey: String): Boolean {
 
 private fun putFailedImage(cacheKey: String) {
     synchronized(failedImageCache) {
-        if (failedImageCache.add(cacheKey) && failedImageCache.size > MaxFailedImageCacheEntries) {
-            val iterator = failedImageCache.iterator()
-            if (iterator.hasNext()) {
-                iterator.next()
-                iterator.remove()
-            }
-        }
+        failedImageCache[cacheKey] = true
     }
 }
 

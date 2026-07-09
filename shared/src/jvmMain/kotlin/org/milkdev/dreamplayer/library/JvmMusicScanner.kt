@@ -3,6 +3,7 @@
 package org.milkdev.dreamplayer.library
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flow
 import org.milkdev.dreamplayer.audio.readJvmAudioFileFormat
 import java.io.File
@@ -43,9 +44,7 @@ class JvmMusicScanner : MusicScanner {
         }
     }
 
-    override fun observeChanges(): Flow<Unit> = flow {
-        // TODO Not implemented for desktop yet
-    }
+    override fun observeChanges(): Flow<Unit> = emptyFlow()
 }
 
 private fun File.readMetadata(logger: Logger): TrackMetadata? {

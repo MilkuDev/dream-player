@@ -8,7 +8,7 @@ actual object AudioPlayer {
     actual val state: StateFlow<AudioPlayerState>
         get() = TODO("Not yet implemented")
 
-    actual fun play(snapshot: PlaybackSnapshot) {
+    actual fun play(snapshot: PlaybackSnapshot, startPositionMs: Long) {
     }
 
     actual fun updateQueue(snapshot: PlaybackSnapshot) {

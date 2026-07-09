@@ -73,6 +73,10 @@ actual object MusicLibrarySource {
         return repository.searchTrackPage(query, mode, cursor, limit)
     }
 
+    actual suspend fun getAllTrackIds(order: TrackSortOrder): LongArray {
+        return repository.getAllTrackIds(order)
+    }
+
     actual fun getTracksByAlbum(albumId: Long): Flow<List<LibraryTrack>> {
         return repository.getTracksByAlbum(albumId)
     }

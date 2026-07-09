@@ -27,7 +27,7 @@ import org.milkdev.dreamplayer.app.AppTheme
 import org.milkdev.dreamplayer.generated.resources.Res
 import org.milkdev.dreamplayer.generated.resources.arrow_back
 import org.milkdev.dreamplayer.library.LibraryTrack
-import org.milkdev.dreamplayer.playback.PlayerUiState
+import org.milkdev.dreamplayer.playback.LibraryUiState
 import kotlin.time.Duration.Companion.seconds
 
 private var isFirstLaunchDebug = true
@@ -35,14 +35,15 @@ private var isFirstLaunchDebug = true
 @Composable
 fun LibrarySearchScreen(
     modifier: Modifier = Modifier,
-    state: PlayerUiState,
+    libraryState: LibraryUiState,
     onTrackClick: (List<LibraryTrack>, LibraryTrack) -> Unit,
     onBackClick: () -> Unit,
     onLoadNextSearch: () -> Unit = {},
     contentPadding: PaddingValues = PaddingValues.Zero,
+    currentTrackId: Long? = null,
 ) {
-    val filteredTracks = remember(state.searchTrackListItems) {
-        state.searchTrackListItems.map { it.toLibraryTrack() }
+    val filteredTracks = remember(libraryState.searchTrackListItems) {
+        libraryState.searchTrackListItems.map { it.toLibraryTrack() }
     }
 
     val lazyListState = rememberLazyListState()
@@ -50,27 +51,27 @@ fun LibrarySearchScreen(
         listState = lazyListState,
     )
 
-    LaunchedEffect(state.librarySearch.query, state.librarySearch.mode) {
+    LaunchedEffect(libraryState.librarySearch.query, libraryState.librarySearch.mode) {
         lazyListState.scrollToItem(0)
     }
 
     val shouldLoadMoreSearch by remember {
         derivedStateOf {
             val lastVisible = lazyListState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            lastVisible >= state.searchTrackListItems.lastIndex - 8
+            lastVisible >= libraryState.searchTrackListItems.lastIndex - 8
         }
     }
 
-    LaunchedEffect(shouldLoadMoreSearch, state.hasMoreSearchTracks, state.isSearchPageLoading) {
-        if (shouldLoadMoreSearch && state.hasMoreSearchTracks && !state.isSearchPageLoading) {
+    LaunchedEffect(shouldLoadMoreSearch, libraryState.hasMoreSearchTracks, libraryState.isSearchPageLoading) {
+        if (shouldLoadMoreSearch && libraryState.hasMoreSearchTracks && !libraryState.isSearchPageLoading) {
             onLoadNextSearch()
         }
     }
 
     var isDebugLoading by remember { mutableStateOf(isFirstLaunchDebug) }
 
-    LaunchedEffect(state.isLoading) {
-        if (!state.isLoading) {
+    LaunchedEffect(libraryState.isLoading) {
+        if (!libraryState.isLoading) {
             if (isFirstLaunchDebug) {
                 delay(1.seconds)
                 isFirstLaunchDebug = false
@@ -84,14 +85,14 @@ fun LibrarySearchScreen(
             isDebugLoading -> {
                 LoadingIndicator(modifier = Modifier.align(Alignment.Center))
             }
-            state.error != null -> {
+            libraryState.error != null -> {
                 Text(
-                    text = "Error: ${state.error}",
+                    text = "Error: ${libraryState.error}",
                     color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.align(Alignment.Center)
                 )
             }
-            state.librarySummary.trackCount == 0 && state.librarySearch.query.isBlank() -> {
+            libraryState.librarySummary.trackCount == 0 && libraryState.librarySearch.query.isBlank() -> {
                 Text(
                     text = "No audio items found.",
                     modifier = Modifier.align(Alignment.Center)
@@ -130,7 +131,7 @@ fun LibrarySearchScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = if (state.librarySearch.query.isBlank()) {
+                                text = if (libraryState.librarySearch.query.isBlank()) {
                                     "No audio items found."
                                 } else {
                                     "Попробуй другой запрос"
@@ -158,7 +159,7 @@ fun LibrarySearchScreen(
                                         .animateItem()
                                         .clickable { onTrackClick(filteredTracks, track) },
                                     colors = CardDefaults.cardColors(
-                                        containerColor = if (track.id == state.currentTrack?.id)
+                                        containerColor = if (track.id == currentTrackId)
                                             MaterialTheme.colorScheme.primaryContainer
                                         else
                                             MaterialTheme.colorScheme.surfaceVariant

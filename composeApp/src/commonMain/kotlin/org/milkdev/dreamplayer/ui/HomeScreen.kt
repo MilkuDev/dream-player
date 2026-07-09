@@ -22,14 +22,14 @@ import org.milkdev.dreamplayer.app.AppTheme
 import org.milkdev.dreamplayer.generated.resources.Res
 import org.milkdev.dreamplayer.generated.resources.settings
 import org.milkdev.dreamplayer.generated.resources.shuffle_2
-import org.milkdev.dreamplayer.playback.PlayerUiState
 import org.milkdev.dreamplayer.library.LibraryTrack
+import org.milkdev.dreamplayer.playback.LibraryUiState
 import org.milkdev.dreamplayer.playback.DailyPlaylistUiState
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
-    state: PlayerUiState,
+    libraryState: LibraryUiState,
     onShuffleDailyPlaylistClick: () -> Unit,
     onOpenDailyPlaylistClick: () -> Unit,
     onTrackClick: (List<LibraryTrack>, LibraryTrack) -> Unit,
@@ -37,7 +37,7 @@ fun HomeScreen(
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues.Zero,
 ) {
-    val dailyTracks = (state.dailyPlaylistState as? DailyPlaylistUiState.Available)?.tracks ?: emptyList()
+    val dailyTracks = (libraryState.dailyPlaylistState as? DailyPlaylistUiState.Available)?.tracks ?: emptyList()
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
 
     Box(
@@ -65,18 +65,18 @@ fun HomeScreen(
             item {
                 ContentSection(
                     title = "Слушали ранее",
-                    tracks = state.recentlyPlayedTracks,
-                    onTrackClick = { track -> onTrackClick(state.recentlyPlayedTracks, track) }
+                    tracks = libraryState.recentlyPlayedTracks,
+                    onTrackClick = { track -> onTrackClick(libraryState.recentlyPlayedTracks, track) }
                 )
             }
 
             item {
-                val genreTitle = if (state.homeGenreTitle.isNotEmpty()) "Жанр: ${state.homeGenreTitle}" else
+                val genreTitle = if (libraryState.homeGenreTitle.isNotEmpty()) "Жанр: ${libraryState.homeGenreTitle}" else
                     "На основе ваших вкусов"
                 ContentSection(
                     title = genreTitle,
-                    tracks = state.homeGenreTracks,
-                    onTrackClick = { track -> onTrackClick(state.homeGenreTracks, track) }
+                    tracks = libraryState.homeGenreTracks,
+                    onTrackClick = { track -> onTrackClick(libraryState.homeGenreTracks, track) }
                 )
             }
         }

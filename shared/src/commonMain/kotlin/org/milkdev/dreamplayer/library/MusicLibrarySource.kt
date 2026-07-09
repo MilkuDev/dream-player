@@ -18,6 +18,7 @@ expect object MusicLibrarySource {
     suspend fun getArtistPage(cursor: LibraryPageCursor?, limit: Int): LibraryPage<ArtistListItem>
     suspend fun getGenrePage(cursor: LibraryPageCursor?, limit: Int): LibraryPage<GenreListItem>
     suspend fun searchTrackPage(query: String, mode: TrackSearchMode, cursor: LibraryPageCursor?, limit: Int): LibraryPage<TrackListItem>
+    suspend fun getAllTrackIds(order: TrackSortOrder): LongArray
     fun getTracksByAlbum(albumId: Long): Flow<List<LibraryTrack>>
     fun getTracksByArtist(artistId: Long): Flow<List<LibraryTrack>>
     fun getAlbumsByGenre(genreId: Long): Flow<List<AlbumListItem>>

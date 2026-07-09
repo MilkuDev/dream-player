@@ -46,8 +46,10 @@ import org.milkdev.dreamplayer.generated.resources.skip_next
 import org.milkdev.dreamplayer.generated.resources.skip_previous
 import org.milkdev.dreamplayer.library.LibraryTrack
 import org.milkdev.dreamplayer.model.PlayerViewModel
-import org.milkdev.dreamplayer.playback.PlayerUiState
+import org.milkdev.dreamplayer.playback.LibraryUiState
+import org.milkdev.dreamplayer.playback.PlaybackUiState
 import org.milkdev.dreamplayer.playback.Screen
+import org.milkdev.dreamplayer.playback.SettingsUiState
 import org.milkdev.dreamplayer.ui.*
 
 private val playerViewModelInstance = PlayerViewModel()
@@ -58,7 +60,9 @@ fun App(
     playerViewModel: PlayerViewModel = playerViewModelInstance,
     isPermissionGranted: Boolean = true
 ) {
-    val state by playerViewModel.state.collectAsState()
+    val playbackState by playerViewModel.playbackState.collectAsState()
+    val libraryState by playerViewModel.libraryState.collectAsState()
+    val settingsState by playerViewModel.settingsState.collectAsState()
 
     LaunchedEffect(isPermissionGranted) {
         if (isPermissionGranted) {
@@ -68,8 +72,8 @@ fun App(
 
     val hazeState = rememberHazeState()
 
-    AppTheme(darkTheme = state.isForceNightMode || androidx.compose.foundation.isSystemInDarkTheme()) {
-        PlatformBackHandler(enabled = state.canNavigateBack) {
+    AppTheme(darkTheme = settingsState.isForceNightMode || androidx.compose.foundation.isSystemInDarkTheme()) {
+        PlatformBackHandler(enabled = playbackState.canNavigateBack) {
             playerViewModel.navigateBack()
         }
 
@@ -82,8 +86,8 @@ fun App(
         val defaultDockRadius = 20.dp
 
         val activeTopRadius = when {
-            state.currentTrack != null -> playerBarRadius
-            state.currentScreen == Screen.Search -> searchBarRadius
+            playbackState.currentTrack != null -> playerBarRadius
+            playbackState.currentScreen == Screen.Search -> searchBarRadius
             else -> defaultDockRadius
         }
 
@@ -98,7 +102,7 @@ fun App(
         Box(modifier = Modifier.fillMaxSize()) {
             Scaffold(
             bottomBar = {
-                if (state.currentScreen != Screen.Settings && state.currentScreen != Screen.AiDebugSettings) {
+                if (playbackState.currentScreen != Screen.Settings && playbackState.currentScreen != Screen.AiDebugSettings) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -108,7 +112,7 @@ fun App(
                                 topEnd = animatedBlurContainerRadius
                             ))
                             .then(
-                                if (state.isBlurEnabled) {
+                                if (settingsState.isBlurEnabled) {
                                     Modifier.hazeEffect(hazeState) {
                                         blurRadius = 16.dp
                                     }
@@ -118,14 +122,14 @@ fun App(
                     ) {
                         Spacer(modifier = Modifier.height(playerTopPadding))
 
-                        if (state.currentTrack != null) {
+                        if (playbackState.currentTrack != null) {
                             PlayerBar(
-                                currentTrack = state.currentTrack,
-                                isPlaying = state.isPlaying,
+                                currentTrack = playbackState.currentTrack,
+                                isPlaying = playbackState.isPlaying,
                                 onPreviousClick = { playerViewModel.playPrevious() },
                                 onNextClick = { playerViewModel.playNext() },
                                 onPlayPauseClick = {
-                                    if (state.isPlaying) playerViewModel.pause() else playerViewModel.resume()
+                                    if (playbackState.isPlaying) playerViewModel.pause() else playerViewModel.resume()
                                 },
                                 onClick = { playerViewModel.openPlayer() },
                                 modifier = Modifier.padding(horizontal = playerSidePadding),
@@ -136,7 +140,8 @@ fun App(
                         Spacer(modifier = Modifier.height(spacing.medium))
 
                         BottomDock(
-                            state = state,
+                            currentScreen = playbackState.currentScreen,
+                            librarySearch = libraryState.librarySearch,
                             onNavigate = playerViewModel::navigateTo,
                             onOpenSearch = playerViewModel::openLibrarySearch,
                             onCloseSearch = { playerViewModel.navigateBack() },
@@ -155,7 +160,7 @@ fun App(
             ) {
                 val saveableStateHolder = rememberSaveableStateHolder()
                 AnimatedContent(
-                    targetState = state.currentScreen,
+                    targetState = playbackState.currentScreen,
                     transitionSpec = {
                         fadeIn(animationSpec = tween(300)) togetherWith fadeOut(animationSpec = tween(300))
                     }
@@ -163,7 +168,7 @@ fun App(
                     saveableStateHolder.SaveableStateProvider(targetScreen) {
                         when (targetScreen) {
                             Screen.Home -> HomeScreen(
-                                state = state,
+                                libraryState = libraryState,
                                 onShuffleDailyPlaylistClick = playerViewModel::shuffleDailyPlaylist,
                                 onOpenDailyPlaylistClick = playerViewModel::openDailyPlaylist,
                                 contentPadding = paddingValues,
@@ -171,23 +176,14 @@ fun App(
                                 onTrackClick = playerViewModel::playFromVisibleTracks
                             )
                             Screen.Library -> LibraryScreen(
-                                state = state,
-                                onTrackClick = playerViewModel::playFromVisibleTracks,
-                                onAlbumItemClick = playerViewModel::openAlbumDetails,
-                                onArtistClick = playerViewModel::openArtistDetails,
-                                onGenreClick = playerViewModel::openGenreDetails,
-                                onCreatePlaylist = playerViewModel::createPlaylist,
-                                onPlaylistClick = playerViewModel::openPlaylist,
-                                onSortTrack = playerViewModel::setTrackSortOrder,
-                                onSortAlbum = playerViewModel::setAlbumSortOrder,
-                                onLoadNextTracks = { playerViewModel.loadNextTracksPage() },
-                                onLoadNextAlbums = { playerViewModel.loadNextAlbumsPage() },
-                                onLoadNextArtists = { playerViewModel.loadNextArtistsPage() },
-                                onLoadNextGenres = { playerViewModel.loadNextGenresPage() },
+                                libraryState = libraryState,
+                                currentTrack = playbackState.currentTrack,
+                                onIntent = playerViewModel::onLibraryIntent,
                                 contentPadding = paddingValues,
                             )
                             Screen.PlaylistDetails -> PlaylistDetailsScreen(
-                                state = state,
+                                libraryState = libraryState,
+                                currentTrackId = playbackState.currentTrack?.id,
                                 onBackClick = { playerViewModel.navigateBack() },
                                 onTrackClick = playerViewModel::playFromSelectedPlaylist,
                                 onSaveTracks = playerViewModel::savePlaylistTracks,
@@ -195,14 +191,16 @@ fun App(
                                 contentPadding = paddingValues,
                             )
                             Screen.LibraryCollectionDetails -> LibraryCollectionDetailsScreen(
-                                state = state,
+                                libraryState = libraryState,
+                                currentTrackId = playbackState.currentTrack?.id,
                                 onBackClick = { playerViewModel.navigateBack() },
                                 onTrackClick = playerViewModel::playFromSelectedLibraryCollection,
                                 onAlbumClick = playerViewModel::openAlbumDetails,
                                 contentPadding = paddingValues,
                             )
                             Screen.Settings -> SettingsScreen(
-                                state = state,
+                                settingsState = settingsState,
+                                librarySummary = libraryState.librarySummary,
                                 onBackClick = { playerViewModel.navigateBack() },
                                 onBlurToggle = { playerViewModel.setBlurEnabled(it) },
                                 onNightModeToggle = { playerViewModel.setForceNightMode(it) },
@@ -222,7 +220,8 @@ fun App(
                                 contentPadding = paddingValues
                             )
                             Screen.AiDebugSettings -> AiDebugSettingsScreen(
-                                state = state,
+                                settingsState = settingsState,
+                                librarySummary = libraryState.librarySummary,
                                 onBackClick = { playerViewModel.navigateBack() },
                                 onModeChange = { playerViewModel.setDailyPlaylistGenerationMode(it) },
                                 onProviderChange = { playerViewModel.setAiPlaylistProvider(it) },
@@ -239,7 +238,8 @@ fun App(
                                 contentPadding = paddingValues
                             )
                             Screen.Search -> LibrarySearchScreen(
-                                state = state,
+                                libraryState = libraryState,
+                                currentTrackId = playbackState.currentTrack?.id,
                                 onTrackClick = playerViewModel::playFromVisibleTracks,
                                 onBackClick = { playerViewModel.navigateBack() },
                                 onLoadNextSearch = { playerViewModel.loadNextSearchPage() },
@@ -252,13 +252,13 @@ fun App(
             }
         }
             PlayerOverlayHost(
-                state = state,
+                playbackState = playbackState,
                 onNavigateBack = { playerViewModel.navigateBack() },
                 onOpenQueueSheet = playerViewModel::openQueueSheet,
                 onPreviousClick = playerViewModel::playPrevious,
                 onNextClick = playerViewModel::playNext,
                 onPlayPauseClick = {
-                    if (state.isPlaying) playerViewModel.pause() else playerViewModel.resume()
+                    if (playbackState.isPlaying) playerViewModel.pause() else playerViewModel.resume()
                 },
                 onShuffleClick = playerViewModel::toggleShuffle,
                 onRepeatClick = playerViewModel::toggleRepeat,
@@ -275,7 +275,8 @@ fun App(
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 private fun BottomDock(
-    state: PlayerUiState,
+    currentScreen: Screen,
+    librarySearch: org.milkdev.dreamplayer.library.LibrarySearchState,
     onNavigate: (Screen) -> Unit,
     onOpenSearch: () -> Unit,
     onCloseSearch: () -> Unit,
@@ -289,7 +290,7 @@ private fun BottomDock(
             .padding(horizontal = 16.dp)
             .padding(bottom = AppTheme.spacing.medium)
     ) {
-        val isSearchDockVisible = state.currentScreen == Screen.Search
+        val isSearchDockVisible = currentScreen == Screen.Search
         val searchBoundsState = rememberSharedContentState(key = "bottom_dock_search_bounds")
         val searchIconState = rememberSharedContentState(key = "bottom_dock_search_icon")
 
@@ -303,7 +304,7 @@ private fun BottomDock(
         ) { isSearchActive ->
             if (isSearchActive) {
                 this@SharedTransitionLayout.SearchDock(
-                    query = state.librarySearch.query,
+                    query = librarySearch.query,
                     onQueryChange = onSearchQueryChange,
                     onCloseClick = onCloseSearch,
                     containerModifier = Modifier.sharedBounds(
@@ -320,7 +321,7 @@ private fun BottomDock(
                 )
             } else {
                 NavigationDock(
-                    currentScreen = state.currentScreen,
+                    currentScreen = currentScreen,
                     onNavigate = onNavigate,
                     onSearchClick = onOpenSearch,
                     searchButtonModifier = Modifier.sharedBounds(

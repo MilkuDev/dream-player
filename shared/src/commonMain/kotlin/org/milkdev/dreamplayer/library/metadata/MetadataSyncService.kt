@@ -18,6 +18,7 @@ import org.milkdev.dreamplayer.database.dao.AlbumCoverLookupCandidate
 import org.milkdev.dreamplayer.database.dao.MusicDao
 import org.milkdev.dreamplayer.database.entities.AlbumEntity
 import org.milkdev.dreamplayer.database.entities.GenreEntity
+import org.milkdev.dreamplayer.library.GenreDictionary
 import org.milkdev.dreamplayer.database.entities.MetadataEntityType
 import org.milkdev.dreamplayer.database.entities.MetadataProvider
 import org.milkdev.dreamplayer.database.entities.MetadataResolutionEntity
@@ -419,17 +420,22 @@ class MetadataSyncService(
         }
 
         if (genreChoice.genres.isNotEmpty()) {
-            musicDao.replaceAlbumGenres(
-                albumId = album.id,
-                genres = genreChoice.genres.map { genre ->
-                    GenreEntity(
-                        name = genre,
-                        sortKey = genre.toSortKey(),
-                        createdAt = now,
-                    )
-                },
-                sourceTrust = genreChoice.trust,
-            )
+            val parentGenres = genreChoice.genres.flatMap {
+                GenreDictionary.resolveParentGenres(it)
+            }.distinct()
+            if (parentGenres.isNotEmpty()) {
+                musicDao.replaceAlbumGenres(
+                    albumId = album.id,
+                    genres = parentGenres.map { genre ->
+                        GenreEntity(
+                            name = genre,
+                            sortKey = genre.toSortKey(),
+                            createdAt = now,
+                        )
+                    },
+                    sourceTrust = genreChoice.trust,
+                )
+            }
         }
 
         AppDebugLog.log(

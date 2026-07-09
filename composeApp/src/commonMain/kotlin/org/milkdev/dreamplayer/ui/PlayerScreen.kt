@@ -44,7 +44,7 @@ import org.milkdev.dreamplayer.generated.resources.skip_previous
 import org.milkdev.dreamplayer.generated.resources.play_arrow
 import org.milkdev.dreamplayer.generated.resources.stat_minus
 import org.milkdev.dreamplayer.playback.PlaybackRepeatMode
-import org.milkdev.dreamplayer.playback.PlayerUiState
+import org.milkdev.dreamplayer.playback.PlaybackUiState
 import ir.mahozad.multiplatform.wavyslider.material3.WavySlider
 import org.milkdev.dreamplayer.app.AppTheme
 import org.milkdev.dreamplayer.generated.resources.favorite_filled
@@ -54,7 +54,7 @@ import org.milkdev.dreamplayer.library.LibraryTrack
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PlayerScreen(
-    state: PlayerUiState,
+    playbackState: PlaybackUiState,
     onBackClick: () -> Unit,
     onQueueClick: () -> Unit,
     onPreviousClick: () -> Unit,
@@ -68,8 +68,8 @@ fun PlayerScreen(
 ) {
     var isScrubbing by remember { mutableStateOf(false) }
     var scrubProgress by remember { mutableFloatStateOf(0f) }
-    val sliderProgress = if (isScrubbing) scrubProgress else state.playbackProgressMs.toFloat()
-    val totalDuration = state.totalDurationMs.toFloat().coerceAtLeast(1f)
+    val sliderProgress = if (isScrubbing) scrubProgress else playbackState.playbackProgressMs.toFloat()
+    val totalDuration = playbackState.totalDurationMs.toFloat().coerceAtLeast(1f)
 
     Column(
         modifier = modifier
@@ -97,7 +97,7 @@ fun PlayerScreen(
 
             if (useWideLayout) {
                 WidePlayerContent(
-                    state = state,
+                    playbackState = playbackState,
                     sliderProgress = sliderProgress,
                     totalDuration = totalDuration,
                     onPreviousClick = onPreviousClick,
@@ -117,7 +117,7 @@ fun PlayerScreen(
                 )
             } else {
                 PortraitPlayerContent(
-                    state = state,
+                    playbackState = playbackState,
                     sliderProgress = sliderProgress,
                     totalDuration = totalDuration,
                     onPreviousClick = onPreviousClick,
@@ -189,7 +189,7 @@ private fun PlayerTopBar(
 
 @Composable
 private fun PortraitPlayerContent(
-    state: PlayerUiState,
+    playbackState: PlaybackUiState,
     sliderProgress: Float,
     totalDuration: Float,
     onPreviousClick: () -> Unit,
@@ -214,7 +214,7 @@ private fun PortraitPlayerContent(
             val artworkSize = minOf(maxWidth, maxHeight)
 
             AlbumArtwork(
-                albumArtUri = state.currentTrack?.albumArtUri,
+                albumArtUri = playbackState.currentTrack?.albumArtUri,
                 modifier = Modifier.size(artworkSize)
             )
         }
@@ -222,9 +222,9 @@ private fun PortraitPlayerContent(
         Spacer(modifier = Modifier.height(32.dp))
 
         PlayerTrackInfo(
-            currentTrack = state.currentTrack,
+            currentTrack = playbackState.currentTrack,
             onFavoriteClick = onFavoriteClick,
-            isFavorite = state.isCurrentTrackFavorite
+            isFavorite = playbackState.isCurrentTrackFavorite
         )
 
         Spacer(modifier = Modifier.height(24.dp))
@@ -232,8 +232,8 @@ private fun PortraitPlayerContent(
         PlayerProgress(
             sliderProgress = sliderProgress,
             totalDuration = totalDuration,
-            totalDurationMs = state.totalDurationMs,
-            isPlaying = state.isPlaying,
+            totalDurationMs = playbackState.totalDurationMs,
+            isPlaying = playbackState.isPlaying,
             onSliderValueChange = onSliderValueChange,
             onSliderValueChangeFinished = onSliderValueChangeFinished,
         )
@@ -241,7 +241,7 @@ private fun PortraitPlayerContent(
         Spacer(modifier = Modifier.height(20.dp))
 
         MainPlaybackControls(
-            isPlaying = state.isPlaying,
+            isPlaying = playbackState.isPlaying,
             onPreviousClick = onPreviousClick,
             onNextClick = onNextClick,
             onPlayPauseClick = onPlayPauseClick
@@ -250,8 +250,8 @@ private fun PortraitPlayerContent(
         Spacer(modifier = Modifier.height(20.dp))
 
         ExtraPlaybackControls(
-            isShuffleEnabled = state.isShuffleEnabled,
-            repeatMode = state.repeatMode,
+            isShuffleEnabled = playbackState.isShuffleEnabled,
+            repeatMode = playbackState.repeatMode,
             onShuffleClick = onShuffleClick,
             onRepeatClick = onRepeatClick
         )
@@ -260,7 +260,7 @@ private fun PortraitPlayerContent(
 
 @Composable
 private fun WidePlayerContent(
-    state: PlayerUiState,
+    playbackState: PlaybackUiState,
     sliderProgress: Float,
     totalDuration: Float,
     onPreviousClick: () -> Unit,
@@ -285,7 +285,7 @@ private fun WidePlayerContent(
             val artworkSize = minOf(maxWidth, maxHeight)
 
             AlbumArtwork(
-                albumArtUri = state.currentTrack?.albumArtUri,
+                albumArtUri = playbackState.currentTrack?.albumArtUri,
                 modifier = Modifier.size(artworkSize)
             )
         }
@@ -300,10 +300,10 @@ private fun WidePlayerContent(
             verticalArrangement = Arrangement.Center
         ) {
             PlayerTrackInfo(
-                currentTrack = state.currentTrack,
+                currentTrack = playbackState.currentTrack,
                 onFavoriteClick = onFavoriteClick,
                 compact = true,
-                isFavorite = state.isCurrentTrackFavorite,
+                isFavorite = playbackState.isCurrentTrackFavorite,
             )
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -311,8 +311,8 @@ private fun WidePlayerContent(
             PlayerProgress(
                 sliderProgress = sliderProgress,
                 totalDuration = totalDuration,
-                totalDurationMs = state.totalDurationMs,
-                isPlaying = state.isPlaying,
+                totalDurationMs = playbackState.totalDurationMs,
+                isPlaying = playbackState.isPlaying,
                 onSliderValueChange = onSliderValueChange,
                 onSliderValueChangeFinished = onSliderValueChangeFinished,
             )
@@ -320,7 +320,7 @@ private fun WidePlayerContent(
             Spacer(modifier = Modifier.height(16.dp))
 
             MainPlaybackControls(
-                isPlaying = state.isPlaying,
+                isPlaying = playbackState.isPlaying,
                 onPreviousClick = onPreviousClick,
                 onNextClick = onNextClick,
                 onPlayPauseClick = onPlayPauseClick,
@@ -330,8 +330,8 @@ private fun WidePlayerContent(
             Spacer(modifier = Modifier.height(16.dp))
 
             ExtraPlaybackControls(
-                isShuffleEnabled = state.isShuffleEnabled,
-                repeatMode = state.repeatMode,
+                isShuffleEnabled = playbackState.isShuffleEnabled,
+                repeatMode = playbackState.repeatMode,
                 onShuffleClick = onShuffleClick,
                 onRepeatClick = onRepeatClick,
                 compact = true
