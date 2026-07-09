@@ -59,7 +59,6 @@ import org.milkdev.dreamplayer.playback.SettingsUiState
 @Composable
 fun SettingsScreen(
     settingsState: SettingsUiState,
-    librarySummary: LibrarySummary = LibrarySummary(),
     onBackClick: () -> Unit,
     onBlurToggle: (Boolean) -> Unit,
     onNightModeToggle: (Boolean) -> Unit,

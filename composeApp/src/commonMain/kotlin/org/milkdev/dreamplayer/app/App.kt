@@ -46,10 +46,7 @@ import org.milkdev.dreamplayer.generated.resources.skip_next
 import org.milkdev.dreamplayer.generated.resources.skip_previous
 import org.milkdev.dreamplayer.library.LibraryTrack
 import org.milkdev.dreamplayer.model.PlayerViewModel
-import org.milkdev.dreamplayer.playback.LibraryUiState
-import org.milkdev.dreamplayer.playback.PlaybackUiState
 import org.milkdev.dreamplayer.playback.Screen
-import org.milkdev.dreamplayer.playback.SettingsUiState
 import org.milkdev.dreamplayer.ui.*
 
 private val playerViewModelInstance = PlayerViewModel()
@@ -200,7 +197,6 @@ fun App(
                             )
                             Screen.Settings -> SettingsScreen(
                                 settingsState = settingsState,
-                                librarySummary = libraryState.librarySummary,
                                 onBackClick = { playerViewModel.navigateBack() },
                                 onBlurToggle = { playerViewModel.setBlurEnabled(it) },
                                 onNightModeToggle = { playerViewModel.setForceNightMode(it) },

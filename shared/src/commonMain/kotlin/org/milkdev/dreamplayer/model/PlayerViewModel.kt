@@ -10,7 +10,6 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
@@ -1616,7 +1615,7 @@ class PlayerViewModel {
         restoreAttempted = true
 
         val savedState = SettingsRepository.restorePlaybackState() ?: return
-        var savedTrackIds = savedState.queueTrackIds.toLongArray()
+        val savedTrackIds = savedState.queueTrackIds.toLongArray()
         if (savedTrackIds.isEmpty()) return
 
         val resolvedItems = withContext(Dispatchers.Default) {
@@ -1632,7 +1631,7 @@ class PlayerViewModel {
         }
 
         val filteredIds = availableIds.toLongArray()
-        var queueIndex = savedState.queueIndex.coerceIn(0, filteredIds.lastIndex)
+        val queueIndex = savedState.queueIndex.coerceIn(0, filteredIds.lastIndex)
         val currentId = filteredIds.getOrNull(queueIndex) ?: return
 
         val snapshot = playbackQueueController.setQueue(filteredIds, queueIndex)
