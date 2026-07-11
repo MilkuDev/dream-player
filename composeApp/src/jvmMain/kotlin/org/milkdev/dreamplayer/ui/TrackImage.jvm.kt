@@ -359,15 +359,11 @@ private fun String.stableCacheHash(): String {
 
 private fun String.toImageFile(): File {
     val parsedUri = runCatching { URI(this) }.getOrNull()
-    return (if (parsedUri?.scheme.equals("file", ignoreCase = true)) {
-        if (parsedUri != null) {
-            File(parsedUri)
-        } else {
-
-        }
+    return if (parsedUri != null && "file".equals(parsedUri.scheme, ignoreCase = true)) {
+        File(parsedUri)
     } else {
         File(this)
-    }) as File
+    }
 }
 
 private const val ThumbnailJpegQuality = 86

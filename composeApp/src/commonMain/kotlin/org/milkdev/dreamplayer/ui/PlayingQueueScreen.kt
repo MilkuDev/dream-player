@@ -127,10 +127,10 @@ fun PlayingQueueScreen(
 
     val density = LocalDensity.current
     val itemSpacing = 8.dp
-    val itemSpacingPx = with(density) { itemSpacing.toPx() }
+    val itemSpacingPx = remember(density) { with(density) { itemSpacing.toPx() } }
 
-    val autoScrollMaxSpeedPx = with(density) { 24.dp.toPx() }
-    val edgeThresholdPx = with(density) { 64.dp.toPx() }
+    val autoScrollMaxSpeedPx = remember(density) { with(density) { 24.dp.toPx() } }
+    val edgeThresholdPx = remember(density) { with(density) { 64.dp.toPx() } }
 
     fun resetDragState() {
         isDragging = false
@@ -392,7 +392,7 @@ fun PlayingQueueScreen(
                         else -> 0f
                     }
 
-                    val animatedTranslationY by animateFloatAsState(
+                    val animatedTranslationY = animateFloatAsState(
                         targetValue = targetTranslation,
                         animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
                         label = "translationY"
@@ -424,7 +424,7 @@ fun PlayingQueueScreen(
 
                                 alpha = if (isMe && isGhostActive) 0f else 1f
                                 translationY = if (dragStartIndex == null ||
-                                    isCommittingDrop) 0f else animatedTranslationY
+                                    isCommittingDrop) 0f else animatedTranslationY.value
                             },
                         onClick = { currentOnTrackClick(index) }
                     )

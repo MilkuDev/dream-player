@@ -1,7 +1,9 @@
-@file:Suppress("EXPECT_ACTUAL_CLASSIFIERS_ARE_IN_BETA_WARNING")
+@file:Suppress("EXPECT_ACTUAL_CLASSIFIERS_ARE_IN_BETA_WARNING", "SpellCheckingInspection")
 
 package org.milkdev.dreamplayer.library.metadata
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.milkdev.dreamplayer.library.RawTrackData
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -10,18 +12,18 @@ import java.io.RandomAccessFile
 import java.security.MessageDigest
 
 actual object EmbeddedMetadataReader {
-    actual suspend fun read(rawTrack: RawTrackData): EmbeddedMetadata? {
-        val file = rawTrack.path.takeIf { it.isNotBlank() }?.let(::File) ?: return null
-        if (!file.isFile) return null
+    actual suspend fun read(rawTrack: RawTrackData): EmbeddedMetadata? = withContext(Dispatchers.IO) {
+        val file = rawTrack.path.takeIf { it.isNotBlank() }?.let(::File) ?: return@withContext null
+        if (!file.isFile) return@withContext null
 
         val parsed = when (file.extension.lowercase()) {
             "flac" -> file.readFlacEmbeddedMetadata()
             "mp3" -> file.readMp3EmbeddedMetadata()
             "m4a", "mp4" -> file.readMp4EmbeddedMetadata()
             else -> null
-        } ?: file.fallbackEmbeddedMetadata() ?: return null
+        } ?: file.fallbackEmbeddedMetadata() ?: return@withContext null
 
-        return parsed.copy(
+        parsed.copy(
             tagFingerprint = "${file.length()}:${file.lastModified()}:${parsed.tagFingerprint}",
         )
     }
