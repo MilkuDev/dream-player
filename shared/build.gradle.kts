@@ -30,7 +30,7 @@ kotlin {
 
     jvm()
 
-    configure(listOf(iosArm64(), iosSimulatorArm64(), macosArm64(), iosX64())) {
+    configure(listOf(iosArm64(), iosSimulatorArm64(), macosArm64())) {
         binaries.framework {
             baseName = "Shared"
             isStatic = true
