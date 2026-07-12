@@ -511,27 +511,31 @@ actual object AudioPlayer {
     }
 
     private fun syncStateFromController(mediaController: MediaController? = synchronized(lock) { controller }) {
-        val snapshot = synchronized(lock) { playbackSnapshot }
-        val queue = snapshot?.queue ?: EmptyPlaybackQueueSnapshot
-        val currentTrackId = queue.currentTrackId
-        val metadataDuration = snapshot?.items
-            ?.firstOrNull { it.trackId == currentTrackId }
-            ?.metadata
-            ?.durationMs
-            ?: 0L
-        val mediaDuration = mediaController?.duration ?: C.TIME_UNSET
-        val resolvedDurationMs = when {
-            isKnownDuration(mediaDuration) -> mediaDuration
-            metadataDuration > 0L -> metadataDuration
-            else -> 0L
-        }
+        synchronized(lock) {
+            val snapshot = playbackSnapshot
+            val queue = snapshot?.queue ?: EmptyPlaybackQueueSnapshot
+            val currentTrackId = queue.currentTrackId
+            val metadataDuration = snapshot?.items
+                ?.firstOrNull { it.trackId == currentTrackId }
+                ?.metadata
+                ?.durationMs
+                ?: 0L
+            val mediaDuration = mediaController?.duration ?: C.TIME_UNSET
+            val resolvedDurationMs = when {
+                isKnownDuration(mediaDuration) -> mediaDuration
+                metadataDuration > 0L -> metadataDuration
+                else -> 0L
+            }
 
-        _state.value = AudioPlayerState(
-            currentTrackId = currentTrackId,
-            isPlaying = mediaController?.isPlaying == true,
-            totalDurationMs = resolvedDurationMs,
-            queue = queue.copy(trackIds = queue.trackIds.copyOf()),
-        )
+            _state.value = AudioPlayerState(
+                currentTrackId = currentTrackId,
+                isPlaying = mediaController?.let { c ->
+                    c.playWhenReady && c.playbackState != Player.STATE_ENDED
+                } == true,
+                totalDurationMs = resolvedDurationMs,
+                queue = queue.copy(trackIds = queue.trackIds.copyOf()),
+            )
+        }
     }
 }
 

@@ -1692,7 +1692,7 @@ class PlayerViewModel {
             while (isActive) {
                 val currentPlaybackState = _playbackState.value
                 val currentTrack = currentPlaybackState.currentTrack
-                if (currentTrack != null && !currentPlaybackState.isQueueSheetVisible) {
+                if (currentTrack != null && currentPlaybackState.isPlaying) {
                     val maxDuration = currentPlaybackState.totalDurationMs
                         .takeIf { it > 0L } ?: currentTrack.durationMs
 
