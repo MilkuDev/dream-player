@@ -3,10 +3,20 @@
 package org.milkdev.dreamplayer.playback
 
 import kotlinx.coroutines.flow.StateFlow
+import org.milkdev.dreamplayer.diagnostics.PlaybackTrace
+import org.milkdev.dreamplayer.diagnostics.TraceCategory
 
 actual object AudioPlayer {
+    private var nextSessionId: Int = 1
+    private var currentSessionId: Int = 0
     actual val state: StateFlow<AudioPlayerState>
         get() = TODO("Not yet implemented")
+
+    actual val playbackTimeSource: PlaybackTimeSource = object : PlaybackTimeSource {
+        override fun snapshot(): PlaybackTimeSnapshot {
+            TODO("Not yet implemented")
+        }
+    }
 
     actual fun play(snapshot: PlaybackSnapshot, startPositionMs: Long) {
     }
@@ -34,9 +44,5 @@ actual object AudioPlayer {
     }
 
     actual fun setRepeatMode(mode: PlaybackRepeatMode) {
-    }
-
-    actual fun getCurrentPosition(): Long {
-        TODO("Not yet implemented")
     }
 }

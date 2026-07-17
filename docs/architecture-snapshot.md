@@ -2,6 +2,10 @@
 
 Этот документ описывает, как в проекте связаны база данных, сканеры музыки, источники данных, обработчики пользовательских действий, обогащение метаданными и воспроизведение. Формулировки намеренно простые: представь приложение как музыкальную библиотеку с кладовщиком, каталогом, кассиром на выдаче и проигрывателем.
 
+## Related documents
+
+- Playback Time Architecture
+
 ## Главная идея
 
 В приложении есть несколько слоев:
@@ -12,7 +16,10 @@
 - `MusicRepository` синхронизирует музыку с базой: берет сырые треки от сканера, создает артистов/альбомы/треки, помечает пропавшие файлы, запускает дозагрузку метаданных.
 - Room/SQLite хранит основную музыкальную библиотеку, плейлисты и состояние синхронизации.
 - DataStore хранит пользовательские настройки.
+- `PlaybackTimeSource` предоставляет актуальное время воспроизведения напрямую UI и SavePoint-воркеру, минуя ViewModel.
 - Playback-слой берет id треков из базы, превращает их в воспроизводимые URI и отдает платформенному плееру.
+
+Воспроизведение разделено на два независимых потока: **состояние** (очередь, repeat, shuffle — через ViewModel) и **время** (позиция, длительность — через PlaybackTimeSource напрямую потребителям).
 
 ```mermaid
 flowchart TD
@@ -29,6 +36,8 @@ flowchart TD
     Queue["PlaybackQueueController: порядок треков"]
     Resolver["PlaybackResolver: id -> playable item"]
     Player["AudioPlayer: Media3 на Android, Java Sound на Desktop"]
+    PTS["PlaybackTimeSource: единый источник времени"]
+    PTSnap["PlaybackTimeSnapshot: срез времени"]
 
     UI --> VM
     VM --> Source
@@ -44,22 +53,32 @@ flowchart TD
     Queue --> Resolver
     Resolver --> Source
     Source --> Repo
-    VM --> Player
-    Player --> UI
+    VM -.->|команды| Player
+    Player -->|PlaybackState| VM
+    Player --> PTS
+    PTS --> PTSnap
+    PTSnap --> UI
+    PTSnap --> SavePoints["SavePoint воркер"]
 ```
 
 ## Где что лежит
 
-- Общая логика: `composeApp/src/commonMain/kotlin/org/milkdev/dreamplayer`.
-- Android-реализации: `composeApp/src/androidMain/kotlin/org/milkdev/dreamplayer`.
-- Desktop/JVM-реализации: `composeApp/src/jvmMain/kotlin/org/milkdev/dreamplayer`.
-- База Room: `database/AppDatabase.kt`, `database/dao/*`, `database/entities/*`.
-- Сканеры: `library/MusicScanner.kt`, `androidMain/.../MediaStoreScanner.kt`, `jvmMain/.../JvmMusicScanner.kt`.
-- Фасад библиотеки: `library/MusicLibrarySource.kt` плюс `actual`-реализации для Android/JVM.
-- Главный репозиторий библиотеки: `library/MusicRepository.kt`.
-- Метаданные: `library/metadata/*`, `extensions/data/*`, `extensions/network/*`.
-- Воспроизведение: `playback/*`.
-- Главный обработчик состояния и действий: `model/PlayerViewModel.kt`.
+Проект разделён на два основных модуля — `shared` (бизнес-логика) и `composeApp` (UI):
+
+**Модуль `shared/`** — бизнес-логика, база данных, сетевое взаимодействие, воспроизведение:
+- `shared/src/commonMain/kotlin/.../database/` — Room: `AppDatabase.kt`, `dao/*`, `entities/*`.
+- `shared/src/commonMain/kotlin/.../library/` — `MusicScanner.kt`, `MusicRepository.kt`, `MusicLibrarySource.kt`.
+- `shared/src/commonMain/kotlin/.../library/metadata/` — `MetadataSyncService`, `EmbeddedMetadataReader`.
+- `shared/src/commonMain/kotlin/.../playback/` — `AudioPlayer` expect/actual, `PlaybackQueueController`, `PlaybackResolver`.
+- `shared/src/commonMain/kotlin/.../model/` — `PlayerViewModel.kt`.
+- `shared/src/commonMain/kotlin/.../extensions/` — AI, network, secrets, data.
+- `shared/src/commonMain/kotlin/.../features/` — фичи (ежедневный плейлист и т.д.).
+- `shared/src/androidMain/` / `jvmMain/` / `appleMain/` — platform `actual`-реализации (14 expect-деклараций).
+
+**Модуль `composeApp/`** — UI на Compose Multiplatform:
+- `composeApp/src/commonMain/kotlin/.../app/` — `App.kt`, `Color.kt`, `Theme.kt`.
+- `composeApp/src/commonMain/kotlin/.../ui/` — все экраны и компоненты.
+- `composeApp/src/androidMain/` / `jvmMain/` — platform `actual`-реализации для UI.
 
 Compose используется **только** в модуле `composeApp`. В модуль `shared` Compose не попадает — UI и логика строго разделены.
 
@@ -110,7 +129,9 @@ Genre много -> много Albums/Tracks через cross_ref таблицы
 Пример сущности трека:
 
 ```kotlin
+@Entity(tableName = "library_tracks")
 data class TrackEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val filePath: String,
     val title: String,
     val artistName: String,
@@ -121,8 +142,17 @@ data class TrackEntity(
     val fileSize: Long,
     val lastModified: Long,
     val mediaStoreId: Long? = null,
+    val contentFingerprint: String = "",
+    val fileHash: String? = null,
     val availability: String = "AVAILABLE",
+    val albumArtUri: String? = null,
     val isPresent: Boolean = true,
+    val lastSeenTimestamp: Long,
+    val musicBrainzRecordingMbid: String? = null,
+    val identitySourceTrust: Int = 0,
+    val titleSortKey: String = "",
+    val artistSortKey: String = "",
+    val deletedAt: Long? = null,
 )
 ```
 
@@ -197,6 +227,7 @@ data class RawTrackData(
     val fileSize: Long,
     val lastModified: Long,
     val albumArtUri: String? = null,
+    val albumArtSource: CoverSource = CoverSource.NONE,
 )
 ```
 
@@ -317,12 +348,13 @@ val yearChoice = chooseTrustedValue(
 
 ```kotlin
 object NetworkHosts {
-    const val OpenAi = "api.openai.com"
-    const val Gemini = "generativelanguage.googleapis.com"
-    const val DeepSeek = "api.deepseek.com"
-    const val LastFm = "ws.audioscrobbler.com"
-    const val MusicBrainz = "musicbrainz.org"
-    const val CoverArtArchive = "coverartarchive.org"
+    const val OPEN_AI = "api.openai.com"
+    const val GEMINI = "generativelanguage.googleapis.com"
+    const val DEEP_SEEK = "api.deepseek.com"
+    const val LAST_FM = "ws.audioscrobbler.com"
+    const val MUSIC_BRAINZ = "musicbrainz.org"
+    const val COVER_ART_ARCHIVE = "coverartarchive.org"
+    const val INTERNET_ARCHIVE = "archive.org"
 }
 ```
 
@@ -345,14 +377,18 @@ data class PlaylistTrackCrossRef(
 - заменить треки плейлиста;
 - подготовить перемешанную очередь.
 
-Есть системный плейлист:
+Есть два системных плейлиста:
 
 ```kotlin
 object SystemPlaylists {
     const val DAILY_PLAYLIST_ID = -1L
     const val DAILY_PLAYLIST_NAME = "Плейлист дня"
+    const val FAVORITES_PLAYLIST_ID = -2L
+    const val FAVORITES_PLAYLIST_NAME = "Избранное"
 }
 ```
+
+`DailyPlaylist` (-1) скрыт из списка плейлистов (виден только на главном экране), `Favorites` (-2) — обычный избранный плейлист, пользователь может добавлять и удалять треки.
 
 ## Плейлист дня и AI
 
@@ -371,12 +407,16 @@ object SystemPlaylists {
 
 Воспроизведение специально отделено от базы. Плеер не должен сам ходить в SQL. Он получает готовый `PlaybackSnapshot`.
 
+Время воспроизведения отделено от состояния приложения и обрабатывается через отдельный канал.
+
 ### Основные участники
 
 - `PlaybackQueueController` хранит порядок id треков, текущий индекс, shuffle и версию очереди.
 - `PlaybackResolver` превращает id треков в `ResolvedPlaybackItem`.
 - `MusicLibrarySource.resolvePlayableItems()` читает треки из базы через `MusicRepository`.
 - `AudioPlayer` играет уже resolved-элементы.
+- `PlaybackTimeSource` — абстракция над временем воспроизведения. Единственный источник playback-тайминга. Не содержит бизнес-логики, не занимается отрисовкой, не интерполирует и не экстраполирует время.
+- `PlaybackTimeSnapshot` — атомарный срез времени: позиция, длительность, скорость, состояние игра/пауза. Потребители получают время только через этот снапшот, никогда не восстанавливают его из нескольких независимых геттеров.
 
 Модель воспроизведения:
 
@@ -473,11 +513,12 @@ Desktop использует Java Sound:
 
 ## PlayerViewModel как главный обработчик
 
-`PlayerViewModel` — синглтон, инициализированный в `App.kt` (модуль `composeApp`). Живёт всё время жизни процесса приложения и никогда не пересоздаётся. Не использует Android ViewModel или Jetpack Lifecycle — только собственные мультиплатформенные механизмы. Центральный диспетчер приложения. Он:
+`PlayerViewModel` — синглтон в модуле `shared/`, инициализированный в `composeApp/App.kt`. Живёт всё время жизни процесса приложения и никогда не пересоздаётся. Не использует Android ViewModel или Jetpack Lifecycle — только собственные мультиплатформенные механизмы. Центральный диспетчер приложения. Он:
 
 - хранит `PlayerUiState`;
-- подписывается на `AudioPlayer.state`;
+- подписывается на `PlaybackState` (дискретные события: play, pause, track changed, queue updated);
 - подписывается на плейлисты и настройки;
+- **не владеет временем воспроизведения** — тайминг идёт напрямую из `PlaybackTimeSource`;
 - загружает страницы библиотеки;
 - обрабатывает навигацию;
 - запускает синхронизацию;
@@ -498,7 +539,8 @@ fun playNext() {
 
 fun seekTo(positionMs: Long) {
     AudioPlayer.seekTo(positionMs)
-    _state.update { it.copy(playbackProgressMs = positionMs) }
+    // UI читает актуальную позицию из PlaybackTimeSource,
+    // а не из состояния ViewModel
 }
 ```
 
@@ -548,23 +590,35 @@ Desktop:
 - `PlayerViewModel`: принять действие пользователя и обновить состояние приложения.
 - `PlaybackQueueController`: хранить порядок воспроизведения.
 - `PlaybackResolver`: превратить очередь id в очередь воспроизводимых элементов.
+- `PlaybackTimeSource`: предоставить актуальное время воспроизведения (позиция, длительность, скорость) — единственный источник правды по таймингу.
+- `PlaybackTimeSnapshot`: атомарный срез времени для UI, SavePoint-воркера и других потребителей.
 - `AudioPlayer.android.kt`: играть через Android Media3.
 - `AudioPlayer.jvm.kt`: играть через Java Sound.
 
-## Самый важный поток данных
+## Самые важные потоки данных
+
+Данные библиотеки:
 
 ```text
 Сканер -> RawTrackData -> MusicRepository -> Room DB -> MusicLibrarySource -> PlayerViewModel -> UI
 ```
 
-А когда надо играть:
+Воспроизведение делится на два независимых потока:
 
+**Состояние (очередь, команды):**
 ```text
 Клик по треку -> PlayerViewModel -> PlaybackQueueController -> PlaybackResolver
--> MusicRepository.resolvePlayableItems -> AudioPlayer -> звук
+-> MusicRepository.resolvePlayableItems -> AudioPlayer -> PlaybackState -> PlayerViewModel -> UI
 ```
 
-И когда надо обогатить библиотеку:
+**Время (позиция, длительность):**
+```text
+AudioPlayer -> PlaybackTimeSource -> PlaybackTimeSnapshot -> UI / SavePoint-воркер
+```
+
+ViewModel не участвует в потоке времени. Тайминг идёт напрямую от `PlaybackTimeSource` ко всем потребителям.
+
+Обогащение библиотеки:
 
 ```text
 Room albums -> MetadataSyncService -> MusicBrainz / Cover Art Archive / Last.fm
