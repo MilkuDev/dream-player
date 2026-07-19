@@ -2,7 +2,6 @@ package org.milkdev.dreamplayer.ui
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -25,9 +24,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import ir.mahozad.multiplatform.wavyslider.WaveDirection
-import ir.mahozad.multiplatform.wavyslider.material3.WaveHeight
-import ir.mahozad.multiplatform.wavyslider.material3.WaveLength
 import org.jetbrains.compose.resources.DrawableResource
 import org.jetbrains.compose.resources.painterResource
 import org.milkdev.dreamplayer.generated.resources.Res
@@ -48,7 +44,6 @@ import org.milkdev.dreamplayer.playback.AudioPlayer
 import org.milkdev.dreamplayer.playback.PlaybackRepeatMode
 import org.milkdev.dreamplayer.playback.PlaybackTimeSnapshot
 import org.milkdev.dreamplayer.playback.PlaybackUiState
-import ir.mahozad.multiplatform.wavyslider.material3.WavySlider
 import kotlinx.coroutines.isActive
 import org.milkdev.dreamplayer.app.AppTheme
 import org.milkdev.dreamplayer.generated.resources.favorite_filled
@@ -437,7 +432,7 @@ private fun PlayerProgress(
 
     LaunchedEffect(Unit) {
         while (isActive) {
-            withFrameMillis {
+            withFrameMillis { _ ->
                 snapshot = AudioPlayer.playbackTimeSource.snapshot()
 
                 val current = snapshot
@@ -497,8 +492,17 @@ private fun PlayerProgress(
     val sliderProgress = if (isScrubbing) scrubProgress else snapshot.positionMs.toFloat()
     val totalDuration = snapshot.durationMs.toFloat().coerceAtLeast(1f)
 
-    Slider(
+    ExpressiveSlider(
         value = sliderProgress,
+        valueRange = 0f..totalDuration,
+        isPlaying = snapshot.isPlaying,
+        colors = PlayerSliderColors(
+            waveColor = MaterialTheme.colorScheme.primary,
+            trackColor = MaterialTheme.colorScheme.secondaryContainer,
+            thumbColor = MaterialTheme.colorScheme.primary,
+        ),
+        style = PlayerSliderStyle(),
+        modifier = Modifier.fillMaxWidth(),
         onValueChange = { newValue ->
             isScrubbing = true
             scrubProgress = newValue
@@ -506,9 +510,7 @@ private fun PlayerProgress(
         onValueChangeFinished = {
             onSeek(scrubProgress.toLong())
             isScrubbing = false
-        },
-        valueRange = 0f..totalDuration,
-        modifier = Modifier.fillMaxWidth()
+        }
     )
 
     Spacer(modifier = Modifier.height(8.dp))

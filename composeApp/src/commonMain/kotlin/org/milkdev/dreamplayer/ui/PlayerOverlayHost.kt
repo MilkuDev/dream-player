@@ -28,16 +28,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import org.milkdev.dreamplayer.app.runPlaybackDiagnostics
 import org.milkdev.dreamplayer.library.LibraryTrack
-import org.milkdev.dreamplayer.playback.AudioPlayer
-import org.milkdev.dreamplayer.playback.PlaybackTimeSource
 import org.milkdev.dreamplayer.playback.PlaybackUiState
 import org.milkdev.dreamplayer.playback.PlayerPresentation
 import kotlin.math.roundToInt
-import kotlin.time.Duration.Companion.milliseconds
 
 @Composable
 fun PlayerOverlayHost(
@@ -56,14 +51,6 @@ fun PlayerOverlayHost(
     onClearQueueClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    LaunchedEffect(Unit) {
-        while (!AudioPlayer.playbackTimeSource.snapshot().isPlaying) {
-            delay(100.milliseconds)
-        }
-
-        runPlaybackDiagnostics(AudioPlayer.playbackTimeSource)
-    }
-
     val currentTrack = playbackState.currentTrack
 
     if (playbackState.playerPresentation != PlayerPresentation.Fullscreen || currentTrack == null) {
