@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.milkdev.dreamplayer.audio.openFlacAudioInputStream
 import org.milkdev.dreamplayer.audio.openMpegAudioInputStream
+import org.milkdev.dreamplayer.diagnostics.PhaseLogThrottle
 import org.milkdev.dreamplayer.diagnostics.PlaybackTrace
 import org.milkdev.dreamplayer.diagnostics.TraceCategory
 import java.io.BufferedInputStream
@@ -43,14 +44,18 @@ actual object AudioPlayer {
         override fun snapshot(): PlaybackTimeSnapshot {
             return synchronized(lock) {
                 val s = _state.value
-                val positionMs = playbackSession?.getCurrentPosition()
-                    ?: if (s.currentTrackId != null && !s.isPlaying) s.totalDurationMs else 0L
+                val isPlaying = s.isPlaying
+                val durationMs = s.totalDurationMs
+                val underlyingPositionMs = playbackSession?.getCurrentPosition()
+                val positionMs = underlyingPositionMs
+                    ?: if (s.currentTrackId != null && !isPlaying) durationMs else 0L
+
                 PlaybackTimeSnapshot(
                     positionMs = positionMs,
-                    durationMs = s.totalDurationMs,
-                    bufferedPositionMs = s.totalDurationMs,
+                    durationMs = durationMs,
+                    bufferedPositionMs = durationMs,
                     playbackSpeed = 1f,
-                    isPlaying = s.isPlaying,
+                    isPlaying = isPlaying,
                 )
             }
         }

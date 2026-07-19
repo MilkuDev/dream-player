@@ -26,6 +26,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.milkdev.dreamplayer.app.applicationContext
 import org.milkdev.dreamplayer.diagnostics.AppDebugLog
+import org.milkdev.dreamplayer.diagnostics.PhaseLogThrottle
 import org.milkdev.dreamplayer.diagnostics.PlaybackTrace
 import org.milkdev.dreamplayer.diagnostics.TraceCategory
 
@@ -52,12 +53,21 @@ actual object AudioPlayer {
         override fun snapshot(): PlaybackTimeSnapshot {
             val c = synchronized(lock) { controller }
             val s = _state.value
+            val rawPosition = c?.currentPosition
+            val positionMs = rawPosition?.coerceAtLeast(0L) ?: 0L
+            val durationMs = s.totalDurationMs
+            val bufferedPositionMs = c?.bufferedPosition?.coerceAtLeast(0L) ?: s.totalDurationMs
+            val playbackSpeed = c?.playbackParameters?.speed ?: 1f
+            val isPlaying = s.isPlaying
+            val playbackState = c?.playbackState
+            val playWhenReady = c?.playWhenReady
+
             return PlaybackTimeSnapshot(
-                positionMs = c?.currentPosition?.coerceAtLeast(0L) ?: 0L,
-                durationMs = s.totalDurationMs,
-                bufferedPositionMs = c?.bufferedPosition?.coerceAtLeast(0L) ?: s.totalDurationMs,
-                playbackSpeed = c?.playbackParameters?.speed ?: 1f,
-                isPlaying = s.isPlaying,
+                positionMs = positionMs,
+                durationMs = durationMs,
+                bufferedPositionMs = bufferedPositionMs,
+                playbackSpeed = playbackSpeed,
+                isPlaying = isPlaying,
             )
 
         }
