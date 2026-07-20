@@ -1,6 +1,6 @@
 # DreamPlayer
 
-Local music player targeting Android and Desktop (Windows/macOS/Linux JVM). Built on Kotlin Multiplatform with Compose Multiplatform. The primary goal is maintaining a single, shared audio engine and business logic layer across different operating systems without relying on bloated external frameworks.
+Local multiplatform music player with AI and network features targeting Android, iOS (soon, in development) and desktop (Windows/macOS/Linux JVM). Built on Kotlin Multiplatform, UI on Compose (Android and desktop targets) and Swift UI (apple target) (soon).
 
 ## Core Architecture
 
@@ -13,21 +13,22 @@ The design prioritizes explicit declarations and native language capabilities ov
 
 ## Technical Stack
 
-* **UI Interface:** Compose Multiplatform (Material 3).
-* **Storage:** Room (SQLite) backed by a bundled driver. Write-Ahead Logging (WAL) is enabled to ensure concurrent read/write operations without blocking.
+* **UI Interface:** Compose Multiplatform (Material 3) and Swift UI (liquid glass).
+* **Storage:** Room backed by a bundled driver. Write-Ahead Logging (WAL) is enabled to ensure concurrent read/write operations without blocking.
 * **Preferences:** DataStore.
 * **Networking:** Ktor Client paired with `kotlinx.serialization`.
 * **Android Audio:** Media3 ExoPlayer integrated with `MediaSession`.
 * **Desktop Audio:** Java Sound API utilizing custom Service Provider Interfaces (`mp3spi` and `flannel` for FLAC decoding).
+* **Apple Audio:** AVPlayer
 
 ## Source Structure
 
-Platform-specific entry points are kept minimal. The vast majority of the logic resides in the common module.
+Platform-specific entry points are kept minimal. The vast majority of the logic resides in the shared module.
 
     KotlinMPDreamPlayer/
     ├── androidApp/          (Minimal Android launcher)
     ├── desktopApp/          (Minimal Desktop launcher)
-    └── composeApp/          (Shared logic and UI)
+    └── composeApp/          (Compose UI)
         ├── schemas/         (Room DB migration files)
         └── src/
             ├── commonMain/  (ViewModels, Repositories, DB setup)

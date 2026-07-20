@@ -24,7 +24,7 @@ internal fun rememberLazyArtworkLoadingEnabled(
         snapshotFlow { listState.isScrollInProgress }
             .collectLatest { isScrolling ->
                 if (isScrolling) {
-                    canLoadArtwork = false
+                    canLoadArtwork = true
                 } else {
                     delay(idleDelayMillis.milliseconds)
                     canLoadArtwork = true
