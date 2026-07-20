@@ -9,6 +9,7 @@ import androidx.compose.material3.Typography
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.text.TextStyle
 import org.jetbrains.compose.resources.Font
@@ -101,7 +102,7 @@ fun createAppTypography(): AppCustomTypography {
         Font(Res.font.sn_pro_extrabold_italic, weight = FontWeight.ExtraBold, style = FontStyle.Italic),
     )
 
-    val googleSansTypography = Typography(
+    val googleSansTypography = remember { Typography(
         displayLarge = TextStyle(fontFamily = googleSansFontFamily, fontWeight = FontWeight.Light, fontSize = 57.sp, lineHeight = 64.sp),
         displayMedium = TextStyle(fontFamily = googleSansFontFamily, fontWeight = FontWeight.Normal, fontSize = 45.sp, lineHeight = 52.sp),
         displaySmall = TextStyle(fontFamily = googleSansFontFamily, fontWeight = FontWeight.Normal, fontSize = 36.sp, lineHeight = 44.sp),
@@ -117,7 +118,8 @@ fun createAppTypography(): AppCustomTypography {
         labelLarge = TextStyle(fontFamily = googleSansFontFamily, fontWeight = FontWeight.Medium, fontSize = 14.sp, lineHeight = 20.sp, letterSpacing = 0.1.sp),
         labelMedium = TextStyle(fontFamily = googleSansFontFamily, fontWeight = FontWeight.Medium, fontSize = 12.sp, lineHeight = 16.sp, letterSpacing = 0.5.sp),
         labelSmall = TextStyle(fontFamily = googleSansFontFamily, fontWeight = FontWeight.Medium, fontSize = 11.sp, lineHeight = 16.sp, letterSpacing = 0.5.sp),
-    )
+        )
+    }
 
     val snProTypography = Typography(
         displayLarge = TextStyle(fontFamily = snProFontFamily, fontWeight = FontWeight.Light, fontSize = 57.sp, lineHeight = 64.sp),
@@ -152,7 +154,8 @@ fun AppTheme(
     content: @Composable () -> Unit
 ) {
     val customTypography = createAppTypography()
-    val spacings = AppSpacings()
+
+    val spacings = remember { AppSpacings() }
     val colorScheme = rememberPlatformColorScheme(darkTheme = darkTheme)
 
     setSystemBarAppearance(isDark = darkTheme)

@@ -33,12 +33,11 @@ compose.desktop {
                 TargetFormat.Rpm,
             )
             packageName = "DreamPlayer"
-            packageVersion = "1.0.0"
+            packageVersion = libs.versions.app.desktop.version.get()
             description = "DreamPlayer - Kotlin Desktop Player"
-            copyright = "2026 Milku"
+            copyright = "2026"
 
             windows {
-//                iconFile.set(project.file("src/main/resources/icons/icon.ico"))
                 perUserInstall = true
                 menu = true
                 shortcut = true

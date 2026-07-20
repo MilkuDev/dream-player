@@ -33,15 +33,6 @@ actual object AudioPlayer {
     actual fun seekTo(positionMs: Long) {
     }
 
-    actual fun skipToPrevious() {
-    }
-
-    actual fun skipToNext() {
-    }
-
-    actual fun skipToQueueIndex(index: Int) {
-    }
-
     actual fun setRepeatMode(mode: PlaybackRepeatMode) {
     }
 

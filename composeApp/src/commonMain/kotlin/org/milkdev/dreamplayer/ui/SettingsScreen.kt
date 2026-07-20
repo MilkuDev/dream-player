@@ -52,12 +52,13 @@ import org.milkdev.dreamplayer.extensions.ai.AiPlaylistPromptPresets
 import org.milkdev.dreamplayer.extensions.ai.AiPlaylistProviders
 import org.milkdev.dreamplayer.generated.resources.Res
 import org.milkdev.dreamplayer.generated.resources.arrow_back
-import org.milkdev.dreamplayer.playback.PlayerUiState
+import org.milkdev.dreamplayer.library.LibrarySummary
+import org.milkdev.dreamplayer.playback.SettingsUiState
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
-    state: PlayerUiState,
+    settingsState: SettingsUiState,
     onBackClick: () -> Unit,
     onBlurToggle: (Boolean) -> Unit,
     onNightModeToggle: (Boolean) -> Unit,
@@ -104,7 +105,7 @@ fun SettingsScreen(
                 SettingsToggleItem(
                     title = "Эффекты размытия",
                     subtitle = "Glassmorphism и размытие фона плеера",
-                    checked = state.isBlurEnabled,
+                    checked = settingsState.isBlurEnabled,
                     onCheckedChange = onBlurToggle,
                 )
             }
@@ -112,13 +113,13 @@ fun SettingsScreen(
                 SettingsToggleItem(
                     title = "Ночная тема",
                     subtitle = "Принудительно использовать темный интерфейс",
-                    checked = state.isForceNightMode,
+                    checked = settingsState.isForceNightMode,
                     onCheckedChange = onNightModeToggle,
                 )
             }
             item {
                 SettingsDailyPlaylistItem(
-                    state = state,
+                    settingsState = settingsState,
                     onModeChange = onDailyPlaylistModeChange,
                     onProviderChange = onAiPlaylistProviderChange,
                     onModelChange = onAiPlaylistModelChange,
@@ -137,7 +138,7 @@ fun SettingsScreen(
             }
             item {
                 SettingsLastFmItem(
-                    state = state,
+                    settingsState = settingsState,
                     onApiKeySave = onLastFmApiKeySave,
                     onApiKeyClear = onLastFmApiKeyClear,
                     onApiTest = onLastFmApiTest,
@@ -202,7 +203,8 @@ private fun NetworkTraceBlock() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AiDebugSettingsScreen(
-    state: PlayerUiState,
+    settingsState: SettingsUiState,
+    librarySummary: LibrarySummary = LibrarySummary(),
     onBackClick: () -> Unit,
     onModeChange: (DailyPlaylistGenerationMode) -> Unit,
     onProviderChange: (String) -> Unit,
@@ -218,17 +220,17 @@ fun AiDebugSettingsScreen(
     onPromptSend: (String) -> Unit,
     contentPadding: PaddingValues = PaddingValues(0.dp),
 ) {
-    var promptInput by remember(state.aiPlaylistProviderId) { mutableStateOf("") }
-    var apiKeyInput by remember(state.aiPlaylistProviderId) { mutableStateOf("") }
-    var isEditingApiKey by remember(state.aiPlaylistProviderId, state.isAiPlaylistApiKeyConfigured) {
+    var promptInput by remember(settingsState.aiPlaylistProviderId) { mutableStateOf("") }
+    var apiKeyInput by remember(settingsState.aiPlaylistProviderId) { mutableStateOf("") }
+    var isEditingApiKey by remember(settingsState.aiPlaylistProviderId, settingsState.isAiPlaylistApiKeyConfigured) {
         mutableStateOf(false)
     }
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     val selectedModel = AiPlaylistModels.byApiModel(
-        providerId = state.aiPlaylistProviderId,
-        apiModel = state.aiPlaylistModel,
+        providerId = settingsState.aiPlaylistProviderId,
+        apiModel = settingsState.aiPlaylistModel,
     )
-    val aiFeature = state.aiDailyPlaylistFeature
+    val aiFeature = settingsState.aiDailyPlaylistFeature
     @Suppress("DEPRECATION")
     val clipboardManager = LocalClipboardManager.current
 
@@ -272,13 +274,13 @@ fun AiDebugSettingsScreen(
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             FilterChip(
-                                selected = state.dailyPlaylistGenerationMode == DailyPlaylistGenerationMode.LOCAL_DAILY,
+                                selected = settingsState.dailyPlaylistGenerationMode == DailyPlaylistGenerationMode.LOCAL_DAILY,
                                 onClick = { onModeChange(DailyPlaylistGenerationMode.LOCAL_DAILY) },
                                 label = { Text("Локально") },
                                 modifier = Modifier.weight(1f),
                             )
                             FilterChip(
-                                selected = state.dailyPlaylistGenerationMode == DailyPlaylistGenerationMode.AI_API,
+                                selected = settingsState.dailyPlaylistGenerationMode == DailyPlaylistGenerationMode.AI_API,
                                 onClick = { onModeChange(DailyPlaylistGenerationMode.AI_API) },
                                 enabled = aiFeature.enabled,
                                 label = { Text("AI") },
@@ -298,12 +300,12 @@ fun AiDebugSettingsScreen(
                             fontWeight = FontWeight.Bold,
                         )
                         AiProviderSelector(
-                            selectedProviderId = state.aiPlaylistProviderId,
+                            selectedProviderId = settingsState.aiPlaylistProviderId,
                             onProviderChange = onProviderChange,
                         )
                         AiModelDropdown(
-                            providerId = state.aiPlaylistProviderId,
-                            selectedModelId = state.aiPlaylistModel,
+                            providerId = settingsState.aiPlaylistProviderId,
+                            selectedModelId = settingsState.aiPlaylistModel,
                             onModelChange = onModelChange,
                         )
                         Text(
@@ -312,7 +314,7 @@ fun AiDebugSettingsScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         AiApiKeyEditor(
-                            isConfigured = state.isAiPlaylistApiKeyConfigured,
+                            isConfigured = settingsState.isAiPlaylistApiKeyConfigured,
                             isEditing = isEditingApiKey,
                             apiKeyInput = apiKeyInput,
                             onApiKeyInputChange = { apiKeyInput = it },
@@ -338,51 +340,51 @@ fun AiDebugSettingsScreen(
                             fontWeight = FontWeight.Bold,
                         )
                         AiPromptPresetSelector(
-                            selectedPresetId = state.aiPlaylistPromptPresetId,
+                            selectedPresetId = settingsState.aiPlaylistPromptPresetId,
                             onPromptPresetChange = onPromptPresetChange,
                         )
-                        if (AiPlaylistPromptPresets.byId(state.aiPlaylistPromptPresetId).isCustom) {
+                        if (AiPlaylistPromptPresets.byId(settingsState.aiPlaylistPromptPresetId).isCustom) {
                             AiCustomPromptField(
-                                value = state.aiPlaylistCustomSystemPrompt,
+                                value = settingsState.aiPlaylistCustomSystemPrompt,
                                 onValueChange = onCustomPromptChange,
                             )
                         }
                         Text(
                             text = "Статус: ключ выбранного сервиса " +
-                                if (state.isAiPlaylistApiKeyConfigured) "сохранен" else "не задан",
+                                if (settingsState.isAiPlaylistApiKeyConfigured) "сохранен" else "не задан",
                             style = AppTheme.typography.snPro.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Text(
-                            text = "Библиотека: ${state.librarySummary.trackCount} треков. " +
-                                "Текущий режим: ${if (state.dailyPlaylistGenerationMode == DailyPlaylistGenerationMode.AI_API) "AI" else "локально"}.",
+                            text = "Библиотека: ${librarySummary.trackCount} треков. " +
+                                "Текущий режим: ${if (settingsState.dailyPlaylistGenerationMode == DailyPlaylistGenerationMode.AI_API) "AI" else "локально"}.",
                             style = AppTheme.typography.snPro.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         OutlinedButton(
                             onClick = onApiTest,
-                            enabled = state.isAiPlaylistApiKeyConfigured,
+                            enabled = settingsState.isAiPlaylistApiKeyConfigured,
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             Text("Проверить AI API")
                         }
                         OutlinedButton(
                             onClick = onResponseTest,
-                            enabled = state.isAiPlaylistApiKeyConfigured,
+                            enabled = settingsState.isAiPlaylistApiKeyConfigured,
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             Text("Проверить ответ модели")
                         }
                         OutlinedButton(
                             onClick = onAllApiKeysClear,
-                            enabled = state.isAnyAiPlaylistApiKeyConfigured,
+                            enabled = settingsState.isAnyAiPlaylistApiKeyConfigured,
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             Text("Очистить все AI-ключи")
                         }
                         OutlinedButton(
                             onClick = onForceGenerateDailyPlaylist,
-                            enabled = state.librarySummary.trackCount > 0,
+                            enabled = librarySummary.trackCount > 0,
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             Text("Сгенерировать плейлист дня сейчас")
@@ -397,12 +399,12 @@ fun AiDebugSettingsScreen(
                         )
                         Button(
                             onClick = { onPromptSend(promptInput) },
-                            enabled = state.isAiPlaylistApiKeyConfigured && promptInput.isNotBlank(),
+                            enabled = settingsState.isAiPlaylistApiKeyConfigured && promptInput.isNotBlank(),
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             Text("Отправить промпт")
                         }
-                        state.aiPlaylistApiTestStatus?.takeIf { it.isNotBlank() }?.let { status ->
+                        settingsState.aiPlaylistApiTestStatus?.takeIf { it.isNotBlank() }?.let { status ->
                             OutlinedButton(
                                 onClick = {
                                     clipboardManager.setText(AnnotatedString(status))
@@ -426,7 +428,7 @@ fun AiDebugSettingsScreen(
 
 @Composable
 fun SettingsDailyPlaylistItem(
-    state: PlayerUiState,
+    settingsState: SettingsUiState,
     onModeChange: (DailyPlaylistGenerationMode) -> Unit,
     onProviderChange: (String) -> Unit,
     onModelChange: (String) -> Unit,
@@ -435,12 +437,12 @@ fun SettingsDailyPlaylistItem(
     onApiKeySave: (String) -> Unit,
     onApiKeyClear: () -> Unit,
 ) {
-    var apiKeyInput by remember(state.aiPlaylistProviderId) { mutableStateOf("") }
-    var isEditingApiKey by remember(state.aiPlaylistProviderId, state.isAiPlaylistApiKeyConfigured) {
+    var apiKeyInput by remember(settingsState.aiPlaylistProviderId) { mutableStateOf("") }
+    var isEditingApiKey by remember(settingsState.aiPlaylistProviderId, settingsState.isAiPlaylistApiKeyConfigured) {
         mutableStateOf(false)
     }
-    val aiFeature = state.aiDailyPlaylistFeature
-    val isAiMode = state.dailyPlaylistGenerationMode == DailyPlaylistGenerationMode.AI_API
+    val aiFeature = settingsState.aiDailyPlaylistFeature
+    val isAiMode = settingsState.dailyPlaylistGenerationMode == DailyPlaylistGenerationMode.AI_API
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -461,7 +463,7 @@ fun SettingsDailyPlaylistItem(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 FilterChip(
-                    selected = state.dailyPlaylistGenerationMode == DailyPlaylistGenerationMode.LOCAL_DAILY,
+                    selected = settingsState.dailyPlaylistGenerationMode == DailyPlaylistGenerationMode.LOCAL_DAILY,
                     onClick = { onModeChange(DailyPlaylistGenerationMode.LOCAL_DAILY) },
                     label = { Text("Локально") },
                     modifier = Modifier.weight(1f),
@@ -490,16 +492,16 @@ fun SettingsDailyPlaylistItem(
                     fontWeight = FontWeight.Bold,
                 )
                 AiProviderSelector(
-                    selectedProviderId = state.aiPlaylistProviderId,
+                    selectedProviderId = settingsState.aiPlaylistProviderId,
                     onProviderChange = onProviderChange,
                 )
                 AiModelDropdown(
-                    providerId = state.aiPlaylistProviderId,
-                    selectedModelId = state.aiPlaylistModel,
+                    providerId = settingsState.aiPlaylistProviderId,
+                    selectedModelId = settingsState.aiPlaylistModel,
                     onModelChange = onModelChange,
                 )
                 AiApiKeyEditor(
-                    isConfigured = state.isAiPlaylistApiKeyConfigured,
+                    isConfigured = settingsState.isAiPlaylistApiKeyConfigured,
                     isEditing = isEditingApiKey,
                     apiKeyInput = apiKeyInput,
                     onApiKeyInputChange = { apiKeyInput = it },
@@ -525,12 +527,12 @@ fun SettingsDailyPlaylistItem(
                     fontWeight = FontWeight.Bold,
                 )
                 AiPromptPresetSelector(
-                    selectedPresetId = state.aiPlaylistPromptPresetId,
+                    selectedPresetId = settingsState.aiPlaylistPromptPresetId,
                     onPromptPresetChange = onPromptPresetChange,
                 )
-                if (AiPlaylistPromptPresets.byId(state.aiPlaylistPromptPresetId).isCustom) {
+                if (AiPlaylistPromptPresets.byId(settingsState.aiPlaylistPromptPresetId).isCustom) {
                     AiCustomPromptField(
-                        value = state.aiPlaylistCustomSystemPrompt,
+                        value = settingsState.aiPlaylistCustomSystemPrompt,
                         onValueChange = onCustomPromptChange,
                     )
                 }
@@ -725,7 +727,7 @@ private fun AiCustomPromptField(
 
 @Composable
 fun SettingsLastFmItem(
-    state: PlayerUiState,
+    settingsState: SettingsUiState,
     onApiKeySave: (String) -> Unit,
     onApiKeyClear: () -> Unit,
     onApiTest: () -> Unit,
@@ -733,7 +735,7 @@ fun SettingsLastFmItem(
     onMusicBrainzCoverSync: () -> Unit,
 ) {
     var apiKeyInput by remember { mutableStateOf("") }
-    val lastFm = state.lastFmSettings
+    val lastFm = settingsState.lastFmSettings
 
     Surface(
         modifier = Modifier.fillMaxWidth(),

@@ -5,7 +5,9 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import org.milkdev.dreamplayer.database.settingsDataStore
 import java.security.KeyStore
 import javax.crypto.Cipher
@@ -21,9 +23,11 @@ internal object AndroidEncryptedSecretStore {
             Base64.decode(encodedPayload, Base64.NO_WRAP)
         }.getOrNull() ?: return null
 
-        return runCatching {
-            decrypt(payload).decodeToString()
-        }.getOrNull()
+        return withContext(Dispatchers.Default) {
+            runCatching {
+                decrypt(payload).decodeToString()
+            }.getOrNull()
+        }
     }
 
     suspend fun setString(key: Preferences.Key<String>, value: String) {
@@ -33,7 +37,9 @@ internal object AndroidEncryptedSecretStore {
             return
         }
 
-        val payload = encrypt(trimmedValue.encodeToByteArray())
+        val payload = withContext(Dispatchers.Default) {
+            encrypt(trimmedValue.encodeToByteArray())
+        }
         settingsDataStore.edit { preferences ->
             preferences[key] = Base64.encodeToString(payload, Base64.NO_WRAP)
         }

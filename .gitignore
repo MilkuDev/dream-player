@@ -22,3 +22,4 @@ AGENTS.md
 node_modules/
 /index/
 /.qwen/
+/androidApp/release/

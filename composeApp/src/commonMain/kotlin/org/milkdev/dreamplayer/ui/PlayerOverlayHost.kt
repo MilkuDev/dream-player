@@ -30,13 +30,13 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import org.milkdev.dreamplayer.library.LibraryTrack
+import org.milkdev.dreamplayer.playback.PlaybackUiState
 import org.milkdev.dreamplayer.playback.PlayerPresentation
-import org.milkdev.dreamplayer.playback.PlayerUiState
 import kotlin.math.roundToInt
 
 @Composable
 fun PlayerOverlayHost(
-    state: PlayerUiState,
+    playbackState: PlaybackUiState,
     onNavigateBack: () -> Unit,
     onOpenQueueSheet: () -> Unit,
     onPreviousClick: () -> Unit,
@@ -52,9 +52,9 @@ fun PlayerOverlayHost(
     modifier: Modifier = Modifier,
 ) {
 
-    val currentTrack = state.currentTrack
+    val currentTrack = playbackState.currentTrack
 
-    if (state.playerPresentation != PlayerPresentation.Fullscreen || currentTrack == null) {
+    if (playbackState.playerPresentation != PlayerPresentation.Fullscreen || currentTrack == null) {
         return
     }
 
@@ -105,7 +105,7 @@ fun PlayerOverlayHost(
 
         val visiblePlayerOffsetY = if (hasAnimatedIn) playerOffsetY.value else maxHeightPx
 
-        val playerDragModifier = if (state.isQueueSheetVisible) {
+        val playerDragModifier = if (playbackState.isQueueSheetVisible) {
             Modifier
         } else {
             Modifier.pointerInput(maxHeightPx) {
@@ -133,7 +133,7 @@ fun PlayerOverlayHost(
         }
 
         PlayerScreen(
-            state = state,
+            playbackState = playbackState,
             onBackClick = { dismissPlayer() },
             onQueueClick = onOpenQueueSheet,
             onPreviousClick = onPreviousClick,
@@ -149,11 +149,11 @@ fun PlayerOverlayHost(
                 .offset { IntOffset(0, visiblePlayerOffsetY.roundToInt()) },
         )
 
-        if (state.isQueueSheetVisible) {
+        if (playbackState.isQueueSheetVisible) {
             QueueSheetOverlay(
-                tracks = state.playbackQueue,
+                tracks = playbackState.playbackQueue,
                 currentTrackId = currentTrack.id,
-                currentQueueIndex = state.currentQueueIndex,
+                currentQueueIndex = playbackState.currentQueueIndex,
                 onNavigateBack = onNavigateBack,
                 onTrackClick = onQueueTrackClick,
                 onMoveTrack = onMoveTrack,

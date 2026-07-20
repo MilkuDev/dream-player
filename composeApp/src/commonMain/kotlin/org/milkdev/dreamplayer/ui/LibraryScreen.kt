@@ -30,7 +30,7 @@ import org.milkdev.dreamplayer.generated.resources.playlist_add
 import org.milkdev.dreamplayer.generated.resources.playlist_play_24dp
 import org.milkdev.dreamplayer.library.*
 import org.milkdev.dreamplayer.model.*
-import org.milkdev.dreamplayer.playback.PlayerUiState
+import org.milkdev.dreamplayer.playback.LibraryUiState
 
 private val TrackSortOrders = listOf(
     TrackSortOrder.TRACK_NAME, TrackSortOrder.ALBUM, TrackSortOrder.ARTIST,
@@ -45,7 +45,8 @@ private val AlbumSortOrders = listOf(
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun LibraryScreen(
-    state: PlayerUiState,
+    libraryState: LibraryUiState,
+    currentTrack: LibraryTrack?,
     onIntent: (LibraryIntent) -> Unit,
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues.Zero,
@@ -56,15 +57,15 @@ fun LibraryScreen(
     val loadUncachedListArtwork = rememberLazyArtworkLoadingEnabled(listState = lazyListState)
     val loadUncachedGridArtwork = rememberLazyArtworkLoadingEnabled(gridState = lazyGridState)
 
-    LaunchedEffect(state.currentCategory) {
-        if (!state.isLoading) {
+    LaunchedEffect(libraryState.currentCategory) {
+        if (!libraryState.isLoading) {
             lazyListState.scrollToItem(0)
             lazyGridState.scrollToItem(0)
         }
     }
 
     Box(modifier = modifier.fillMaxSize()) {
-        if (state.isLoading) {
+        if (libraryState.isLoading) {
             LoadingIndicator(modifier = Modifier.align(Alignment.Center))
         } else {
             Column(
@@ -80,20 +81,20 @@ fun LibraryScreen(
                 }
 
                 LibraryCategoryRow(
-                    selectedCategory = state.currentCategory,
+                    selectedCategory = libraryState.currentCategory,
                     onCategorySelected = { onIntent(LibraryIntent.SelectCategory(it)) },
                     modifier = Modifier.padding(bottom = 16.dp),
                 )
 
-                when (state.currentCategory) {
+                when (libraryState.currentCategory) {
                     LibraryCategory.TRACKS -> SortButtonGroupRow(
-                        selectedSort = state.trackSortOrder,
+                        selectedSort = libraryState.trackSortOrder,
                         onSortSelected = { onIntent(LibraryIntent.ChangeTrackSort(it)) },
                         entries = TrackSortOrders,
                         modifier = Modifier.padding(bottom = 16.dp),
                     )
                     LibraryCategory.ALBUMS -> SortButtonGroupRow(
-                        selectedSort = state.albumSortOrder,
+                        selectedSort = libraryState.albumSortOrder,
                         onSortSelected = { onIntent(LibraryIntent.ChangeAlbumSort(it)) },
                         entries = AlbumSortOrders,
                         modifier = Modifier.padding(bottom = 16.dp),
@@ -101,17 +102,17 @@ fun LibraryScreen(
                     else -> Spacer(modifier = Modifier.padding(bottom = 0.dp))
                 }
 
-                when (state.currentCategory) {
+                when (libraryState.currentCategory) {
                     LibraryCategory.TRACKS -> {
 
-                        val mappedTracks = remember(state.trackListItems) {
-                            state.trackListItems.map { it.toLibraryTrack() }
+                        val mappedTracks = remember(libraryState.trackListItems) {
+                            libraryState.trackListItems.map { it.toLibraryTrack() }
                         }
 
-                        if (state.trackSortOrder == TrackSortOrder.GENRE) {
+                        if (libraryState.trackSortOrder == TrackSortOrder.GENRE) {
                             InfiniteGridHandler(lazyGridState) { onIntent(LibraryIntent.LoadNextGenres) }
                             LibraryGenreGrid(
-                                genres = state.genreListItems,
+                                genres = libraryState.genreListItems,
                                 onIntent = onIntent,
                                 gridState = lazyGridState,
                                 contentPadding = contentPadding
@@ -120,7 +121,7 @@ fun LibraryScreen(
                             InfiniteListHandler(lazyListState) { onIntent(LibraryIntent.LoadNextTracks) }
                             LibraryTrackList(
                                 tracks = mappedTracks,
-                                currentTrack = state.currentTrack,
+                                currentTrack = currentTrack,
                                 onIntent = onIntent,
                                 loadUncachedArtwork = loadUncachedListArtwork,
                                 listState = lazyListState,
@@ -129,10 +130,10 @@ fun LibraryScreen(
                         }
                     }
                     LibraryCategory.ALBUMS -> {
-                        if (state.albumSortOrder == AlbumSortOrder.GENRE) {
+                        if (libraryState.albumSortOrder == AlbumSortOrder.GENRE) {
                             InfiniteGridHandler(lazyGridState) { onIntent(LibraryIntent.LoadNextGenres) }
                             LibraryGenreGrid(
-                                genres = state.genreListItems,
+                                genres = libraryState.genreListItems,
                                 onIntent = onIntent,
                                 gridState = lazyGridState,
                                 contentPadding = contentPadding
@@ -140,7 +141,7 @@ fun LibraryScreen(
                         } else {
                             InfiniteGridHandler(lazyGridState) { onIntent(LibraryIntent.LoadNextAlbums) }
                             LibraryAlbumGrid(
-                                albums = state.albumListItems,
+                                albums = libraryState.albumListItems,
                                 onIntent = onIntent,
                                 loadUncachedArtwork = loadUncachedGridArtwork,
                                 gridState = lazyGridState,
@@ -151,7 +152,7 @@ fun LibraryScreen(
                     LibraryCategory.ARTISTS -> {
                         InfiniteGridHandler(lazyGridState) { onIntent(LibraryIntent.LoadNextArtists) }
                         LibraryArtistGrid(
-                            artists = state.artistListItems,
+                            artists = libraryState.artistListItems,
                             onIntent = onIntent,
                             loadUncachedArtwork = loadUncachedGridArtwork,
                             gridState = lazyGridState,
@@ -160,8 +161,8 @@ fun LibraryScreen(
                     }
                     LibraryCategory.PLAYLISTS -> {
 
-                        val sortedPlaylists = remember(state.playlists) {
-                            state.playlists.sortedBy { it.name.lowercase() }
+                        val sortedPlaylists = remember(libraryState.playlists) {
+                            libraryState.playlists.sortedBy { it.name.lowercase() }
                         }
 
                         LibraryPlaylistList(
