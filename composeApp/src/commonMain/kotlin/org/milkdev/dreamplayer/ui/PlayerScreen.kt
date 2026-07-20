@@ -2,7 +2,6 @@ package org.milkdev.dreamplayer.ui
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -25,9 +24,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import ir.mahozad.multiplatform.wavyslider.WaveDirection
-import ir.mahozad.multiplatform.wavyslider.material3.WaveHeight
-import ir.mahozad.multiplatform.wavyslider.material3.WaveLength
 import org.jetbrains.compose.resources.DrawableResource
 import org.jetbrains.compose.resources.painterResource
 import org.milkdev.dreamplayer.generated.resources.Res
@@ -43,9 +39,12 @@ import org.milkdev.dreamplayer.generated.resources.skip_next
 import org.milkdev.dreamplayer.generated.resources.skip_previous
 import org.milkdev.dreamplayer.generated.resources.play_arrow
 import org.milkdev.dreamplayer.generated.resources.stat_minus
+import org.milkdev.dreamplayer.diagnostics.PlaybackTrace
+import org.milkdev.dreamplayer.playback.AudioPlayer
 import org.milkdev.dreamplayer.playback.PlaybackRepeatMode
+import org.milkdev.dreamplayer.playback.PlaybackTimeSnapshot
 import org.milkdev.dreamplayer.playback.PlaybackUiState
-import ir.mahozad.multiplatform.wavyslider.material3.WavySlider
+import kotlinx.coroutines.isActive
 import org.milkdev.dreamplayer.app.AppTheme
 import org.milkdev.dreamplayer.generated.resources.favorite_filled
 import org.milkdev.dreamplayer.generated.resources.lyrics
@@ -66,11 +65,6 @@ fun PlayerScreen(
     onSeek: (Long) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var isScrubbing by remember { mutableStateOf(false) }
-    var scrubProgress by remember { mutableFloatStateOf(0f) }
-    val sliderProgress = if (isScrubbing) scrubProgress else playbackState.playbackProgressMs.toFloat()
-    val totalDuration = playbackState.totalDurationMs.toFloat().coerceAtLeast(1f)
-
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -98,42 +92,24 @@ fun PlayerScreen(
             if (useWideLayout) {
                 WidePlayerContent(
                     playbackState = playbackState,
-                    sliderProgress = sliderProgress,
-                    totalDuration = totalDuration,
                     onPreviousClick = onPreviousClick,
                     onNextClick = onNextClick,
                     onPlayPauseClick = onPlayPauseClick,
                     onShuffleClick = onShuffleClick,
                     onRepeatClick = onRepeatClick,
                     onFavoriteClick = onFavoriteClick,
-                    onSliderValueChange = { newValue ->
-                        isScrubbing = true
-                        scrubProgress = newValue
-                    },
-                    onSliderValueChangeFinished = {
-                        onSeek(scrubProgress.toLong())
-                        isScrubbing = false
-                    },
+                    onSeek = onSeek
                 )
             } else {
                 PortraitPlayerContent(
                     playbackState = playbackState,
-                    sliderProgress = sliderProgress,
-                    totalDuration = totalDuration,
                     onPreviousClick = onPreviousClick,
                     onNextClick = onNextClick,
                     onPlayPauseClick = onPlayPauseClick,
                     onShuffleClick = onShuffleClick,
                     onRepeatClick = onRepeatClick,
                     onFavoriteClick = onFavoriteClick,
-                    onSliderValueChange = { newValue ->
-                        isScrubbing = true
-                        scrubProgress = newValue
-                    },
-                    onSliderValueChangeFinished = {
-                        onSeek(scrubProgress.toLong())
-                        isScrubbing = false
-                    },
+                    onSeek = onSeek
                 )
             }
         }
@@ -190,16 +166,13 @@ private fun PlayerTopBar(
 @Composable
 private fun PortraitPlayerContent(
     playbackState: PlaybackUiState,
-    sliderProgress: Float,
-    totalDuration: Float,
     onPreviousClick: () -> Unit,
     onNextClick: () -> Unit,
     onPlayPauseClick: () -> Unit,
     onShuffleClick: () -> Unit,
     onRepeatClick: () -> Unit,
     onFavoriteClick: () -> Unit,
-    onSliderValueChange: (Float) -> Unit,
-    onSliderValueChangeFinished: () -> Unit,
+    onSeek: (Long) -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -229,14 +202,7 @@ private fun PortraitPlayerContent(
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        PlayerProgress(
-            sliderProgress = sliderProgress,
-            totalDuration = totalDuration,
-            totalDurationMs = playbackState.totalDurationMs,
-            isPlaying = playbackState.isPlaying,
-            onSliderValueChange = onSliderValueChange,
-            onSliderValueChangeFinished = onSliderValueChangeFinished,
-        )
+        PlayerProgress(onSeek = onSeek)
 
         Spacer(modifier = Modifier.height(20.dp))
 
@@ -261,16 +227,13 @@ private fun PortraitPlayerContent(
 @Composable
 private fun WidePlayerContent(
     playbackState: PlaybackUiState,
-    sliderProgress: Float,
-    totalDuration: Float,
     onPreviousClick: () -> Unit,
     onNextClick: () -> Unit,
     onPlayPauseClick: () -> Unit,
     onShuffleClick: () -> Unit,
     onRepeatClick: () -> Unit,
     onFavoriteClick: () -> Unit,
-    onSliderValueChange: (Float) -> Unit,
-    onSliderValueChangeFinished: () -> Unit,
+    onSeek: (Long) -> Unit,
 ) {
     Row(
         modifier = Modifier.fillMaxSize(),
@@ -308,14 +271,7 @@ private fun WidePlayerContent(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            PlayerProgress(
-                sliderProgress = sliderProgress,
-                totalDuration = totalDuration,
-                totalDurationMs = playbackState.totalDurationMs,
-                isPlaying = playbackState.isPlaying,
-                onSliderValueChange = onSliderValueChange,
-                onSliderValueChangeFinished = onSliderValueChangeFinished,
-            )
+            PlayerProgress(onSeek = onSeek)
 
             Spacer(modifier = Modifier.height(16.dp))
 
@@ -462,29 +418,98 @@ private fun PlayerTrackInfo(
 
 @Composable
 private fun PlayerProgress(
-    sliderProgress: Float,
-    totalDuration: Float,
-    totalDurationMs: Long,
-    isPlaying: Boolean,
-    onSliderValueChange: (Float) -> Unit,
-    onSliderValueChangeFinished: () -> Unit,
+    onSeek: (Long) -> Unit,
 ) {
-    val animatedWaveHeight by animateDpAsState(
-        targetValue = if (isPlaying) SliderDefaults.WaveHeight else 0.dp,
-        animationSpec = tween(durationMillis = 100),
-        label = "WaveHeightAnimation"
-    )
-    WavySlider(
+    var isScrubbing by remember { mutableStateOf(false) }
+    var scrubProgress by remember { mutableFloatStateOf(0f) }
+    var snapshot by remember {
+        mutableStateOf(AudioPlayer.playbackTimeSource.snapshot())
+    }
+
+    var previousSnapshot by remember { mutableStateOf<PlaybackTimeSnapshot?>(null) }
+    var stallCounter by remember { mutableIntStateOf(0) }
+    var snapshotId by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            withFrameMillis { _ ->
+                snapshot = AudioPlayer.playbackTimeSource.snapshot()
+
+                val current = snapshot
+                val prev = previousSnapshot
+                snapshotId++
+
+                if (prev != null) {
+                    val posDelta = current.positionMs - prev.positionMs
+
+                    if (current.durationMs > 0L && current.positionMs > current.durationMs + 100L) {
+                        PlaybackTrace.anomaly(
+                            "SNAP_EXCEEDS_DURATION",
+                            "snapshotId=$snapshotId positionMs=${current.positionMs} durationMs=${current.durationMs}"
+                        )
+                    }
+
+                    if (current.positionMs < 0L) {
+                        PlaybackTrace.anomaly(
+                            "SNAP_NEGATIVE",
+                            "snapshotId=$snapshotId positionMs=${current.positionMs}"
+                        )
+                    }
+
+                    if (posDelta < -200L) {
+                        PlaybackTrace.anomaly(
+                            "SNAP_BACKWARD",
+                            "snapshotId=$snapshotId positionMs=${current.positionMs} prevPositionMs=${prev.positionMs} delta=$posDelta"
+                        )
+                    }
+
+                    if (posDelta > 3000L) {
+                        PlaybackTrace.anomaly(
+                            "SNAP_LARGE_JUMP",
+                            "snapshotId=$snapshotId positionMs=${current.positionMs} prevPositionMs=${prev.positionMs} delta=$posDelta"
+                        )
+                    }
+
+                    if (current.isPlaying && current.positionMs <= prev.positionMs) {
+                        stallCounter++
+                        if (stallCounter >= 5) {
+                            PlaybackTrace.anomaly(
+                                "SNAP_STALL",
+                                "snapshotId=$snapshotId stallCount=$stallCounter positionMs=${current.positionMs}"
+                            )
+                            stallCounter = 0
+                        }
+                    } else {
+                        stallCounter = 0
+                    }
+                }
+
+                previousSnapshot = current
+            }
+        }
+    }
+
+    val sliderProgress = if (isScrubbing) scrubProgress else snapshot.positionMs.toFloat()
+    val totalDuration = snapshot.durationMs.toFloat().coerceAtLeast(1f)
+
+    ExpressiveSlider(
         value = sliderProgress,
-        onValueChange = onSliderValueChange,
-        onValueChangeFinished = onSliderValueChangeFinished,
         valueRange = 0f..totalDuration,
+        isPlaying = snapshot.isPlaying,
+        colors = PlayerSliderColors(
+            waveColor = MaterialTheme.colorScheme.primary,
+            trackColor = MaterialTheme.colorScheme.secondaryContainer,
+            thumbColor = MaterialTheme.colorScheme.primary,
+        ),
+        style = PlayerSliderStyle(),
         modifier = Modifier.fillMaxWidth(),
-        waveHeight = animatedWaveHeight,
-        waveVelocity = if (isPlaying) {
-            SliderDefaults.WaveLength to WaveDirection.HEAD
-        } else {
-            0.dp to WaveDirection.HEAD
+        onValueChange = { newValue ->
+            isScrubbing = true
+            scrubProgress = newValue
+        },
+        onValueChangeFinished = {
+            onSeek(scrubProgress.toLong())
+            isScrubbing = false
         }
     )
 
@@ -500,7 +525,7 @@ private fun PlayerProgress(
             color = MaterialTheme.colorScheme.onBackground
         )
         Text(
-            text = formatTime(totalDurationMs),
+            text = formatTime(snapshot.durationMs),
             style = AppTheme.typography.snPro.labelMedium,
             color = MaterialTheme.colorScheme.onBackground
         )

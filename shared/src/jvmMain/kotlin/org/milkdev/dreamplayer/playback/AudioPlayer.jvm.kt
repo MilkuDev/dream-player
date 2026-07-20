@@ -7,6 +7,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.milkdev.dreamplayer.audio.openFlacAudioInputStream
 import org.milkdev.dreamplayer.audio.openMpegAudioInputStream
+import org.milkdev.dreamplayer.diagnostics.PlaybackTrace
+import org.milkdev.dreamplayer.diagnostics.TraceCategory
 import java.io.BufferedInputStream
 import java.io.EOFException
 import java.io.File
@@ -32,14 +34,45 @@ actual object AudioPlayer {
     private var queue: List<ResolvedPlaybackItem> = emptyList()
     private var currentIndex: Int = -1
     private var repeatMode: PlaybackRepeatMode = PlaybackRepeatMode.Off
+    private var nextSessionId: Int = 1
+    private var currentSessionId: Int = 0
 
     actual val state: StateFlow<AudioPlayerState> = _state.asStateFlow()
+
+    actual val playbackTimeSource: PlaybackTimeSource = object : PlaybackTimeSource {
+        override fun snapshot(): PlaybackTimeSnapshot {
+            return synchronized(lock) {
+                val s = _state.value
+                val isPlaying = s.isPlaying
+                val durationMs = s.totalDurationMs
+                val underlyingPositionMs = playbackSession?.getCurrentPosition()
+                val positionMs = underlyingPositionMs
+                    ?: if (s.currentTrackId != null && !isPlaying) durationMs else 0L
+
+                PlaybackTimeSnapshot(
+                    positionMs = positionMs,
+                    durationMs = durationMs,
+                    bufferedPositionMs = durationMs,
+                    playbackSpeed = 1f,
+                    isPlaying = isPlaying,
+                )
+            }
+        }
+    }
 
     actual fun play(snapshot: PlaybackSnapshot, startPositionMs: Long) {
         if (snapshot.items.isEmpty()) {
             stop()
             return
         }
+
+        currentSessionId = nextSessionId++
+        val sessionId = currentSessionId
+        PlaybackTrace.event(
+            TraceCategory.Playback,
+            "PLAY",
+            "sessionId=$sessionId startPositionMs=$startPositionMs"
+        )
 
         synchronized(lock) {
             setSnapshotLocked(snapshot)
@@ -48,6 +81,12 @@ actual object AudioPlayer {
     }
 
     actual fun updateQueue(snapshot: PlaybackSnapshot) {
+        PlaybackTrace.event(
+            TraceCategory.Playback,
+            "UPDATE_QUEUE",
+            "queueVersion=${snapshot.queue.queueVersion} itemCount=${snapshot.items.size}"
+        )
+
         synchronized(lock) {
             if (snapshot.items.isEmpty()) {
                 stopLocked()
@@ -66,10 +105,20 @@ actual object AudioPlayer {
     }
 
     actual fun moveQueueItem(fromIndex: Int, toIndex: Int, snapshot: PlaybackSnapshot) {
+        PlaybackTrace.event(
+            TraceCategory.Playback,
+            "MOVE_QUEUE",
+            "fromIndex=$fromIndex toIndex=$toIndex"
+        )
         updateQueue(snapshot)
     }
 
     actual fun pause() {
+        PlaybackTrace.event(
+            TraceCategory.Playback,
+            "PAUSE",
+            ""
+        )
         synchronized(lock) {
             playbackSession?.pause()
             _state.value = _state.value.copy(isPlaying = false)
@@ -77,6 +126,11 @@ actual object AudioPlayer {
     }
 
     actual fun resume() {
+        PlaybackTrace.event(
+            TraceCategory.Playback,
+            "RESUME",
+            ""
+        )
         synchronized(lock) {
             val session = playbackSession
             if (session != null) {
@@ -92,15 +146,30 @@ actual object AudioPlayer {
     }
 
     actual fun stop() {
+        PlaybackTrace.event(
+            TraceCategory.Playback,
+            "STOP",
+            ""
+        )
         synchronized(lock) {
             stopLocked()
         }
     }
 
     actual fun seekTo(positionMs: Long) {
+        PlaybackTrace.event(
+            TraceCategory.Playback,
+            "BEFORE_SEEK",
+            "positionMs=$positionMs"
+        )
         synchronized(lock) {
             playbackSession?.seekTo(positionMs)
         }
+        PlaybackTrace.event(
+            TraceCategory.Playback,
+            "AFTER_SEEK",
+            "positionMs=$positionMs"
+        )
     }
 
     actual fun setRepeatMode(mode: PlaybackRepeatMode) {
@@ -111,6 +180,11 @@ actual object AudioPlayer {
 
     private fun playCurrentTrackLocked(startPositionMs: Long = 0L) {
         val item = queue.getOrNull(currentIndex) ?: return
+        PlaybackTrace.event(
+            TraceCategory.Playback,
+            "SET_MEDIA_ITEMS",
+            "reason=play_track startIndex=$currentIndex startPosition=$startPositionMs itemCount=1"
+        )
         if (item.ref.availability != TrackAvailability.AVAILABLE || item.ref.uri.isBlank()) return
 
         val mediaFile = runCatching { item.ref.uri.toMediaFile() }
@@ -243,16 +317,6 @@ actual object AudioPlayer {
         return scheme.length == 1 && length > 1 && this[1] == ':'
     }
 
-    actual fun getCurrentPosition(): Long {
-        return synchronized(lock) {
-            playbackSession?.getCurrentPosition()
-                ?: if (_state.value.currentTrackId != null && !_state.value.isPlaying) {
-                    _state.value.totalDurationMs
-                } else {
-                    0L
-                }
-        }
-    }
 }
 
 private class PlaybackSession(

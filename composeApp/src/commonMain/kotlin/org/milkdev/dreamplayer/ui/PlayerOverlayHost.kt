@@ -51,7 +51,6 @@ fun PlayerOverlayHost(
     onClearQueueClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-
     val currentTrack = playbackState.currentTrack
 
     if (playbackState.playerPresentation != PlayerPresentation.Fullscreen || currentTrack == null) {

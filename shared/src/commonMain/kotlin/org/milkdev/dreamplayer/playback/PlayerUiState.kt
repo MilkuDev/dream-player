@@ -41,7 +41,6 @@ enum class PlaybackRepeatMode {
 data class PlaybackUiState(
     val currentTrack: LibraryTrack? = null,
     val isPlaying: Boolean = false,
-    val playbackProgressMs: Long = 0L,
     val totalDurationMs: Long = 0L,
     val playbackQueue: List<LibraryTrack> = emptyList(),
     val currentQueueIndex: Int = -1,
@@ -127,7 +126,6 @@ data class PlayerUiState(
     val error: String? = null,
     val playerPresentation: PlayerPresentation = PlayerPresentation.Mini,
     val isQueueSheetVisible: Boolean = false,
-    val playbackProgressMs: Long = 0L,
     val totalDurationMs: Long = 0L,
     val currentScreen: Screen = Screen.Home,
     val canNavigateBack: Boolean = false,
@@ -173,7 +171,6 @@ data class PlayerUiState(
 fun PlayerUiState.toPlaybackUiState(): PlaybackUiState = PlaybackUiState(
     currentTrack = currentTrack,
     isPlaying = isPlaying,
-    playbackProgressMs = playbackProgressMs,
     totalDurationMs = totalDurationMs,
     playbackQueue = playbackQueue,
     currentQueueIndex = currentQueueIndex,

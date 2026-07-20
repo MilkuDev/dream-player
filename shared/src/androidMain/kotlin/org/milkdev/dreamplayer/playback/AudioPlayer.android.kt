@@ -14,7 +14,6 @@ import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
-import java.util.ArrayDeque
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -27,6 +26,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.milkdev.dreamplayer.app.applicationContext
 import org.milkdev.dreamplayer.diagnostics.AppDebugLog
+import org.milkdev.dreamplayer.diagnostics.PlaybackTrace
+import org.milkdev.dreamplayer.diagnostics.TraceCategory
 
 actual object AudioPlayer {
     private const val TAG = "AudioPlayer"
@@ -42,8 +43,34 @@ actual object AudioPlayer {
 
     private var controllerIndexToQueueIndex: List<Int> = emptyList()
     private var repeatMode: PlaybackRepeatMode = PlaybackRepeatMode.Off
+    private var nextSessionId: Int = 1
+    private var currentSessionId: Int = 0
 
     actual val state: StateFlow<AudioPlayerState> = _state.asStateFlow()
+
+    actual val playbackTimeSource: PlaybackTimeSource = object : PlaybackTimeSource {
+        override fun snapshot(): PlaybackTimeSnapshot {
+            val c = synchronized(lock) { controller }
+            val s = _state.value
+            val rawPosition = c?.currentPosition
+            val positionMs = rawPosition?.coerceAtLeast(0L) ?: 0L
+            val durationMs = s.totalDurationMs
+            val bufferedPositionMs = c?.bufferedPosition?.coerceAtLeast(0L) ?: s.totalDurationMs
+            val playbackSpeed = c?.playbackParameters?.speed ?: 1f
+            val isPlaying = s.isPlaying
+            val playbackState = c?.playbackState
+            val playWhenReady = c?.playWhenReady
+
+            return PlaybackTimeSnapshot(
+                positionMs = positionMs,
+                durationMs = durationMs,
+                bufferedPositionMs = bufferedPositionMs,
+                playbackSpeed = playbackSpeed,
+                isPlaying = isPlaying,
+            )
+
+        }
+    }
 
     private val playerListener = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) {
@@ -52,6 +79,69 @@ actual object AudioPlayer {
                 syncCurrentTrackFromController(mediaController)
             }
             syncStateFromController(mediaController)
+
+            val hash = mediaController?.let { System.identityHashCode(it) } ?: 0
+
+            if (events.contains(Player.EVENT_PLAYBACK_STATE_CHANGED)) {
+                PlaybackTrace.event(
+                    TraceCategory.Playback,
+                    "PLAYBACK_STATE_CHANGED",
+                    "playbackState=${player.playbackState} controllerHash=$hash"
+                )
+            }
+            if (events.contains(Player.EVENT_PLAY_WHEN_READY_CHANGED)) {
+                PlaybackTrace.event(
+                    TraceCategory.Playback,
+                    "PLAY_WHEN_READY_CHANGED",
+                    "playWhenReady=${player.playWhenReady} controllerHash=$hash"
+                )
+            }
+            if (events.contains(Player.EVENT_IS_PLAYING_CHANGED)) {
+                PlaybackTrace.event(
+                    TraceCategory.Playback,
+                    "IS_PLAYING_CHANGED",
+                    "isPlaying=${player.isPlaying} controllerHash=$hash"
+                )
+            }
+            if (events.contains(Player.EVENT_MEDIA_ITEM_TRANSITION)) {
+                PlaybackTrace.event(
+                    TraceCategory.Playback,
+                    "MEDIA_ITEM_TRANSITION",
+                    "mediaItemIndex=${player.currentMediaItemIndex} controllerHash=$hash"
+                )
+            }
+            if (events.contains(Player.EVENT_TIMELINE_CHANGED)) {
+                PlaybackTrace.event(
+                    TraceCategory.Playback,
+                    "TIMELINE_CHANGED",
+                    "periodCount=${player.currentTimeline.periodCount} controllerHash=$hash"
+                )
+            }
+        }
+
+        override fun onPositionDiscontinuity(
+            oldPosition: Player.PositionInfo,
+            newPosition: Player.PositionInfo,
+            reason: Int,
+        ) {
+            val hash = synchronized(lock) { controller }
+                ?.let { System.identityHashCode(it) }
+                ?: 0
+            val reasonLabel = when (reason) {
+                Player.DISCONTINUITY_REASON_AUTO_TRANSITION -> "AUTO_TRANSITION"
+                Player.DISCONTINUITY_REASON_SEEK -> "SEEK"
+                Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT -> "SEEK_ADJUSTMENT"
+                Player.DISCONTINUITY_REASON_SKIP -> "SKIP"
+                Player.DISCONTINUITY_REASON_REMOVE -> "REMOVE"
+                Player.DISCONTINUITY_REASON_INTERNAL -> "INTERNAL"
+                Player.DISCONTINUITY_REASON_SILENCE_SKIP -> "SILENCE_SKIP"
+                else -> "UNKNOWN"
+            }
+            PlaybackTrace.event(
+                TraceCategory.Playback,
+                "EVENT_POSITION_DISCONTINUITY",
+                "reason=$reasonLabel old=${oldPosition.positionMs} new=${newPosition.positionMs} controllerHash=$hash"
+            )
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -73,8 +163,16 @@ actual object AudioPlayer {
     }
 
     actual fun play(snapshot: PlaybackSnapshot, startPositionMs: Long) {
+        currentSessionId = nextSessionId++
+        val sessionId = currentSessionId
         setSnapshot(snapshot)
         withController { mediaController ->
+            val hash = System.identityHashCode(mediaController)
+            PlaybackTrace.event(
+                TraceCategory.Playback,
+                "PLAY",
+                "sessionId=$sessionId startPositionMs=$startPositionMs controllerHash=$hash"
+            )
             replaceControllerQueue(
                 mediaController = mediaController,
                 snapshot = snapshot,
@@ -88,6 +186,11 @@ actual object AudioPlayer {
     private var updateJob: Job? = null
 
     actual fun updateQueue(snapshot: PlaybackSnapshot) {
+        PlaybackTrace.event(
+            TraceCategory.Playback,
+            "UPDATE_QUEUE",
+            "queueVersion=${snapshot.queue.queueVersion} itemCount=${snapshot.items.size}"
+        )
 
         updateJob?.cancel()
 
@@ -139,6 +242,11 @@ actual object AudioPlayer {
     }
 
     actual fun moveQueueItem(fromIndex: Int, toIndex: Int, snapshot: PlaybackSnapshot) {
+        PlaybackTrace.event(
+            TraceCategory.Playback,
+            "MOVE_QUEUE",
+            "fromIndex=$fromIndex toIndex=$toIndex"
+        )
 
         updateJob?.cancel()
 
@@ -177,16 +285,26 @@ actual object AudioPlayer {
     }
 
     actual fun pause() {
-        AppDebugLog.log("audio_pause")
         withController { mediaController ->
+            val hash = System.identityHashCode(mediaController)
+            PlaybackTrace.event(
+                TraceCategory.Playback,
+                "PAUSE",
+                "controllerHash=$hash"
+            )
             mediaController.pause()
             syncStateFromController(mediaController)
         }
     }
 
     actual fun resume() {
-        AppDebugLog.log("audio_resume")
         withController { mediaController ->
+            val hash = System.identityHashCode(mediaController)
+            PlaybackTrace.event(
+                TraceCategory.Playback,
+                "RESUME",
+                "controllerHash=$hash"
+            )
             if (mediaController.mediaItemCount == 0) {
                 playbackSnapshot?.let { snapshot ->
                     replaceControllerQueue(
@@ -207,8 +325,13 @@ actual object AudioPlayer {
     }
 
     actual fun stop() {
-        AppDebugLog.log("audio_stop")
         withController { mediaController ->
+            val hash = System.identityHashCode(mediaController)
+            PlaybackTrace.event(
+                TraceCategory.Playback,
+                "STOP",
+                "controllerHash=$hash"
+            )
             synchronized(lock) {
                 playbackSnapshot = null
                 controllerIndexToQueueIndex = emptyList()
@@ -223,7 +346,18 @@ actual object AudioPlayer {
         withController { mediaController ->
             if (mediaController.mediaItemCount == 0) return@withController
 
+            val hash = System.identityHashCode(mediaController)
+            PlaybackTrace.event(
+                TraceCategory.Playback,
+                "BEFORE_SEEK",
+                "positionMs=$positionMs controllerHash=$hash"
+            )
             mediaController.seekTo(positionMs.coerceAtLeast(0L))
+            PlaybackTrace.event(
+                TraceCategory.Playback,
+                "AFTER_SEEK",
+                "positionMs=$positionMs controllerHash=$hash"
+            )
             syncStateFromController(mediaController)
         }
     }
@@ -236,12 +370,6 @@ actual object AudioPlayer {
         withController { mediaController ->
             mediaController.repeatMode = mode.toMedia3RepeatMode()
             syncStateFromController(mediaController)
-        }
-    }
-
-    actual fun getCurrentPosition(): Long {
-        return synchronized(lock) {
-            controller?.currentPosition?.coerceAtLeast(0L) ?: 0L
         }
     }
 
@@ -299,11 +427,13 @@ actual object AudioPlayer {
                 var queuedActions: List<(MediaController) -> Unit> = emptyList()
                 var releaseResolvedController = false
 
+                var connectedController: MediaController? = null
                 synchronized(lock) {
                     if (controller != null && controller !== resolvedController) {
                         releaseResolvedController = true
                     } else {
                         controller = resolvedController
+                        connectedController = resolvedController
                         queuedActions = pendingActions.toList()
                         pendingActions.clear()
                     }
@@ -313,7 +443,22 @@ actual object AudioPlayer {
                     }
                 }
 
+                if (connectedController != null) {
+                    val connectHash = System.identityHashCode(connectedController)
+                    PlaybackTrace.event(
+                        TraceCategory.Playback,
+                        "CONTROLLER_CONNECT",
+                        "controllerHash=$connectHash"
+                    )
+                }
+
                 if (releaseResolvedController) {
+                    val releasedHash = System.identityHashCode(resolvedController)
+                    PlaybackTrace.event(
+                        TraceCategory.Playback,
+                        "CONTROLLER_RELEASE",
+                        "controllerHash=$releasedHash"
+                    )
                     resolvedController.release()
                     return@addListener
                 }
@@ -357,11 +502,6 @@ actual object AudioPlayer {
             return
         }
 
-        AppDebugLog.log(
-            "audio_play_snapshot_item reason=$reason trackId=$currentTrackId " +
-                    "index=${snapshot.queue.currentIndex} queueSize=${snapshot.queue.trackIds.size}"
-        )
-
         mediaController.repeatMode = synchronized(lock) {
             repeatMode.toMedia3RepeatMode()
         }
@@ -370,6 +510,12 @@ actual object AudioPlayer {
             val mediaItems = withContext(Dispatchers.Default) {
                 availableIndexedItems.map { (queueIndex, item) -> item.toCachedMediaItem(queueIndex) }
             }
+            val hash = System.identityHashCode(mediaController)
+            PlaybackTrace.event(
+                TraceCategory.Playback,
+                "SET_MEDIA_ITEMS",
+                "reason=$reason startIndex=$startIndex startPosition=${startPositionMs.coerceAtLeast(0L)} itemCount=${mediaItems.size} controllerHash=$hash"
+            )
             mediaController.setMediaItems(
                 mediaItems,
                 startIndex,
@@ -554,7 +700,7 @@ private fun ResolvedPlaybackItem.toMediaItem(queueIndex: Int): MediaItem {
 
     return MediaItem.Builder()
         .setMediaId("${queueIndex}_${trackId}")
-        .setUri(android.net.Uri.parse(ref.uri)) // 🐾 Меняем тут
+        .setUri(android.net.Uri.parse(ref.uri))
         .setMediaMetadata(
             MediaMetadata.Builder()
                 .setTitle(metadata.title)

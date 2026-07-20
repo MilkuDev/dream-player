@@ -9,6 +9,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import org.milkdev.dreamplayer.app.AppTheme
+import org.milkdev.dreamplayer.shared.AppConfig
 
 @Composable
 fun AboutDialog(onDismiss: () -> Unit) {
@@ -31,7 +32,7 @@ fun AboutDialog(onDismiss: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
-                    text = "Версия 1.0.0",
+                    text = AppConfig.VERSION_NAME,
                     style = AppTheme.typography.snPro.titleMedium,
                     fontWeight = FontWeight.Medium,
                     color = MaterialTheme.colorScheme.primary

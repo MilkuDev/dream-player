@@ -5,7 +5,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -63,12 +62,12 @@ import org.milkdev.dreamplayer.playback.PlaybackQueueSnapshot
 import org.milkdev.dreamplayer.playback.PlaybackRepeatMode
 import org.milkdev.dreamplayer.playback.PlaybackResolver
 import org.milkdev.dreamplayer.playback.PlaybackSnapshot
+import org.milkdev.dreamplayer.playback.SavePointWorker
 import org.milkdev.dreamplayer.playback.PlayerPresentation
 import org.milkdev.dreamplayer.playback.LibraryUiState
 import org.milkdev.dreamplayer.playback.PlaybackUiState
 import org.milkdev.dreamplayer.playback.PlayerUiState
 import org.milkdev.dreamplayer.playback.ResolvedPlaybackItem
-import org.milkdev.dreamplayer.playback.SavePointCalculator
 import org.milkdev.dreamplayer.playback.Screen
 import org.milkdev.dreamplayer.playback.SettingsUiState
 import org.milkdev.dreamplayer.playback.TrackAvailability
@@ -77,7 +76,6 @@ import org.milkdev.dreamplayer.playback.movedCopy
 import org.milkdev.dreamplayer.playback.shuffledWithCurrentFirst
 import kotlin.random.Random
 import kotlin.time.Clock
-import kotlin.time.Duration.Companion.milliseconds
 
 private const val PageSize = 60
 
@@ -97,7 +95,6 @@ class PlayerViewModel {
     private val aiPromptService = AiPromptService()
     private val lastFmNetworkDiagnosticsService = LastFmNetworkDiagnosticsService()
     private val playbackQueueController = PlaybackQueueController()
-    private var progressJob: Job? = null
     private var dailyPlaylistGenerationJob: Job? = null
     private var playlistTracksJob: Job? = null
     private var navigationState = AppNavigationState()
@@ -108,12 +105,13 @@ class PlayerViewModel {
     private var genrePageCursor: LibraryPageCursor? = null
     private var searchPageCursor: LibraryPageCursor? = null
     private var playlistPickerPageCursor: LibraryPageCursor? = null
-
-    // Save-point tracking for playback progress persistence
-    private var currentSavePoints: List<Long> = emptyList()
-    private var hitSavePointIndices: MutableSet<Int> = mutableSetOf()
     private var restoreAttempted = false
-    private var lastSavedTrackId: Long? = null
+    private var pendingResumePositionMs: Long = 0L
+    private val savePointWorker = SavePointWorker(
+        scope = storeScope,
+        audioPlayerState = AudioPlayer.state,
+        playbackTimeSource = AudioPlayer.playbackTimeSource,
+    )
 
     init {
         _settingsState.update {
@@ -175,13 +173,10 @@ class PlayerViewModel {
 
                 val currentQueueSnapshot = playbackQueueController.snapshot()
 
-                // Track change detection — save and reset save-points
                 val previousTrackId = _playbackState.value.currentTrack?.id
                 val newTrackId = currentQueueSnapshot.currentTrackId
-                val trackChanged = previousTrackId != null && newTrackId != null && previousTrackId != newTrackId
-                if (trackChanged) {
+                if (previousTrackId != null && newTrackId != null && previousTrackId != newTrackId) {
                     savePlaybackState()
-                    resetSavePoints(newTrackId, _playbackState.value.totalDurationMs)
                 }
 
                 val queueTracks = when {
@@ -204,8 +199,6 @@ class PlayerViewModel {
                     ?: currentTrack?.durationMs
                     ?: 0L
 
-                val trackChangeCheck = _playbackState.value.currentTrack?.id != currentTrack?.id
-
                 _playbackState.update { currentState ->
                     currentState.copy(
                         currentTrack = currentTrack,
@@ -214,14 +207,6 @@ class PlayerViewModel {
                         playbackQueue = queueTracks,
                         currentQueueIndex = currentQueueSnapshot.currentIndex,
                         queueVersion = currentQueueSnapshot.queueVersion,
-                        playbackProgressMs = when {
-                            currentTrack == null -> 0L
-                            trackChangeCheck -> 0L
-                            else -> currentState.playbackProgressMs.coerceIn(
-                                0L,
-                                resolvedDurationMs.coerceAtLeast(0L),
-                            )
-                        },
                     )
                 }
 
@@ -335,7 +320,7 @@ class PlayerViewModel {
                 }
             }
         }
-        startProgressUpdates()
+        savePointWorker.start()
         storeScope.launch {
             @OptIn(ExperimentalCoroutinesApi::class)
             AudioPlayer.state
@@ -974,7 +959,6 @@ class PlayerViewModel {
                     currentQueueIndex = snapshot.currentIndex,
                     queueVersion = snapshot.queueVersion,
                     isShuffleEnabled = false,
-                    playbackProgressMs = 0L,
                 )
             }
             applyQueueSnapshot(snapshot, PlaybackSnapshotApplyMode.Play)
@@ -1013,7 +997,8 @@ class PlayerViewModel {
         if (AudioPlayer.state.value.currentTrackId == null) {
             val snapshot = playbackQueueController.snapshot()
             if (snapshot.trackIds.isNotEmpty()) {
-                val restoredPosition = _playbackState.value.playbackProgressMs
+                val restoredPosition = pendingResumePositionMs
+                pendingResumePositionMs = 0L
                 applyQueueSnapshot(
                     snapshot,
                     PlaybackSnapshotApplyMode.Play,
@@ -1039,7 +1024,6 @@ class PlayerViewModel {
 
     fun seekTo(positionMs: Long) {
         AudioPlayer.seekTo(positionMs)
-        _playbackState.update { it.copy(playbackProgressMs = positionMs) }
     }
 
     fun toggleShuffle() {
@@ -1130,7 +1114,6 @@ class PlayerViewModel {
             it.copy(
                 currentTrack = null,
                 isPlaying = false,
-                playbackProgressMs = 0L,
                 totalDurationMs = 0L,
                 playbackQueue = emptyList(),
                 currentQueueIndex = -1,
@@ -1486,7 +1469,6 @@ class PlayerViewModel {
                 queueVersion = snapshot.queueVersion,
                 currentTrack = tracks.getOrNull(snapshot.currentIndex),
                 isShuffleEnabled = false,
-                playbackProgressMs = 0L,
             )
         }
         applyQueueSnapshot(snapshot, PlaybackSnapshotApplyMode.Play)
@@ -1549,11 +1531,6 @@ class PlayerViewModel {
                     currentTrack = currentTrack,
                     isPlaying = if (mode == PlaybackSnapshotApplyMode.Play) true else currentState.isPlaying,
                     totalDurationMs = currentTrack?.durationMs ?: currentState.totalDurationMs,
-                    playbackProgressMs = if (mode == PlaybackSnapshotApplyMode.Play) {
-                        startPositionMs.coerceIn(0L, (currentTrack?.durationMs ?: 0L).coerceAtLeast(0L))
-                    } else {
-                        currentState.playbackProgressMs
-                    },
                     playbackQueue = resolvedQueue,
                     currentQueueIndex = currentQueueSnapshot.currentIndex,
                     queueVersion = currentQueueSnapshot.queueVersion,
@@ -1604,17 +1581,11 @@ class PlayerViewModel {
         }
     }
 
-    // ── Playback state persistence ──────────────────────────────────────────────
-
     private fun savePlaybackState() {
         val snapshot = playbackQueueController.snapshot()
         if (snapshot.trackIds.isEmpty()) return
         val currentPlaybackState = _playbackState.value
-        val positionMs = if (AudioPlayer.state.value.currentTrackId != null) {
-            AudioPlayer.getCurrentPosition()
-        } else {
-            currentPlaybackState.playbackProgressMs
-        }
+        val positionMs = AudioPlayer.playbackTimeSource.snapshot().positionMs
         SettingsRepository.savePlaybackState(
             SettingsRepository.SavedPlaybackState(
                 queueTrackIds = playbackQueueController.originalTrackIdsSnapshot().toList(),
@@ -1627,16 +1598,6 @@ class PlayerViewModel {
                 repeatMode = currentPlaybackState.repeatMode.name,
             )
         )
-    }
-
-    private fun savePlaybackPositionOnly(positionMs: Long) {
-        SettingsRepository.saveTrackPositionOnly(positionMs)
-    }
-
-    private fun resetSavePoints(trackId: Long, durationMs: Long) {
-        currentSavePoints = SavePointCalculator.calculate(durationMs)
-        hitSavePointIndices.clear()
-        lastSavedTrackId = trackId
     }
 
     private suspend fun restorePlaybackState() {
@@ -1706,6 +1667,8 @@ class PlayerViewModel {
         val maxDuration = displayQueue.firstOrNull { it.id == currentId }?.durationMs ?: 0L
         val clampedPosition = savedState.trackPositionMs.coerceIn(0L, maxDuration)
 
+        pendingResumePositionMs = clampedPosition
+
         _playbackState.update {
             it.copy(
                 currentTrack = libraryTrack,
@@ -1714,59 +1677,9 @@ class PlayerViewModel {
                 queueVersion = finalSnapshot.queueVersion,
                 isShuffleEnabled = playbackQueueController.isShuffleEnabled,
                 repeatMode = repeatMode,
-                playbackProgressMs = clampedPosition,
                 totalDurationMs = maxDuration,
                 isPlaying = false,
             )
-        }
-
-        if (libraryTrack != null) {
-            resetSavePoints(libraryTrack.id, maxDuration)
-        }
-    }
-
-    private fun startProgressUpdates() {
-        progressJob?.cancel()
-        progressJob = storeScope.launch {
-            while (isActive) {
-                val currentPlaybackState = _playbackState.value
-                val currentTrack = currentPlaybackState.currentTrack
-                if (currentTrack != null && currentPlaybackState.isPlaying) {
-                    val maxDuration = currentPlaybackState.totalDurationMs
-                        .takeIf { it > 0L } ?: currentTrack.durationMs
-
-                    if (AudioPlayer.state.value.currentTrackId != null) {
-                        val nextProgress = AudioPlayer.getCurrentPosition().coerceIn(
-                            0L,
-                            maxDuration.coerceAtLeast(0L),
-                        )
-
-                        _playbackState.update { state ->
-                            if (state.playbackProgressMs == nextProgress) {
-                                state
-                            } else {
-                                state.copy(playbackProgressMs = nextProgress)
-                            }
-                        }
-
-                        // Check save-points for playback progress
-                        if (currentPlaybackState.isPlaying && currentSavePoints.isNotEmpty()) {
-                            val trackId = currentTrack.id
-                            for (i in currentSavePoints.indices) {
-                                if (i in hitSavePointIndices) continue
-                                val point = currentSavePoints[i]
-                                if (nextProgress >= point && nextProgress - point < 500L) {
-                                    hitSavePointIndices.add(i)
-                                    lastSavedTrackId = trackId
-                                    savePlaybackPositionOnly(nextProgress)
-                                    break
-                                }
-                            }
-                        }
-                    }
-                }
-                delay(250.milliseconds)
-            }
         }
     }
 
