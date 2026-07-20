@@ -553,46 +553,6 @@ class PlayerViewModel {
             }
         }
     }
-
-    fun loadPlaylistPickerPage(reset: Boolean = false): Job? {
-        val currentState = _state.value
-        if (currentState.isPlaylistPickerPageLoading) return null
-        if (!reset && !currentState.hasMorePlaylistPickerTracks) return null
-
-        if (reset) {
-            playlistPickerPageCursor = null
-        }
-
-        return storeScope.launch {
-            _state.update {
-                it.copy(
-                    isPlaylistPickerPageLoading = true,
-                    playlistPickerTrackItems = if (reset) emptyList() else it.playlistPickerTrackItems,
-                    hasMorePlaylistPickerTracks = if (reset) true else it.hasMorePlaylistPickerTracks,
-                )
-            }
-
-            val order = TrackSortOrder.TRACK_NAME
-
-            val page = withContext(Dispatchers.IO) {
-                MusicLibrarySource.getTrackPage(
-                    order = order,
-                    cursor = playlistPickerPageCursor,
-                    limit = PageSize,
-                )
-            }
-
-            playlistPickerPageCursor = page.nextCursor
-            _state.update {
-                it.copy(
-                    playlistPickerTrackItems = if (reset) page.items else it.playlistPickerTrackItems + page.items,
-                    hasMorePlaylistPickerTracks = page.hasMore,
-                    isPlaylistPickerPageLoading = false,
-                )
-            }
-        }
-    }
-
     private fun reloadLibraryPages() {
         storeScope.launch {
             _libraryState.update { it.copy(isLoading = true) }

@@ -1,6 +1,7 @@
 # Слепок архитектуры DreamPlayer
 
 Этот документ описывает, как в проекте связаны база данных, сканеры музыки, источники данных, обработчики пользовательских действий, обогащение метаданными и воспроизведение. Формулировки намеренно простые: представь приложение как музыкальную библиотеку с кладовщиком, каталогом, кассиром на выдаче и проигрывателем.
+This document describes architectural contracts rather than implementation details. If the implementation changes while preserving the contract, the document does not necessarily need to change. If an architectural contract changes, this document must be updated.
 
 ## Related documents
 
@@ -18,6 +19,7 @@
 - DataStore хранит пользовательские настройки.
 - `PlaybackTimeSource` предоставляет актуальное время воспроизведения напрямую UI и SavePoint-воркеру, минуя ViewModel.
 - Playback-слой берет id треков из базы, превращает их в воспроизводимые URI и отдает платформенному плееру.
+- `AppNavigationState` — платформенно-независимая навигация: immutable back stack, stateless `navigateTo()` / `navigateBack()`.
 
 Воспроизведение разделено на два независимых потока: **состояние** (очередь, repeat, shuffle — через ViewModel) и **время** (позиция, длительность — через PlaybackTimeSource напрямую потребителям).
 
@@ -38,10 +40,13 @@ flowchart TD
     Player["AudioPlayer: Media3 на Android, Java Sound на Desktop"]
     PTS["PlaybackTimeSource: единый источник времени"]
     PTSnap["PlaybackTimeSnapshot: срез времени"]
+    Nav["AppNavigationState: immutable back stack"]
 
     UI --> VM
+    VM --> Nav
     VM --> Source
     VM --> DataStore
+    Nav -->|currentScreen, canNavigateBack| UI
     Source --> Repo
     Repo --> Scanner
     Repo --> DAO
@@ -61,6 +66,157 @@ flowchart TD
     PTSnap --> SavePoints["SavePoint воркер"]
 ```
 
+## Architectural Invariants
+
+The following rules are considered architectural contracts. Changing any of them requires an explicit architectural decision.
+
+- **PlayerViewModel is the single application orchestrator.**
+- **PlaybackTimeSource is the only source of playback timing.**
+- **AppNavigationState is the only source of navigation state.**
+- Navigation remains platform-independent.
+- Navigation state is immutable.
+- State transitions remain stateless.
+- Navigation never owns screen data.
+- UI decides how destinations are rendered.
+- Playback pipeline never depends on Compose.
+- Repository layer never depends on UI.
+- Platform-specific code never leaks into shared business logic.
+
+## Навигация
+
+Навигация в приложении построена на платформенно-независимой immutable-модели. Модель не зависит от Compose, Android, Desktop или SwiftUI и может использоваться любой UI-технологией.
+
+### Navigation Principles
+
+1. **Platform-independent** — вся навигационная модель написана на чистом Kotlin без платформенных зависимостей
+2. **Immutable navigation state** — состояние навигации (back stack) — неизменяемый объект. Каждый переход создаёт новое состояние, старое остаётся доступным
+3. **Stateless transitions** — `navigateTo()` и `navigateBack()` — чистые функции, возвращающие новое состояние без побочных эффектов
+4. **Single owner of live navigation state** — ровно один компонент в приложении владеет "живым" навигационным состоянием. Владелец может изменять его и синхронизировать с UI
+5. **UI-agnostic** — навигационная модель не знает, какая технология её отображает (Compose, SwiftUI и т.д.). Каждая платформа самостоятельно интерпретирует текущее состояние
+6. **Overlay support** — навигация различает контентные экраны и overlay-экраны. Overlay не заменяет контент под собой
+7. **Platform rendering is external** — отрисовка навигации (анимации переходов, back gesture, Predictive Back) — ответственность UI-слоя, а не навигационной модели
+8. **Navigation does not own data** — навигация отвечает только за вопрос "какой экран активен". Данные для экрана загружаются отдельно
+
+### Ключевые компоненты
+
+- `AppNavigationState` — immutable data class. Хранит `backStack: List<AppDestination>`. Предоставляет чистые функции `navigateTo()` и `navigateBack()`, возвращающие новый экземпляр состояния. Не имеет побочных эффектов, не запускает корутины, не знает о платформе.
+
+- `AppDestination` — модель всех возможных экранов. В текущей реализации — enum-класс.
+
+- `Screen` — публичная модель экранов, используемая UI. В текущей реализации представлена enum-классом, изоморфна `AppDestination`. Конвертируется через `Screen.toAppDestination()` / `AppDestination.toScreen()`.
+
+### Как устроен back stack
+
+Управление навигацией полностью stateless: каждый переход создаёт новый `AppNavigationState`, старый остаётся неизменным.
+
+```
+AppNavigationState(backStack = [Home])
+  .navigateTo(AppDestination.Library)          → [Home, Library]
+  .navigateTo(AppDestination.PlaylistDetails)   → [Home, Library, PlaylistDetails]
+  .navigateTo(AppDestination.Player)            → [Home, Library, PlaylistDetails, Player]
+  .navigateTo(AppDestination.Queue)             → [Home, Library, PlaylistDetails, Player, Queue]
+```
+
+`navigateBack()` проверяет `canNavigateBack` (`backStack.size > 1`) и возвращает новый `AppNavigationState` с `backStack.dropLast(1)`.
+
+### Overlay Principle
+
+Контентные экраны и playback overlay — независимые слои. Навигация отвечает только за активную destination. UI сам решает, рисовать destination как:
+
+- полноценный экран (Home, Library, Settings и т.д.);
+- overlay поверх контента (Player, Queue).
+
+Back stack различает два понятия:
+- `currentDestination` — верхушка стека (может быть `Player` или `Queue`)
+- `currentContentDestination` — последний контентный экран под playback-дестинациями (нужен для рендеринга контентной области)
+
+### Владение навигацией
+
+`PlayerViewModel` — единственный владелец живого `AppNavigationState`. Он отвечает за:
+
+- базовые навигационные команды (`navigateTo` / `navigateBack`) — тонкое делегирование `AppNavigationState`
+- orchestration-операции: методы высокого уровня (открыть альбом, открыть плейлист, открыть поиск) объединяют изменение навигации, подготовку данных экрана и управление жизненным циклом реактивных потоков
+- синхронизацию навигационного состояния с UI-состоянием приложения (через StateFlow, доступный Compose-слою)
+
+### Как UI узнаёт о навигации
+
+Навигационная модель не зависит от Compose и может использоваться любой UI-технологией (Compose, SwiftUI и др.). Каждая платформа самостоятельно отображает текущее навигационное состояние в собственную систему навигации.
+
+В текущей реализации Compose-слой читает состояние через `StateFlow<PlaybackUiState>`:
+- `currentScreen` — target для `AnimatedContent`
+- `canNavigateBack` — enabled для `PlatformBackHandler`
+- `playerPresentation` — показывать ли overlay плеера
+- `isQueueSheetVisible` — показывать ли очередь поверх плеера
+
+### Обработка системной кнопки "Назад"
+
+`PlatformBackHandler` — Compose `expect`/`actual`:
+- Android: использует `BackHandler` из `androidx.activity.compose`. Сюда же интегрируется Android Predictive Back — строго в `composeApp/androidMain`, без изменений в `shared`.
+- Desktop: no-op (возврат `Unit`)
+
+### Что навигация НЕ делает
+
+Navigation does not:
+
+- загружать данные экрана
+- знать о Compose, Android или SwiftUI
+- управлять воспроизведением
+- владеть моделями данных экранов (selectedPlaylist, selectedLibraryCollection и т.д.)
+- запускать корутины
+- выполнять побочные эффекты
+- знать о lifecycle приложения
+- управлять анимациями переходов
+
+### Схема навигации
+
+```mermaid
+flowchart LR
+    subgraph shared ["shared (pure Kotlin)"]
+        direction LR
+        NS["AppNavigationState
+            backStack: List<AppDestination>
+            navigateTo() / navigateBack()"]
+        AD["AppDestination
+            Home, Library, ..."]
+        SC["Screen
+            (изоморфен AppDestination)"]
+    end
+
+    subgraph composeApp ["composeApp (Compose)"]
+        direction LR
+        PBH["PlatformBackHandler
+            expect/actual"]
+        APP["App.kt
+            AnimatedContent + PlayerOverlayHost"]
+        PBH_A["android
+            BackHandler"]
+        PBH_J["jvm
+            no-op"]
+    end
+
+    subgraph viewmodel ["PlayerViewModel (shared)"]
+        VM["PlayerViewModel
+            owns navigationState
+            navigateTo / navigateBack
+            orchestration operations
+            sync navigation state with UI"]
+        PS["UI State
+            currentScreen
+            canNavigateBack
+            playerPresentation
+            isQueueSheetVisible"]
+    end
+
+    VM -->|делегирует| NS
+    NS -->|currentScreen, canNavigateBack| PS
+    PS -->|collectAsState| APP
+    PS -->|canNavigateBack| PBH
+    PBH -->|android| PBH_A
+    PBH -->|jvm| PBH_J
+    APP -->|onClick → navigateTo| VM
+    APP -->|onBack → navigateBack| VM
+```
+
 ## Где что лежит
 
 Проект разделён на два основных модуля — `shared` (бизнес-логика) и `composeApp` (UI):
@@ -71,6 +227,7 @@ flowchart TD
 - `shared/src/commonMain/kotlin/.../library/metadata/` — `MetadataSyncService`, `EmbeddedMetadataReader`.
 - `shared/src/commonMain/kotlin/.../playback/` — `AudioPlayer` expect/actual, `PlaybackQueueController`, `PlaybackResolver`.
 - `shared/src/commonMain/kotlin/.../model/` — `PlayerViewModel.kt`.
+- `shared/src/commonMain/kotlin/.../navigation/` — `NavigationScreen.kt`, `NavigationState.kt`: платформенно-независимая навигация (`AppNavigationState`, `AppDestination`, `Screen`, stateless `navigateTo()` / `navigateBack()`).
 - `shared/src/commonMain/kotlin/.../extensions/` — AI, network, secrets, data.
 - `shared/src/commonMain/kotlin/.../features/` — фичи (ежедневный плейлист и т.д.).
 - `shared/src/androidMain/` / `jvmMain/` / `appleMain/` — platform `actual`-реализации (14 expect-деклараций).
@@ -81,6 +238,114 @@ flowchart TD
 - `composeApp/src/androidMain/` / `jvmMain/` — platform `actual`-реализации для UI.
 
 Compose используется **только** в модуле `composeApp`. В модуль `shared` Compose не попадает — UI и логика строго разделены.
+
+## Dependency Rules
+
+### Allowed dependencies
+
+```
+UI
+    ↓
+PlayerViewModel
+    ↓
+Repositories
+    ↓
+Database / Network
+```
+
+```
+UI
+    ↓
+PlaybackTimeSource
+```
+
+```
+UI
+    ↓
+AppNavigationState
+```
+
+### Forbidden dependencies
+
+- Repositories → UI
+- Playback → Compose
+- Navigation → Compose
+- Navigation → Android
+- Navigation → Desktop
+- Navigation → SwiftUI
+- Database → UI
+- Shared → composeApp
+
+## Ownership
+
+- **PlayerViewModel** owns: application orchestration, library loading, playback commands, navigation state, user actions
+- **AppNavigationState** owns: back stack, current destination, stateless transitions
+- **PlaybackTimeSource** owns: playback timing (position, duration, speed)
+- **MusicRepository** owns: synchronization with database, persistence
+- **AudioPlayer** owns: platform-specific playback
+- **UI** owns: rendering, animations, overlays, back gestures, Predictive Back
+
+## Non-goals
+
+This architecture intentionally does NOT provide:
+
+- dependency injection framework
+- navigation framework
+- event bus
+- MVI / Redux / unidirectional data flow
+- Android ViewModel
+- Jetpack Lifecycle in shared code
+- Jetpack Navigation / Compose Navigation
+- routing library
+- service locator
+- global event bus
+
+## Extension Rules
+
+### When adding a new feature
+
+**Prefer:**
+- new repository
+- new use-case (method on PlayerViewModel)
+- new UI state field
+- new navigation destination
+
+**Avoid:**
+- adding responsibilities to existing classes
+- cross-module dependencies
+- platform checks in shared code
+- global mutable state
+- adding Compose dependencies to shared
+
+## Refactoring Rules
+
+**Refactoring should:**
+- preserve behavior
+- preserve public architecture
+- avoid introducing abstractions without need
+- prefer extraction over rewriting
+- prefer composition over inheritance
+- avoid speculative generalization
+
+## Performance Principles
+
+- UI must never block.
+- Database work must never execute on UI thread.
+- Playback timing must not be interpolated inside ViewModel.
+- Large libraries (50k+ tracks) are a primary target.
+- Avoid unnecessary allocations in hot paths.
+- Prefer immutable snapshots.
+- Prefer incremental updates over full reloads.
+
+## Cross-platform Principles
+
+- Business logic belongs to shared.
+- Platform APIs stay inside `actual` implementations.
+- Shared code must not depend on Android APIs.
+- Shared code must not depend on Desktop APIs.
+- Shared code must remain usable by Desktop and future Apple targets.
+- `expect`/`actual` is the only platform abstraction mechanism.
+- Avoid platform checks (`when (platform)`) in shared code — prefer `expect`/`actual` instead.
 
 ## База данных
 
@@ -520,7 +785,8 @@ Desktop использует Java Sound:
 - подписывается на плейлисты и настройки;
 - **не владеет временем воспроизведения** — тайминг идёт напрямую из `PlaybackTimeSource`;
 - загружает страницы библиотеки;
-- обрабатывает навигацию;
+- отвечает за навигацию: владеет живым `AppNavigationState`, делегирует stateless-переходы `AppNavigationState`, синхронизирует навигационное состояние с UI-состоянием приложения;
+- orchestration-операции: методы высокого уровня (открыть альбом, открыть плейлист, открыть поиск и т.д.) объединяют изменение навигации, подготовку данных экрана и управление жизненным циклом реактивных потоков;
 - запускает синхронизацию;
 - управляет очередью и плеером.
 
@@ -588,6 +854,9 @@ Desktop:
 - `SettingsRepository`: читать/писать настройки DataStore.
 - `DailyPlaylistRepository`: собрать плейлист дня локально или через AI.
 - `PlayerViewModel`: принять действие пользователя и обновить состояние приложения.
+- `AppNavigationState`: хранить immutable back stack, определять `currentDestination`, `canNavigateBack`, выполнять stateless `navigateTo()` / `navigateBack()`.
+- `Screen` / `AppDestination`: описывать, какой экран сейчас показывать.
+- `PlatformBackHandler` (expect/actual): обрабатывать системную кнопку "Назад" — Android через BackHandler, Desktop — no-op.
 - `PlaybackQueueController`: хранить порядок воспроизведения.
 - `PlaybackResolver`: превратить очередь id в очередь воспроизводимых элементов.
 - `PlaybackTimeSource`: предоставить актуальное время воспроизведения (позиция, длительность, скорость) — единственный источник правды по таймингу.
