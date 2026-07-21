@@ -609,8 +609,8 @@ class PlayerViewModel {
         publishNavigationState(currentNavigationState.push(AppRoute.AiDebugSettings))
     }
 
-    fun navigateBack(): Boolean {
-        val nextNavigationState = currentNavigationState.pop() ?: return false
+    fun navigateBack(expectedTopEntryId: Long? = null): Boolean {
+        val nextNavigationState = currentNavigationState.pop(expectedTopEntryId) ?: return false
         AppDebugLog.log(
             "navigate_back from=${currentNavigationState.currentDestination} " +
                 "to=${nextNavigationState.currentDestination}"

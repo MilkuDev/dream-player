@@ -1,6 +1,6 @@
 # DreamPlayer Navigation v2 — тестовая матрица
 
-Статус: pure navigation/detail lifecycle tests и platform build gates реализованы и успешны 2026-07-21. Compose gestures, Android system Back и визуальные переходы требуют ручной проверки на запущенных приложениях.
+Статус: pure navigation/detail lifecycle tests и platform build gates реализованы 2026-07-21. Deferred Predictive Back проверен на подключённом Pixel 7 / Android 17: content, Player и Queue проходят cancel/commit; 20 последовательных content cancel не создают pop и завершают 20 lifecycle sessions. Финальная субъективная оценка motion остаётся ручной.
 
 Связанные документы:
 
@@ -119,6 +119,7 @@ Artist(7)
 | NAV-DETAIL-006 | Detail из Library | active main остаётся Library |
 | NAV-DETAIL-007 | Detail из Search | active main остаётся Search |
 | NAV-DETAIL-008 | Main page reselection | весь detail suffix удаляется |
+| NAV-DETAIL-009 | Library -> Genre -> Album -> Back | удаляется ровно Album; прежний Genre entry снова top |
 
 ### 4.5 Settings
 
@@ -163,6 +164,7 @@ Navigation core проверяет структуру. Наличие current tr
 | NAV-PREVIEW-006 | Cancel | committed state остаётся исходным |
 | NAV-PREVIEW-007 | Commit | публикуется state, эквивалентный обычному pop |
 | NAV-PREVIEW-008 | Preview не запускает allocation | следующий committed ID не пропущен |
+| NAV-PREVIEW-009 | Guarded commit после смены top entry | pop отклонён и новый top не удалён |
 
 ## 5. Orchestration и content activation
 
@@ -265,6 +267,28 @@ UI automation не предполагается без отдельного ра
 | UI-OVERLAY-006 | drag Player dismiss | эквивалент одного Back |
 | UI-OVERLAY-007 | clear queue | оба overlay закрыты, content сохранён |
 | UI-OVERLAY-008 | overlay поверх detail | detail scroll/data не перезапущены |
+| UI-OVERLAY-009 | кнопка Back Queue | sheet уходит вниз до удаления Queue route |
+| UI-OVERLAY-010 | системный Back Queue | визуально и семантически совпадает с кнопкой/drag dismiss |
+| UI-OVERLAY-011 | кнопка или системный Back Player | Player уходит вниз до удаления Player route |
+| UI-OVERLAY-012 | Predictive cancel Queue/Player | overlay возвращается в открытое положение, stack не меняется |
+
+### 6.5 Content motion и Predictive Back
+
+| ID | Сценарий | Ожидаемый результат |
+|---|---|---|
+| UI-MOTION-001 | Genre -> Album | Album входит как forward detail; Genre сохраняет presentation snapshot |
+| UI-MOTION-002 | Album -> Back -> Genre | виден сохранённый Genre, route не пропускается |
+| UI-MOTION-003 | Predictive Album -> Genre | progress интерактивно управляет обоими content presentations |
+| UI-MOTION-004 | Predictive cancel | возвращается Album, committed stack и detail activation не меняются |
+| UI-MOTION-005 | Predictive commit | после завершения transition удаляется ровно исходный top entry |
+| UI-MOTION-006 | жест от правого края | горизонтальное направление зеркально жесту от левого края |
+| UI-MOTION-007 | Home / Library / Search | используется fade-through, а не detail slide |
+| UI-MOTION-008 | повторный Back во время time-driven transition | второй pop не выполняется |
+| UI-MOTION-009 | удержание незавершённого жеста | origin/preview остаются стабильными, UI не зависает и не теряет фон |
+| UI-MOTION-010 | 20 последовательных start/cancel | каждый lifecycle завершается; слои и navigation pop не накапливаются |
+| UI-MOTION-011 | любой content slot во время жеста | слой полностью непрозрачен, alpha экранов не меняется |
+| UI-MOTION-012 | dock во время Tracking/Cancel/Commit | selection остаётся committed и не участвует в transform |
+| UI-MOTION-013 | stale origin `entryId` | новый top entry не удаляется; pending presentation очищается |
 
 ## 7. Platform verification
 
@@ -274,11 +298,13 @@ UI automation не предполагается без отдельного ра
 | PLATFORM-002 | JVM shared tests | `:shared:jvmTest` |
 | PLATFORM-003 | Compose JVM | `:composeApp:compileKotlinJvm` |
 | PLATFORM-004 | Android | `:androidApp:assembleDebug` |
-| PLATFORM-005 | Desktop | `:desktopApp:createDistributable` |
+| PLATFORM-005 | Desktop | `:desktopApp:packageExe` |
 | PLATFORM-006 | Android | системный Back выполняет ровно один pop |
 | PLATFORM-007 | Android | Back disabled на `[Home]` |
 | PLATFORM-008 | Desktop | отсутствие Android API в shared/navigation |
 | PLATFORM-009 | Desktop | существующие UI-кнопки Back работают через тот же state |
+| PLATFORM-010 | Android 14+ | Predictive Back progress/cancel/commit работают для content и overlays |
+| PLATFORM-011 | Android до интерактивного Predictive Back | системный Back запускает обычную exit-анимацию и один pop |
 
 Apple compilation остаётся дополнительной compile-only проверкой и не означает готовность Apple runtime-заглушек.
 

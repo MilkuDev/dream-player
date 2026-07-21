@@ -2,10 +2,16 @@ package org.milkdev.dreamplayer.app
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.BoundsTransform
+import androidx.compose.animation.DeferredAnimatedContent
 import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.MutableContentTransform
 import androidx.compose.animation.SharedTransitionLayout
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.DeferredTransitionState
+import androidx.compose.animation.core.ExperimentalDeferredTransitionApi
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.rememberTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -25,15 +31,24 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.chrisbanes.haze.hazeEffect
@@ -46,16 +61,22 @@ import org.milkdev.dreamplayer.generated.resources.pause
 import org.milkdev.dreamplayer.generated.resources.play_arrow
 import org.milkdev.dreamplayer.generated.resources.skip_next
 import org.milkdev.dreamplayer.generated.resources.skip_previous
+import org.milkdev.dreamplayer.diagnostics.AppDebugLog
 import org.milkdev.dreamplayer.library.LibraryTrack
 import org.milkdev.dreamplayer.model.PlayerViewModel
 import org.milkdev.dreamplayer.navigation.AppRoute
 import org.milkdev.dreamplayer.navigation.MainDestination
 import org.milkdev.dreamplayer.navigation.MainPage
 import org.milkdev.dreamplayer.ui.*
+import kotlin.math.roundToInt
 
 private val playerViewModelInstance = PlayerViewModel()
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalSharedTransitionApi::class)
+@OptIn(
+    ExperimentalMaterial3Api::class,
+    ExperimentalSharedTransitionApi::class,
+    ExperimentalDeferredTransitionApi::class,
+)
 @Composable
 fun App(
     playerViewModel: PlayerViewModel = playerViewModelInstance,
@@ -65,6 +86,132 @@ fun App(
     val libraryState by playerViewModel.libraryState.collectAsState()
     val settingsState by playerViewModel.settingsState.collectAsState()
     val navigationState by playerViewModel.navigationState.collectAsState()
+    val committedContentSnapshot = contentNavigationSnapshot(navigationState.backStack)
+    val contentTransitionState = remember {
+        DeferredTransitionState(committedContentSnapshot)
+    }
+    val contentTransition = rememberTransition(
+        transitionState = contentTransitionState,
+        label = "ContentNavigation",
+    )
+    val latestNavigationState by rememberUpdatedState(navigationState)
+    var contentBackSession by remember { mutableStateOf<ContentBackSession?>(null) }
+    val detailPresentationSnapshots = remember {
+        mutableStateMapOf<Long, org.milkdev.dreamplayer.playback.LibraryUiState>()
+    }
+
+    SideEffect {
+        libraryState.activeDetailEntryId?.let { entryId ->
+            detailPresentationSnapshots[entryId] = libraryState
+        }
+    }
+
+    LaunchedEffect(navigationState.backStack.map { it.entryId }) {
+        val retainedEntryIds = navigationState.backStack.mapTo(mutableSetOf()) { it.entryId }
+        detailPresentationSnapshots.keys.toList().forEach { entryId ->
+            if (entryId !in retainedEntryIds) {
+                detailPresentationSnapshots.remove(entryId)
+            }
+        }
+    }
+
+    LaunchedEffect(committedContentSnapshot) {
+        if (contentBackSession == null) {
+            contentTransitionState.animateTo(committedContentSnapshot)
+        }
+    }
+
+    LaunchedEffect(navigationState.currentEntry.entryId) {
+        val session = contentBackSession ?: return@LaunchedEffect
+        if (navigationState.currentEntry.entryId != session.originTopEntryId) {
+            contentTransitionState.animateTo(committedContentSnapshot)
+            contentBackSession = null
+            AppDebugLog.log(
+                "predictive_back_settled surface=content result=stale_route " +
+                    "entryId=${session.originTopEntryId}",
+            )
+        }
+    }
+
+    LaunchedEffect(contentBackSession?.phase) {
+        val session = contentBackSession ?: return@LaunchedEffect
+        if (session.phase != ContentBackPhase.Cancelling) return@LaunchedEffect
+
+        val cancelProgress = Animatable(session.progress.coerceIn(0f, 1f))
+        cancelProgress.animateTo(
+            targetValue = 0f,
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioNoBouncy,
+                stiffness = Spring.StiffnessMediumLow,
+            ),
+        ) {
+            val currentSession = contentBackSession
+            if (
+                currentSession?.originTopEntryId == session.originTopEntryId &&
+                currentSession.phase == ContentBackPhase.Cancelling
+            ) {
+                contentBackSession = currentSession.copy(progress = value)
+            }
+        }
+        val currentSession = contentBackSession
+        if (
+            currentSession?.originTopEntryId == session.originTopEntryId &&
+            currentSession.phase == ContentBackPhase.Cancelling
+        ) {
+            contentTransitionState.animateTo(session.origin)
+        }
+    }
+
+    LaunchedEffect(
+        contentBackSession?.phase,
+        contentTransition.currentState,
+        contentTransition.targetState,
+        contentTransition.pendingTargetState,
+        contentTransition.isRunning,
+    ) {
+        val session = contentBackSession ?: return@LaunchedEffect
+        if (contentTransition.pendingTargetState != null || contentTransition.isRunning) {
+            return@LaunchedEffect
+        }
+        when (session.phase) {
+            ContentBackPhase.Tracking -> Unit
+
+            ContentBackPhase.Cancelling -> {
+                if (
+                    contentTransition.currentState == session.origin &&
+                    contentTransition.targetState == session.origin
+                ) {
+                    contentBackSession = null
+                    AppDebugLog.log(
+                        "predictive_back_settled surface=content result=cancelled " +
+                            "entryId=${session.originTopEntryId}",
+                    )
+                }
+            }
+
+            ContentBackPhase.Committing -> {
+                if (
+                    contentTransition.currentState == session.preview &&
+                    contentTransition.targetState == session.preview
+                ) {
+                    val didPop = playerViewModel.navigateBack(
+                        expectedTopEntryId = session.originTopEntryId,
+                    )
+                    if (!didPop) {
+                        contentTransitionState.animateTo(
+                            contentNavigationSnapshot(latestNavigationState.backStack),
+                        )
+                    }
+                    contentBackSession = null
+                    AppDebugLog.log(
+                        "predictive_back_settled surface=content " +
+                            "result=${if (didPop) "committed" else "stale"} " +
+                            "entryId=${session.originTopEntryId}",
+                    )
+                }
+            }
+        }
+    }
 
     LaunchedEffect(isPermissionGranted) {
         if (isPermissionGranted) {
@@ -75,8 +222,79 @@ fun App(
     val hazeState = rememberHazeState()
 
     AppTheme(darkTheme = settingsState.isForceNightMode || androidx.compose.foundation.isSystemInDarkTheme()) {
-        PlatformBackHandler(enabled = navigationState.canNavigateBack) {
-            playerViewModel.navigateBack()
+        val hasPlaybackOverlay = navigationState.currentDestination == AppRoute.Player ||
+            navigationState.currentDestination == AppRoute.Queue
+        PlatformBackHandler(
+            enabled = navigationState.canNavigateBack &&
+                !hasPlaybackOverlay &&
+                (
+                    contentBackSession?.phase == ContentBackPhase.Tracking ||
+                        (contentBackSession == null && !contentTransition.isRunning)
+                    ),
+            onBackStarted = {
+                val origin = latestNavigationState
+                val preview = origin.previewBack()
+                val session = preview?.let {
+                    ContentBackSession(
+                        originTopEntryId = origin.currentEntry.entryId,
+                        origin = contentNavigationSnapshot(origin.backStack),
+                        preview = contentNavigationSnapshot(it.backStack),
+                    )
+                }
+                contentBackSession = session
+                if (session != null) {
+                    contentTransitionState.defer(session.preview)
+                    AppDebugLog.log(
+                        "predictive_back_start surface=content entryId=${session.originTopEntryId}",
+                    )
+                }
+            },
+            onBackProgressed = { event ->
+                val session = contentBackSession ?: return@PlatformBackHandler
+                if (
+                    session.phase != ContentBackPhase.Tracking ||
+                    latestNavigationState.currentEntry.entryId != session.originTopEntryId
+                ) {
+                    return@PlatformBackHandler
+                }
+                contentBackSession = session.copy(
+                    progress = event.progress.coerceIn(0f, 1f),
+                    swipeEdge = event.swipeEdge,
+                )
+            },
+            onBackCancelled = {
+                val session = contentBackSession ?: return@PlatformBackHandler
+                if (session.phase == ContentBackPhase.Tracking) {
+                    contentBackSession = session.copy(phase = ContentBackPhase.Cancelling)
+                    AppDebugLog.log(
+                        "predictive_back_cancel surface=content entryId=${session.originTopEntryId}",
+                    )
+                }
+            },
+            onBackCommitted = { hadProgress ->
+                val session = contentBackSession
+                if (session == null) {
+                    playerViewModel.navigateBack()
+                    return@PlatformBackHandler
+                }
+                if (!hadProgress) {
+                    contentTransitionState.animateTo(session.origin)
+                    contentBackSession = null
+                    playerViewModel.navigateBack(expectedTopEntryId = session.originTopEntryId)
+                    return@PlatformBackHandler
+                }
+                contentBackSession = session.copy(phase = ContentBackPhase.Committing)
+                contentTransitionState.animateTo(session.preview)
+                AppDebugLog.log(
+                    "predictive_back_commit surface=content entryId=${session.originTopEntryId}",
+                )
+            },
+        )
+
+        val onContentBack: () -> Unit = {
+            if (contentBackSession == null && !contentTransition.isRunning) {
+                playerViewModel.navigateBack()
+            }
         }
 
         val spacing = AppTheme.spacing
@@ -166,12 +384,41 @@ fun App(
             ) {
                 val saveableStateHolder = rememberSaveableStateHolder()
                 val latestBackStack by rememberUpdatedState(navigationState.backStack)
-                AnimatedContent(
-                    targetState = navigationState.currentContentEntry,
+                val predictiveVeilColor = MaterialTheme.colorScheme.scrim
+                contentTransition.DeferredAnimatedContent(
                     transitionSpec = {
-                        fadeIn(animationSpec = tween(300)) togetherWith fadeOut(animationSpec = tween(300))
-                    }
-                ) { targetEntry ->
+                        val session = contentBackSession
+                        when {
+                            session == null -> navigationContentTransform(initialState, targetState)
+                            session.phase == ContentBackPhase.Cancelling &&
+                                contentTransition.pendingTargetState == null ->
+                                predictiveBackCancelContentTransform()
+                            else -> predictiveBackContentTransform(session.swipeEdge)
+                        }
+                    },
+                    contentKey = { it.currentEntry.entryId },
+                    mutableTransformSpec = {
+                        val session = contentBackSession ?: return@DeferredAnimatedContent null
+                        val progress = session.progress.coerceIn(0f, 1f)
+                        val direction = if (session.swipeEdge == BackSwipeEdge.Right) -1 else 1
+                        MutableContentTransform(targetVeilMatchParentSize = true) {
+                            initialContentTransform { fullSize ->
+                                scale = 1f - (0.08f * progress)
+                                offset = IntOffset(
+                                    x = (
+                                        direction * fullSize.width * 0.05f * progress
+                                        ).roundToInt(),
+                                    y = 0,
+                                )
+                            }
+                            targetContentTransform {
+                                scale = 1f
+                                veil = predictiveVeilColor.copy(alpha = 0.08f * (1f - progress))
+                            }
+                        }
+                    },
+                ) { targetSnapshot ->
+                    val targetEntry = targetSnapshot.currentEntry
                     DisposableEffect(targetEntry.entryId) {
                         onDispose {
                             val hasStablePresentationIdentity =
@@ -184,13 +431,46 @@ fun App(
                             }
                         }
                     }
-                    saveableStateHolder.SaveableStateProvider(targetEntry.entryId) {
-                        when (targetEntry.route) {
+                    val activeBackSession = contentBackSession
+                    val isPredictiveOrigin = activeBackSession?.origin
+                        ?.currentEntry?.entryId == targetEntry.entryId
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .then(
+                                if (isPredictiveOrigin) {
+                                    Modifier.graphicsLayer {
+                                        clip = true
+                                        shape = RoundedCornerShape(28.dp)
+                                    }
+                                } else {
+                                    Modifier
+                                },
+                            )
+                            .background(MaterialTheme.colorScheme.background)
+                            .then(
+                                if (activeBackSession != null) {
+                                    Modifier.clearAndSetSemantics { }
+                                } else {
+                                    Modifier
+                                },
+                            ),
+                    ) {
+                        saveableStateHolder.SaveableStateProvider(targetEntry.entryId) {
+                            val entryContentPadding = remember(targetEntry.entryId) { paddingValues }
+                            val entryLibraryState = if (
+                                libraryState.activeDetailEntryId == targetEntry.entryId
+                            ) {
+                                libraryState
+                            } else {
+                                detailPresentationSnapshots[targetEntry.entryId]
+                            }
+                            when (targetEntry.route) {
                             AppRoute.Home -> HomeScreen(
                                 libraryState = libraryState,
                                 onShuffleDailyPlaylistClick = playerViewModel::shuffleDailyPlaylist,
                                 onOpenDailyPlaylistClick = playerViewModel::openDailyPlaylist,
-                                contentPadding = paddingValues,
+                                contentPadding = entryContentPadding,
                                 onSettingsClick = playerViewModel::openSettings,
                                 onTrackClick = playerViewModel::playFromVisibleTracks
                             )
@@ -199,36 +479,36 @@ fun App(
                                 currentTrack = playbackState.currentTrack,
                                 onIntent = playerViewModel::onLibraryIntent,
                                 onSettingsClick = playerViewModel::openSettings,
-                                contentPadding = paddingValues,
+                                contentPadding = entryContentPadding,
                             )
                             is AppRoute.Playlist -> {
-                                if (libraryState.activeDetailEntryId == targetEntry.entryId) {
+                                if (entryLibraryState != null) {
                                     PlaylistDetailsScreen(
-                                        libraryState = libraryState,
+                                        libraryState = entryLibraryState,
                                         currentTrackId = playbackState.currentTrack?.id,
-                                        onBackClick = { playerViewModel.navigateBack() },
+                                        onBackClick = onContentBack,
                                         onTrackClick = playerViewModel::playFromSelectedPlaylist,
                                         onSaveTracks = playerViewModel::savePlaylistTracks,
                                         onLoadNextPickerTracks = { playerViewModel.loadPlaylistPickerPage() },
-                                        contentPadding = paddingValues,
+                                        contentPadding = entryContentPadding,
                                     )
                                 }
                             }
                             is AppRoute.LibraryCollection -> {
-                                if (libraryState.activeDetailEntryId == targetEntry.entryId) {
+                                if (entryLibraryState != null) {
                                     LibraryCollectionDetailsScreen(
-                                        libraryState = libraryState,
+                                        libraryState = entryLibraryState,
                                         currentTrackId = playbackState.currentTrack?.id,
-                                        onBackClick = { playerViewModel.navigateBack() },
+                                        onBackClick = onContentBack,
                                         onTrackClick = playerViewModel::playFromSelectedLibraryCollection,
                                         onAlbumClick = playerViewModel::openAlbumDetails,
-                                        contentPadding = paddingValues,
+                                        contentPadding = entryContentPadding,
                                     )
                                 }
                             }
                             AppRoute.Settings -> SettingsScreen(
                                 settingsState = settingsState,
-                                onBackClick = { playerViewModel.navigateBack() },
+                                onBackClick = onContentBack,
                                 onBlurToggle = { playerViewModel.setBlurEnabled(it) },
                                 onNightModeToggle = { playerViewModel.setForceNightMode(it) },
                                 onDailyPlaylistModeChange = { playerViewModel.setDailyPlaylistGenerationMode(it) },
@@ -244,12 +524,12 @@ fun App(
                                 onLastFmApiTest = { playerViewModel.testLastFmApi() },
                                 onLastFmMetadataSync = { playerViewModel.startLastFmMetadataSync() },
                                 onMusicBrainzCoverSync = { playerViewModel.startMusicBrainzCoverSync() },
-                                contentPadding = paddingValues
+                                contentPadding = entryContentPadding
                             )
                             AppRoute.AiDebugSettings -> AiDebugSettingsScreen(
                                 settingsState = settingsState,
                                 librarySummary = libraryState.librarySummary,
-                                onBackClick = { playerViewModel.navigateBack() },
+                                onBackClick = onContentBack,
                                 onModeChange = { playerViewModel.setDailyPlaylistGenerationMode(it) },
                                 onProviderChange = { playerViewModel.setAiPlaylistProvider(it) },
                                 onModelChange = { playerViewModel.setAiPlaylistModel(it) },
@@ -262,29 +542,49 @@ fun App(
                                 onResponseTest = { playerViewModel.testAiPlaylistModelResponse() },
                                 onForceGenerateDailyPlaylist = { playerViewModel.forceGenerateDailyPlaylist() },
                                 onPromptSend = { playerViewModel.sendAiPrompt(it) },
-                                contentPadding = paddingValues
+                                contentPadding = entryContentPadding
                             )
                             AppRoute.Search -> LibrarySearchScreen(
                                 libraryState = libraryState,
                                 currentTrackId = playbackState.currentTrack?.id,
                                 onTrackClick = playerViewModel::playFromVisibleTracks,
-                                onBackClick = { playerViewModel.navigateBack() },
+                                onBackClick = onContentBack,
                                 onLoadNextSearch = { playerViewModel.loadNextSearchPage() },
-                                contentPadding = paddingValues
+                                contentPadding = entryContentPadding
                             )
-                            AppRoute.Player,
-                            AppRoute.Queue -> Unit
+                                AppRoute.Player,
+                                AppRoute.Queue -> Unit
+                            }
                         }
                     }
                 }
             }
         }
+            contentBackSession?.let { session ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clearAndSetSemantics { }
+                        .pointerInput(session.originTopEntryId, session.phase) {
+                            awaitPointerEventScope {
+                                while (true) {
+                                    awaitPointerEvent().changes.forEach { change ->
+                                        change.consume()
+                                    }
+                                }
+                            }
+                        },
+                )
+            }
             PlayerOverlayHost(
                 playbackState = playbackState,
+                topEntryId = navigationState.currentEntry.entryId,
                 isPlayerVisible = navigationState.contains(AppRoute.Player) ||
                     navigationState.contains(AppRoute.Queue),
                 isQueueVisible = navigationState.currentDestination == AppRoute.Queue,
-                onNavigateBack = { playerViewModel.navigateBack() },
+                onNavigateBack = { entryId ->
+                    playerViewModel.navigateBack(expectedTopEntryId = entryId)
+                },
                 onOpenQueueSheet = playerViewModel::openQueueSheet,
                 onPreviousClick = playerViewModel::playPrevious,
                 onNextClick = playerViewModel::playNext,
@@ -322,19 +622,18 @@ private fun BottomDock(
             .padding(horizontal = 16.dp)
             .padding(bottom = AppTheme.spacing.medium)
     ) {
-        val isSearchDockVisible = activeMainDestination == MainDestination.Search
         val searchBoundsState = rememberSharedContentState(key = "bottom_dock_search_bounds")
         val searchIconState = rememberSharedContentState(key = "bottom_dock_search_icon")
 
         AnimatedContent(
-            targetState = isSearchDockVisible,
+            targetState = activeMainDestination,
             transitionSpec = {
                 fadeIn(animationSpec = tween(durationMillis = 220, delayMillis = 40)) togetherWith
                         fadeOut(animationSpec = tween(durationMillis = 160))
             },
-            label = "BottomDock",
-        ) { isSearchActive ->
-            if (isSearchActive) {
+            contentKey = { it == MainDestination.Search },
+        ) { destination ->
+            if (destination == MainDestination.Search) {
                 this@SharedTransitionLayout.SearchDock(
                     query = librarySearch.query,
                     onQueryChange = onSearchQueryChange,
@@ -353,7 +652,7 @@ private fun BottomDock(
                 )
             } else {
                 NavigationDock(
-                    activeMainDestination = activeMainDestination,
+                    activeMainDestination = destination,
                     onHomeClick = onHomeClick,
                     onLibraryClick = onLibraryClick,
                     onSearchClick = onOpenSearch,

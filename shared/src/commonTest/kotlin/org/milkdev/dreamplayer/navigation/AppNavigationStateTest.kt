@@ -230,6 +230,38 @@ class AppNavigationStateTest {
     }
 
     @Test
+    fun backFromAlbumRestoresGenreWithoutSkippingIt() {
+        val album = AppNavigationState()
+            .selectMainPage(MainPage.Library)
+            .push(Genre5)
+            .push(Album42)
+        val genreEntry = album.backStack[2]
+
+        val genre = album.pop()
+
+        assertNotNull(genre)
+        assertRoutes(genre, AppRoute.Home, AppRoute.Library, Genre5)
+        assertEquals(genreEntry, genre.currentEntry)
+    }
+
+    @Test
+    fun guardedBackRejectsAStaleAnimatedCommit() {
+        val genre = AppNavigationState()
+            .selectMainPage(MainPage.Library)
+            .push(Genre5)
+        val staleGenreEntryId = genre.currentEntry.entryId
+        val album = genre.push(Album42)
+
+        assertNull(album.pop(expectedTopEntryId = staleGenreEntryId))
+        assertRoutes(
+            album.pop(expectedTopEntryId = album.currentEntry.entryId),
+            AppRoute.Home,
+            AppRoute.Library,
+            Genre5,
+        )
+    }
+
+    @Test
     fun detailInheritsSearchAsActiveMainDestination() {
         val state = AppNavigationState()
             .selectMainPage(MainPage.Library)

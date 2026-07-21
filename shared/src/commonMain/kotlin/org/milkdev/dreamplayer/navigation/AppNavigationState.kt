@@ -118,7 +118,10 @@ class AppNavigationState private constructor(
         }
     }
 
-    fun pop(): AppNavigationState? {
+    fun pop(expectedTopEntryId: Long? = null): AppNavigationState? {
+        if (expectedTopEntryId != null && currentEntry.entryId != expectedTopEntryId) {
+            return null
+        }
         if (!canNavigateBack) return null
         return withStack(backStack.dropLast(1))
     }

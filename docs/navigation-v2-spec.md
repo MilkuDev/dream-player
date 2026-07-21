@@ -1,6 +1,6 @@
 # DreamPlayer Navigation v2
 
-Статус: реализовано 2026-07-21. Визуальная Android Predictive Back-интеграция намеренно оставлена отдельным поздним этапом.
+Статус: navigation core и визуальные переходы реализованы 2026-07-21. Android Predictive Back подключён к content routes и playback overlays.
 
 ## Цель
 
@@ -10,7 +10,7 @@
 - поддерживает контекстные переходы без полного централизованного navigation graph;
 - позволяет добавлять content routes и overlays без переписывания существующих связей;
 - сохраняет последовательное поведение Player и Queue;
-- не препятствует будущей интеграции Android Predictive Back;
+- поддерживает Android Predictive Back без мутации navigation state во время жеста;
 - не требует восстановления navigation stack после перезапуска процесса.
 
 ## Архитектурные инварианты
@@ -107,6 +107,8 @@ Navigation state предоставляет:
 - `activeMainDestination` — последнее основное назначение в стеке;
 - `canNavigateBack` — возможность удалить верхний entry;
 - preview результата Back без публикации нового состояния.
+
+Commit длительного или интерактивного Back может передать ожидаемый `entryId` верхнего entry. Если стек успел измениться за время анимации, guarded pop отклоняется и не удаляет уже другой экран.
 
 Примеры `activeMainDestination`:
 
@@ -216,6 +218,39 @@ Content -> Player -> Queue
 - Back закрывает Queue, затем Player, затем content;
 - очистка playback удаляет Player и Queue, не изменяя content history.
 
+## Визуальные переходы и Back
+
+Compose хранит отдельный presentation snapshot для каждого активного detail `entryId`. Благодаря этому при обычном и predictive Back предыдущий экран отображается со своими данными, а не с текущей проекцией нового detail.
+
+Матрица motion:
+
+| Переход | Представление |
+|---|---|
+| Detail forward | короткий горизонтальный slide + fade |
+| Detail Back | обратный time-driven slide + fade |
+| Predictive Back | progress-driven scale-and-shift: непрозрачный origin уменьшается до `0.92`, смещается к краю до `5%` ширины и открывает непрозрачный preview без crossfade |
+| Home / Library / Search | fade-through с небольшим scale |
+| Player open/close | вертикальное полноэкранное движение |
+| Queue open/close | вертикальный sheet + синхронное затухание scrim |
+
+Back сериализован на время перехода. Кнопка экрана, системный Back и drag-dismiss Player/Queue используют один controller: сначала завершается exit motion, затем выполняется ровно один guarded pop.
+
+На Android `PredictiveBackHandler` синхронно транслирует `start/progress/cancel/commit` в общий Compose-слой. Handler не запускает suspend-анимации: Android отменяет его coroutine при cancel, поэтому settle выполняется отдельным Compose scope.
+
+Content host использует экспериментальные `DeferredTransitionState` и `DeferredAnimatedContent` из уже подключённого Compose 1.12 beta:
+
+- `start` захватывает immutable origin/preview и вызывает `defer(preview)`;
+- `progress` меняет только последнее значение progress и край жеста; transform вычисляется напрямую, без `seekTo`, tween и easing;
+- `cancel` отдельной no-bounce spring-анимацией возвращает progress к нулю, затем `animateTo(origin)` удаляет pending content без navigation pop;
+- `commit` вызывает `animateTo(preview)`, ждёт Deferred handoff и только после settle выполняет один guarded pop по исходному `entryId`;
+- stale `entryId` не удаляет новый route и возвращает presentation к актуальному committed state.
+
+Во время gesture session каждый content slot является собственным fullscreen-слоем с `MaterialTheme.colorScheme.background`; origin дополнительно clip-ится радиусом `28.dp`. Оба slot скрыты от accessibility и перекрыты input-blocker. Их alpha во время tracking не меняется. Preview остаётся под origin и снимает veil `8% -> 0%`. Нижний dock не входит в Deferred transition и меняет selection только после успешного commit.
+
+Player и Queue сохраняют вертикальную модель закрытия, но predictive progress также хранится в отдельной синхронной gesture session. Cancel/commit выполняются из Compose scope; кнопка, drag-down и обычный системный Back используют тот же guarded close controller. На версиях Android без интерактивного predictive-жеста выполняется обычная time-driven exit-анимация. На корневом `[Home]` callback приложения отключён, поэтому Back остаётся системным.
+
+Desktop использует те же time-driven content и overlay transitions, но platform handler там отсутствует; экранные кнопки работают через общий navigation state.
+
 ## Ограничение переходов
 
 Navigation model проверяет только структурные инварианты:
@@ -261,15 +296,15 @@ Artist(7)    -> наблюдение за артистом 7
 - `SaveableStateProvider` использует `NavigationEntry.entryId`.
 - Основные Home и Library должны иметь стабильную saveable identity между переключениями.
 
-## Predictive Back readiness
+## Predictive Back lifecycle
 
-Интерактивный Predictive Back не входит в первый этап реализации, но архитектура обязана поддерживать его без переработки navigation model:
+Интерактивный Predictive Back реализован поверх той же navigation model:
 
 - результат Back можно вычислить без публикации;
 - preview не запускает активацию данных и не отменяет текущие подписки;
 - cancel не изменяет navigation state;
 - commit публикует заранее вычисленный результат `pop`;
-- Android progress-анимация остаётся в `composeApp/androidMain`;
+- Android actual содержит только platform lifecycle bridge; progress-driven UI и settle находятся в `composeApp/commonMain`;
 - Desktop использует обычный Back над той же моделью.
 
 ## Не входит в задачу
@@ -278,7 +313,6 @@ Artist(7)    -> наблюдение за артистом 7
 - navigation framework или DI framework;
 - Android ViewModel и Jetpack Navigation;
 - реализация будущего AI-раздела;
-- интерактивная Predictive Back анимация на первом этапе;
 - кеширование данных всех неактивных detail entries.
 
 ## Обязательные сценарии

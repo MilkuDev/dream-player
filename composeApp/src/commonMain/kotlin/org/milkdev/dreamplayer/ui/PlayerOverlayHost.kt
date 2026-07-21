@@ -15,30 +15,53 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+import org.milkdev.dreamplayer.diagnostics.AppDebugLog
 import org.milkdev.dreamplayer.library.LibraryTrack
 import org.milkdev.dreamplayer.playback.PlaybackUiState
 import kotlin.math.roundToInt
 
+private enum class PlaybackOverlay {
+    Player,
+    Queue,
+}
+
+private enum class OverlayBackPhase {
+    Tracking,
+    Cancelling,
+    Committing,
+}
+
+private data class OverlayBackSession(
+    val expectedTopEntryId: Long,
+    val overlay: PlaybackOverlay,
+    val phase: OverlayBackPhase = OverlayBackPhase.Tracking,
+    val progress: Float = 0f,
+)
+
 @Composable
 fun PlayerOverlayHost(
     playbackState: PlaybackUiState,
+    topEntryId: Long,
     isPlayerVisible: Boolean,
     isQueueVisible: Boolean,
-    onNavigateBack: () -> Unit,
+    onNavigateBack: (expectedTopEntryId: Long) -> Boolean,
     onOpenQueueSheet: () -> Unit,
     onPreviousClick: () -> Unit,
     onNextClick: () -> Unit,
@@ -52,113 +75,377 @@ fun PlayerOverlayHost(
     onClearQueueClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val currentTrack = playbackState.currentTrack
-
-    if (!isPlayerVisible || currentTrack == null) {
-        return
+    var retainedPlaybackState by remember { mutableStateOf<PlaybackUiState?>(null) }
+    SideEffect {
+        if (playbackState.currentTrack != null) {
+            retainedPlaybackState = playbackState
+        }
     }
+    val renderedPlaybackState = playbackState.takeIf { it.currentTrack != null }
+        ?: retainedPlaybackState
 
-    BoxWithConstraints(
-        modifier = modifier.fillMaxSize()
-    ) {
+    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val scope = rememberCoroutineScope()
         val maxHeightPx = constraints.maxHeight.toFloat().coerceAtLeast(1f)
-        val dismissThresholdPx = maxHeightPx / 3f
-        val playerOffsetY = remember { Animatable(0f) }
-        var hasAnimatedIn by remember { mutableStateOf(false) }
+        val playerProgress = remember { Animatable(1f) }
+        val queueProgress = remember { Animatable(1f) }
+        var renderPlayer by remember { mutableStateOf(false) }
+        var renderQueue by remember { mutableStateOf(false) }
+        var overlayBackSession by remember { mutableStateOf<OverlayBackSession?>(null) }
+        var backTransitionInProgress by remember { mutableStateOf(false) }
+        val latestTopEntryId by rememberUpdatedState(topEntryId)
+        val latestPlayerVisible by rememberUpdatedState(isPlayerVisible)
+        val latestQueueVisible by rememberUpdatedState(isQueueVisible)
 
-        fun restorePlayer() {
+        suspend fun restoreOverlay(overlay: PlaybackOverlay) {
+            val progress = when (overlay) {
+                PlaybackOverlay.Player -> playerProgress
+                PlaybackOverlay.Queue -> queueProgress
+            }
+            progress.animateTo(
+                targetValue = 0f,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioNoBouncy,
+                    stiffness = Spring.StiffnessMediumLow,
+                ),
+            )
+        }
+
+        suspend fun finishOverlayBack(session: OverlayBackSession) {
+            if (backTransitionInProgress) return
+            backTransitionInProgress = true
+            try {
+                val progress = when (session.overlay) {
+                    PlaybackOverlay.Player -> playerProgress
+                    PlaybackOverlay.Queue -> queueProgress
+                }
+                progress.animateTo(
+                    targetValue = 1f,
+                    animationSpec = tween(
+                        durationMillis = if (session.overlay == PlaybackOverlay.Queue) 240 else 280,
+                    ),
+                )
+                if (!onNavigateBack(session.expectedTopEntryId)) {
+                    restoreOverlay(session.overlay)
+                }
+            } finally {
+                backTransitionInProgress = false
+                overlayBackSession = null
+            }
+        }
+
+        fun requestOverlayBack(overlay: PlaybackOverlay) {
+            if (backTransitionInProgress || overlayBackSession != null) return
             scope.launch {
-                playerOffsetY.animateTo(
-                    targetValue = 0f,
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioNoBouncy,
-                        stiffness = Spring.StiffnessMediumLow,
+                finishOverlayBack(
+                    OverlayBackSession(
+                        expectedTopEntryId = latestTopEntryId,
+                        overlay = overlay,
                     )
                 )
             }
         }
 
-        fun dismissPlayer() {
-            scope.launch {
-                playerOffsetY.animateTo(
-                    targetValue = maxHeightPx,
-                    animationSpec = tween(durationMillis = 280),
-                )
-                onNavigateBack()
-            }
-        }
+        LaunchedEffect(overlayBackSession?.phase) {
+            val session = overlayBackSession ?: return@LaunchedEffect
+            when (session.phase) {
+                OverlayBackPhase.Tracking -> Unit
 
-        LaunchedEffect(maxHeightPx) {
-            if (!hasAnimatedIn) {
-                playerOffsetY.snapTo(maxHeightPx)
-                hasAnimatedIn = true
-                playerOffsetY.animateTo(
-                    targetValue = 0f,
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioNoBouncy,
-                        stiffness = Spring.StiffnessMediumLow,
+                OverlayBackPhase.Cancelling -> {
+                    val cancelProgress = Animatable(session.progress.coerceIn(0f, 1f))
+                    cancelProgress.animateTo(
+                        targetValue = 0f,
+                        animationSpec = spring(
+                            dampingRatio = Spring.DampingRatioNoBouncy,
+                            stiffness = Spring.StiffnessMediumLow,
+                        ),
+                    ) {
+                        val currentSession = overlayBackSession
+                        if (
+                            currentSession?.expectedTopEntryId == session.expectedTopEntryId &&
+                            currentSession.phase == OverlayBackPhase.Cancelling
+                        ) {
+                            overlayBackSession = currentSession.copy(progress = value)
+                        }
+                    }
+                    val currentSession = overlayBackSession
+                    if (
+                        currentSession?.expectedTopEntryId == session.expectedTopEntryId &&
+                        currentSession.phase == OverlayBackPhase.Cancelling
+                    ) {
+                        overlayBackSession = null
+                        AppDebugLog.log(
+                            "predictive_back_settled surface=${session.overlay.name.lowercase()} " +
+                                "result=cancelled entryId=${session.expectedTopEntryId}",
+                        )
+                    }
+                }
+
+                OverlayBackPhase.Committing -> {
+                    val commitProgress = Animatable(session.progress.coerceIn(0f, 1f))
+                    commitProgress.animateTo(
+                        targetValue = 1f,
+                        animationSpec = tween(
+                            durationMillis = if (session.overlay == PlaybackOverlay.Queue) 180 else 220,
+                        ),
+                    ) {
+                        val currentSession = overlayBackSession
+                        if (
+                            currentSession?.expectedTopEntryId == session.expectedTopEntryId &&
+                            currentSession.phase == OverlayBackPhase.Committing
+                        ) {
+                            overlayBackSession = currentSession.copy(progress = value)
+                        }
+                    }
+                    val currentSession = overlayBackSession
+                    if (
+                        currentSession?.expectedTopEntryId != session.expectedTopEntryId ||
+                        currentSession.phase != OverlayBackPhase.Committing
+                    ) {
+                        return@LaunchedEffect
+                    }
+                    when (session.overlay) {
+                        PlaybackOverlay.Player -> playerProgress.snapTo(1f)
+                        PlaybackOverlay.Queue -> queueProgress.snapTo(1f)
+                    }
+                    val didPop = onNavigateBack(session.expectedTopEntryId)
+                    if (!didPop) {
+                        commitProgress.animateTo(
+                            targetValue = 0f,
+                            animationSpec = spring(
+                                dampingRatio = Spring.DampingRatioNoBouncy,
+                                stiffness = Spring.StiffnessMediumLow,
+                            ),
+                        ) {
+                            val staleSession = overlayBackSession
+                            if (
+                                staleSession?.expectedTopEntryId == session.expectedTopEntryId &&
+                                staleSession.phase == OverlayBackPhase.Committing
+                            ) {
+                                overlayBackSession = staleSession.copy(progress = value)
+                            }
+                        }
+                        restoreOverlay(session.overlay)
+                    }
+                    overlayBackSession = null
+                    AppDebugLog.log(
+                        "predictive_back_settled surface=${session.overlay.name.lowercase()} " +
+                            "result=${if (didPop) "committed" else "stale"} " +
+                            "entryId=${session.expectedTopEntryId}",
                     )
+                }
+            }
+        }
+
+        LaunchedEffect(topEntryId, isPlayerVisible, isQueueVisible) {
+            val session = overlayBackSession ?: return@LaunchedEffect
+            val routeStillMatches = when (session.overlay) {
+                PlaybackOverlay.Player -> isPlayerVisible && !isQueueVisible
+                PlaybackOverlay.Queue -> isQueueVisible
+            }
+            if (!routeStillMatches || topEntryId != session.expectedTopEntryId) {
+                when (session.overlay) {
+                    PlaybackOverlay.Player -> playerProgress.snapTo(session.progress)
+                    PlaybackOverlay.Queue -> queueProgress.snapTo(session.progress)
+                }
+                overlayBackSession = null
+                AppDebugLog.log(
+                    "predictive_back_settled surface=${session.overlay.name.lowercase()} " +
+                        "result=stale_route entryId=${session.expectedTopEntryId}",
                 )
             }
         }
 
-        val visiblePlayerOffsetY = if (hasAnimatedIn) playerOffsetY.value else maxHeightPx
+        PlatformBackHandler(
+            enabled = (isPlayerVisible || isQueueVisible) &&
+                (
+                    overlayBackSession?.phase == OverlayBackPhase.Tracking ||
+                        (overlayBackSession == null && !backTransitionInProgress)
+                    ),
+            onBackStarted = {
+                if (backTransitionInProgress || overlayBackSession != null) {
+                    return@PlatformBackHandler
+                }
+                val session = OverlayBackSession(
+                    expectedTopEntryId = latestTopEntryId,
+                    overlay = if (latestQueueVisible) PlaybackOverlay.Queue else PlaybackOverlay.Player,
+                )
+                overlayBackSession = session
+                AppDebugLog.log(
+                    "predictive_back_start surface=${session.overlay.name.lowercase()} " +
+                        "entryId=${session.expectedTopEntryId}",
+                )
+            },
+            onBackProgressed = { event ->
+                val session = overlayBackSession ?: return@PlatformBackHandler
+                val routeStillMatches = when (session.overlay) {
+                    PlaybackOverlay.Player -> latestPlayerVisible && !latestQueueVisible
+                    PlaybackOverlay.Queue -> latestQueueVisible
+                }
+                if (!routeStillMatches || latestTopEntryId != session.expectedTopEntryId) {
+                    return@PlatformBackHandler
+                }
+                if (session.phase == OverlayBackPhase.Tracking) {
+                    overlayBackSession = session.copy(
+                        progress = event.progress.coerceIn(0f, 1f),
+                    )
+                }
+            },
+            onBackCancelled = {
+                val session = overlayBackSession ?: return@PlatformBackHandler
+                if (session.phase == OverlayBackPhase.Tracking) {
+                    overlayBackSession = session.copy(phase = OverlayBackPhase.Cancelling)
+                    AppDebugLog.log(
+                        "predictive_back_cancel surface=${session.overlay.name.lowercase()} " +
+                            "entryId=${session.expectedTopEntryId}",
+                    )
+                }
+            },
+            onBackCommitted = { hadProgress ->
+                val session = overlayBackSession ?: OverlayBackSession(
+                    expectedTopEntryId = latestTopEntryId,
+                    overlay = if (latestQueueVisible) PlaybackOverlay.Queue else PlaybackOverlay.Player,
+                )
+                AppDebugLog.log(
+                    "predictive_back_commit surface=${session.overlay.name.lowercase()} " +
+                        "entryId=${session.expectedTopEntryId}",
+                )
+                if (hadProgress) {
+                    overlayBackSession = session.copy(phase = OverlayBackPhase.Committing)
+                } else {
+                    overlayBackSession = null
+                    scope.launch { finishOverlayBack(session) }
+                }
+            },
+        )
 
-        val playerDragModifier = if (isQueueVisible) {
-            Modifier
-        } else {
-            Modifier.pointerInput(maxHeightPx) {
-                detectVerticalDragGestures(
-                    onDragStart = {
-                        scope.launch { playerOffsetY.stop() }
+        LaunchedEffect(isPlayerVisible, renderedPlaybackState?.currentTrack?.id) {
+            if (isPlayerVisible && renderedPlaybackState?.currentTrack != null) {
+                if (!renderPlayer) {
+                    renderPlayer = true
+                    playerProgress.snapTo(1f)
+                }
+                if (overlayBackSession?.overlay != PlaybackOverlay.Player) {
+                    restoreOverlay(PlaybackOverlay.Player)
+                }
+            } else if (renderPlayer) {
+                playerProgress.animateTo(1f, tween(durationMillis = 280))
+                renderPlayer = false
+            }
+        }
+
+        LaunchedEffect(isQueueVisible, renderedPlaybackState?.currentTrack?.id) {
+            if (isQueueVisible && renderedPlaybackState?.currentTrack != null) {
+                if (!renderQueue) {
+                    renderQueue = true
+                    queueProgress.snapTo(1f)
+                }
+                if (overlayBackSession?.overlay != PlaybackOverlay.Queue) {
+                    restoreOverlay(PlaybackOverlay.Queue)
+                }
+            } else if (renderQueue) {
+                queueProgress.animateTo(1f, tween(durationMillis = 240))
+                renderQueue = false
+            }
+        }
+
+        val playerVisualProgress = overlayBackSession
+            ?.takeIf { it.overlay == PlaybackOverlay.Player }
+            ?.progress
+            ?: playerProgress.value
+        val queueVisualProgress = overlayBackSession
+            ?.takeIf { it.overlay == PlaybackOverlay.Queue }
+            ?.progress
+            ?: queueProgress.value
+
+        val state = renderedPlaybackState
+        val currentTrack = state?.currentTrack
+        if ((renderPlayer || isPlayerVisible) && state != null && currentTrack != null) {
+            val playerDragModifier = if (
+                isQueueVisible || backTransitionInProgress || overlayBackSession != null
+            ) {
+                Modifier
+            } else {
+                Modifier.pointerInput(maxHeightPx, topEntryId) {
+                    detectVerticalDragGestures(
+                        onDragStart = {
+                            scope.launch { playerProgress.stop() }
+                        },
+                        onVerticalDrag = { change, dragAmount ->
+                            change.consume()
+                            scope.launch {
+                                playerProgress.snapTo(
+                                    (playerProgress.value + dragAmount / maxHeightPx).coerceIn(0f, 1f)
+                                )
+                            }
+                        },
+                        onDragEnd = {
+                            if (playerProgress.value >= 1f / 3f) {
+                                requestOverlayBack(PlaybackOverlay.Player)
+                            } else {
+                                scope.launch { restoreOverlay(PlaybackOverlay.Player) }
+                            }
+                        },
+                        onDragCancel = {
+                            scope.launch { restoreOverlay(PlaybackOverlay.Player) }
+                        },
+                    )
+                }
+            }
+
+            PlayerScreen(
+                playbackState = state,
+                onBackClick = { requestOverlayBack(PlaybackOverlay.Player) },
+                onQueueClick = onOpenQueueSheet,
+                onPreviousClick = onPreviousClick,
+                onNextClick = onNextClick,
+                onPlayPauseClick = onPlayPauseClick,
+                onShuffleClick = onShuffleClick,
+                onRepeatClick = onRepeatClick,
+                onFavoriteClick = onFavoriteClick,
+                onSeek = onSeek,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .then(playerDragModifier)
+                    .offset {
+                        IntOffset(0, (playerVisualProgress * maxHeightPx).roundToInt())
                     },
-                    onVerticalDrag = { change, dragAmount ->
-                        change.consume()
-                        val nextOffset = (playerOffsetY.value + dragAmount).coerceIn(0f, maxHeightPx)
-                        scope.launch { playerOffsetY.snapTo(nextOffset) }
+            )
+
+            if (renderQueue || isQueueVisible) {
+                QueueSheetOverlay(
+                    tracks = state.playbackQueue,
+                    currentTrackId = currentTrack.id,
+                    currentQueueIndex = state.currentQueueIndex,
+                    progress = queueVisualProgress,
+                    maxHeightPx = maxHeightPx,
+                    gesturesEnabled = !backTransitionInProgress && overlayBackSession == null,
+                    onDismissRequest = { requestOverlayBack(PlaybackOverlay.Queue) },
+                    onDragStart = {
+                        scope.launch { queueProgress.stop() }
+                    },
+                    onDrag = { dragAmount ->
+                        scope.launch {
+                            queueProgress.snapTo(
+                                (queueProgress.value + dragAmount / maxHeightPx).coerceIn(0f, 1f)
+                            )
+                        }
                     },
                     onDragEnd = {
-                        if (playerOffsetY.value >= dismissThresholdPx) {
-                            dismissPlayer()
+                        if (queueProgress.value >= 1f / 7f) {
+                            requestOverlayBack(PlaybackOverlay.Queue)
                         } else {
-                            restorePlayer()
+                            scope.launch { restoreOverlay(PlaybackOverlay.Queue) }
                         }
                     },
                     onDragCancel = {
-                        restorePlayer()
-                    }
+                        scope.launch { restoreOverlay(PlaybackOverlay.Queue) }
+                    },
+                    onTrackClick = onQueueTrackClick,
+                    onMoveTrack = onMoveTrack,
+                    onClearQueueClick = onClearQueueClick,
                 )
             }
-        }
-
-        PlayerScreen(
-            playbackState = playbackState,
-            onBackClick = { dismissPlayer() },
-            onQueueClick = onOpenQueueSheet,
-            onPreviousClick = onPreviousClick,
-            onNextClick = onNextClick,
-            onPlayPauseClick = onPlayPauseClick,
-            onShuffleClick = onShuffleClick,
-            onRepeatClick = onRepeatClick,
-            onFavoriteClick = onFavoriteClick,
-            onSeek = onSeek,
-            modifier = Modifier
-                .fillMaxSize()
-                .then(playerDragModifier)
-                .offset { IntOffset(0, visiblePlayerOffsetY.roundToInt()) },
-        )
-
-        if (isQueueVisible) {
-            QueueSheetOverlay(
-                tracks = playbackState.playbackQueue,
-                currentTrackId = currentTrack.id,
-                currentQueueIndex = playbackState.currentQueueIndex,
-                onNavigateBack = onNavigateBack,
-                onTrackClick = onQueueTrackClick,
-                onMoveTrack = onMoveTrack,
-                onClearQueueClick = onClearQueueClick,
-            )
         }
     }
 }
@@ -168,95 +455,55 @@ private fun QueueSheetOverlay(
     tracks: List<LibraryTrack>,
     currentTrackId: Long?,
     currentQueueIndex: Int,
-    onNavigateBack: () -> Unit,
+    progress: Float,
+    maxHeightPx: Float,
+    gesturesEnabled: Boolean,
+    onDismissRequest: () -> Unit,
+    onDragStart: () -> Unit,
+    onDrag: (Float) -> Unit,
+    onDragEnd: () -> Unit,
+    onDragCancel: () -> Unit,
     onTrackClick: (Int) -> Unit,
     onMoveTrack: (Int, Int) -> Unit,
     onClearQueueClick: () -> Unit,
 ) {
-    BoxWithConstraints(
-        modifier = Modifier.fillMaxSize()
-    ) {
-        val scope = rememberCoroutineScope()
-        val maxHeightPx = constraints.maxHeight.toFloat().coerceAtLeast(1f)
-        val sheetOffsetY = remember { Animatable(0f) }
-        var hasAnimatedIn by remember { mutableStateOf(false) }
-        val dismissThresholdPx = maxHeightPx / 7f
+    Box(modifier = Modifier.fillMaxSize()) {
         val topInset = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
-
-        fun restoreSheet() {
-            scope.launch {
-                sheetOffsetY.animateTo(
-                    targetValue = 0f,
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioNoBouncy,
-                        stiffness = Spring.StiffnessMediumLow,
-                    )
+        val headerDragModifier = if (gesturesEnabled) {
+            Modifier.pointerInput(maxHeightPx) {
+                detectVerticalDragGestures(
+                    onDragStart = { onDragStart() },
+                    onVerticalDrag = { change, dragAmount ->
+                        change.consume()
+                        onDrag(dragAmount)
+                    },
+                    onDragEnd = onDragEnd,
+                    onDragCancel = onDragCancel,
                 )
             }
-        }
-
-        fun dismissSheet() {
-            scope.launch {
-                sheetOffsetY.animateTo(
-                    targetValue = maxHeightPx,
-                    animationSpec = tween(durationMillis = 240),
-                )
-                onNavigateBack()
-            }
-        }
-
-        LaunchedEffect(maxHeightPx) {
-            if (!hasAnimatedIn) {
-                sheetOffsetY.snapTo(maxHeightPx)
-                hasAnimatedIn = true
-                sheetOffsetY.animateTo(
-                    targetValue = 0f,
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioNoBouncy,
-                        stiffness = Spring.StiffnessMediumLow,
-                    )
-                )
-            }
-        }
-
-        val visibleSheetOffsetY = if (hasAnimatedIn) sheetOffsetY.value else maxHeightPx
-
-        val headerDragModifier = Modifier.pointerInput(maxHeightPx) {
-            detectVerticalDragGestures(
-                onDragStart = {
-                    scope.launch { sheetOffsetY.stop() }
-                },
-                onVerticalDrag = { change, dragAmount ->
-                    change.consume()
-                    val nextOffset = (sheetOffsetY.value + dragAmount).coerceIn(0f, maxHeightPx)
-                    scope.launch { sheetOffsetY.snapTo(nextOffset) }
-                },
-                onDragEnd = {
-                    if (sheetOffsetY.value >= dismissThresholdPx) {
-                        dismissSheet()
-                    } else {
-                        restoreSheet()
-                    }
-                },
-                onDragCancel = {
-                    restoreSheet()
-                }
-            )
+        } else {
+            Modifier
         }
 
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.24f))
-                .clickable(onClick = { dismissSheet() })
+                .background(
+                    MaterialTheme.colorScheme.scrim.copy(
+                        alpha = 0.24f * (1f - progress.coerceIn(0f, 1f))
+                    )
+                )
+                .clickable(enabled = gesturesEnabled, onClick = onDismissRequest)
         )
 
         Surface(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(top = topInset + 8.dp)
-                .offset { IntOffset(0, visibleSheetOffsetY.roundToInt()) },
-            shape = androidx.compose.foundation.shape.RoundedCornerShape(
+                .offset {
+                    IntOffset(0, (progress.coerceIn(0f, 1f) * maxHeightPx).roundToInt())
+                },
+            shape = RoundedCornerShape(
                 topStart = 32.dp,
                 topEnd = 32.dp,
             ),
@@ -268,7 +515,7 @@ private fun QueueSheetOverlay(
                 tracks = tracks,
                 currentTrackId = currentTrackId,
                 currentQueueIndex = currentQueueIndex,
-                onBackClick = { dismissSheet() },
+                onBackClick = onDismissRequest,
                 onTrackClick = onTrackClick,
                 onMoveTrack = onMoveTrack,
                 onClearQueueClick = onClearQueueClick,
