@@ -26,14 +26,6 @@ sealed interface DailyPlaylistUiState {
     data class Available(val tracks: List<LibraryTrack>) : DailyPlaylistUiState
 }
 
-enum class Screen {
-    Home, Library, PlaylistDetails, LibraryCollectionDetails, Player, Queue, Settings, AiDebugSettings, Search
-}
-
-enum class PlayerPresentation {
-    Mini, Fullscreen
-}
-
 enum class PlaybackRepeatMode {
     Off, Queue, One
 }
@@ -47,11 +39,7 @@ data class PlaybackUiState(
     val queueVersion: Long = 0L,
     val isShuffleEnabled: Boolean = false,
     val repeatMode: PlaybackRepeatMode = PlaybackRepeatMode.Off,
-    val playerPresentation: PlayerPresentation = PlayerPresentation.Mini,
-    val isQueueSheetVisible: Boolean = false,
     val isCurrentTrackFavorite: Boolean = false,
-    val currentScreen: Screen = Screen.Home,
-    val canNavigateBack: Boolean = false,
 )
 
 data class LibraryUiState(
@@ -60,6 +48,7 @@ data class LibraryUiState(
     val selectedPlaylist: UserPlaylist? = null,
     val selectedPlaylistTracks: List<LibraryTrack> = emptyList(),
     val selectedLibraryCollection: LibraryCollectionDetailsUiModel? = null,
+    val activeDetailEntryId: Long? = null,
     val currentCategory: LibraryCategory = LibraryCategory.TRACKS,
     val recentlyPlayedTracks: List<LibraryTrack> = emptyList(),
     val homeGenreTitle: String = "",
@@ -104,134 +93,4 @@ data class SettingsUiState(
     val isAnyAiPlaylistApiKeyConfigured: Boolean = false,
     val aiPlaylistApiTestStatus: String? = null,
     val lastFmSettings: LastFmSettingsUiState = LastFmSettingsUiState(),
-)
-
-data class PlayerUiState(
-    val tracks: List<LibraryTrack> = emptyList(),
-    val playlists: List<UserPlaylist> = emptyList(),
-    val selectedPlaylist: UserPlaylist? = null,
-    val selectedPlaylistTracks: List<LibraryTrack> = emptyList(),
-    val selectedLibraryCollection: LibraryCollectionDetailsUiModel? = null,
-    val playbackQueue: List<LibraryTrack> = emptyList(),
-    val currentCategory: LibraryCategory = LibraryCategory.TRACKS,
-    val currentQueueIndex: Int = -1,
-    val recentlyPlayedTracks: List<LibraryTrack> = emptyList(),
-    val homeGenreTitle: String = "",
-    val homeGenreTracks: List<LibraryTrack> = emptyList(),
-    val queueVersion: Long = 0L,
-    val dailyPlaylistState: DailyPlaylistUiState = DailyPlaylistUiState.Loading,
-    val currentTrack: LibraryTrack? = null,
-    val isPlaying: Boolean = false,
-    val isLoading: Boolean = false,
-    val error: String? = null,
-    val playerPresentation: PlayerPresentation = PlayerPresentation.Mini,
-    val isQueueSheetVisible: Boolean = false,
-    val totalDurationMs: Long = 0L,
-    val currentScreen: Screen = Screen.Home,
-    val canNavigateBack: Boolean = false,
-    val librarySearch: LibrarySearchState = LibrarySearchState(),
-    val isBlurEnabled: Boolean = true,
-    val isForceNightMode: Boolean = false,
-    val aiDailyPlaylistFeature: PlatformFeatureStatus = PlatformFeatureStatus(enabled = false),
-    val dailyPlaylistGenerationMode: DailyPlaylistGenerationMode = DailyPlaylistGenerationMode.LOCAL_DAILY,
-    val aiPlaylistProviderId: String = AiPlaylistProviders.OpenAi.id,
-    val aiPlaylistModel: String = AiPlaylistProviders.OpenAi.defaultModelId,
-    val aiPlaylistPromptPresetId: String = AiPlaylistPromptPresets.DEFAULT_ID,
-    val aiPlaylistCustomSystemPrompt: String = "",
-    val isAiPlaylistApiKeyConfigured: Boolean = false,
-    val isAnyAiPlaylistApiKeyConfigured: Boolean = false,
-    val aiPlaylistApiTestStatus: String? = null,
-    val lastFmSettings: LastFmSettingsUiState = LastFmSettingsUiState(),
-    val isShuffleEnabled: Boolean = false,
-    val repeatMode: PlaybackRepeatMode = PlaybackRepeatMode.Off,
-    val librarySummary: LibrarySummary = LibrarySummary(),
-    val trackListItems: List<TrackListItem> = emptyList(),
-    val albumListItems: List<AlbumListItem> = emptyList(),
-    val artistListItems: List<ArtistListItem> = emptyList(),
-    val genreListItems: List<GenreListItem> = emptyList(),
-    val searchTrackListItems: List<TrackListItem> = emptyList(),
-    val playlistPickerTrackItems: List<TrackListItem> = emptyList(),
-    val trackSortOrder: TrackSortOrder = TrackSortOrder.TRACK_NAME,
-    val albumSortOrder: AlbumSortOrder = AlbumSortOrder.TITLE,
-    val hasMoreTracks: Boolean = true,
-    val hasMoreAlbums: Boolean = true,
-    val hasMoreArtists: Boolean = true,
-    val hasMoreGenres: Boolean = true,
-    val hasMoreSearchTracks: Boolean = false,
-    val hasMorePlaylistPickerTracks: Boolean = true,
-    val isTrackPageLoading: Boolean = false,
-    val isAlbumPageLoading: Boolean = false,
-    val isArtistPageLoading: Boolean = false,
-    val isGenrePageLoading: Boolean = false,
-    val isSearchPageLoading: Boolean = false,
-    val isPlaylistPickerPageLoading: Boolean = false,
-    val isCurrentTrackFavorite: Boolean = false,
-)
-
-fun PlayerUiState.toPlaybackUiState(): PlaybackUiState = PlaybackUiState(
-    currentTrack = currentTrack,
-    isPlaying = isPlaying,
-    totalDurationMs = totalDurationMs,
-    playbackQueue = playbackQueue,
-    currentQueueIndex = currentQueueIndex,
-    queueVersion = queueVersion,
-    isShuffleEnabled = isShuffleEnabled,
-    repeatMode = repeatMode,
-    playerPresentation = playerPresentation,
-    isQueueSheetVisible = isQueueSheetVisible,
-    isCurrentTrackFavorite = isCurrentTrackFavorite,
-    currentScreen = currentScreen,
-    canNavigateBack = canNavigateBack,
-)
-
-fun PlayerUiState.toLibraryUiState(): LibraryUiState = LibraryUiState(
-    tracks = tracks,
-    playlists = playlists,
-    selectedPlaylist = selectedPlaylist,
-    selectedPlaylistTracks = selectedPlaylistTracks,
-    selectedLibraryCollection = selectedLibraryCollection,
-    currentCategory = currentCategory,
-    recentlyPlayedTracks = recentlyPlayedTracks,
-    homeGenreTitle = homeGenreTitle,
-    homeGenreTracks = homeGenreTracks,
-    dailyPlaylistState = dailyPlaylistState,
-    isLoading = isLoading,
-    error = error,
-    librarySearch = librarySearch,
-    librarySummary = librarySummary,
-    trackListItems = trackListItems,
-    albumListItems = albumListItems,
-    artistListItems = artistListItems,
-    genreListItems = genreListItems,
-    searchTrackListItems = searchTrackListItems,
-    playlistPickerTrackItems = playlistPickerTrackItems,
-    trackSortOrder = trackSortOrder,
-    albumSortOrder = albumSortOrder,
-    hasMoreTracks = hasMoreTracks,
-    hasMoreAlbums = hasMoreAlbums,
-    hasMoreArtists = hasMoreArtists,
-    hasMoreGenres = hasMoreGenres,
-    hasMoreSearchTracks = hasMoreSearchTracks,
-    hasMorePlaylistPickerTracks = hasMorePlaylistPickerTracks,
-    isTrackPageLoading = isTrackPageLoading,
-    isAlbumPageLoading = isAlbumPageLoading,
-    isArtistPageLoading = isArtistPageLoading,
-    isGenrePageLoading = isGenrePageLoading,
-    isSearchPageLoading = isSearchPageLoading,
-    isPlaylistPickerPageLoading = isPlaylistPickerPageLoading,
-)
-
-fun PlayerUiState.toSettingsUiState(): SettingsUiState = SettingsUiState(
-    isBlurEnabled = isBlurEnabled,
-    isForceNightMode = isForceNightMode,
-    aiDailyPlaylistFeature = aiDailyPlaylistFeature,
-    dailyPlaylistGenerationMode = dailyPlaylistGenerationMode,
-    aiPlaylistProviderId = aiPlaylistProviderId,
-    aiPlaylistModel = aiPlaylistModel,
-    aiPlaylistPromptPresetId = aiPlaylistPromptPresetId,
-    aiPlaylistCustomSystemPrompt = aiPlaylistCustomSystemPrompt,
-    isAiPlaylistApiKeyConfigured = isAiPlaylistApiKeyConfigured,
-    isAnyAiPlaylistApiKeyConfigured = isAnyAiPlaylistApiKeyConfigured,
-    aiPlaylistApiTestStatus = aiPlaylistApiTestStatus,
-    lastFmSettings = lastFmSettings,
 )

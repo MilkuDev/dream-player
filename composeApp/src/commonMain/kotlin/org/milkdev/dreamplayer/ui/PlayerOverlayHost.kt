@@ -31,12 +31,13 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import org.milkdev.dreamplayer.library.LibraryTrack
 import org.milkdev.dreamplayer.playback.PlaybackUiState
-import org.milkdev.dreamplayer.playback.PlayerPresentation
 import kotlin.math.roundToInt
 
 @Composable
 fun PlayerOverlayHost(
     playbackState: PlaybackUiState,
+    isPlayerVisible: Boolean,
+    isQueueVisible: Boolean,
     onNavigateBack: () -> Unit,
     onOpenQueueSheet: () -> Unit,
     onPreviousClick: () -> Unit,
@@ -53,7 +54,7 @@ fun PlayerOverlayHost(
 ) {
     val currentTrack = playbackState.currentTrack
 
-    if (playbackState.playerPresentation != PlayerPresentation.Fullscreen || currentTrack == null) {
+    if (!isPlayerVisible || currentTrack == null) {
         return
     }
 
@@ -104,7 +105,7 @@ fun PlayerOverlayHost(
 
         val visiblePlayerOffsetY = if (hasAnimatedIn) playerOffsetY.value else maxHeightPx
 
-        val playerDragModifier = if (playbackState.isQueueSheetVisible) {
+        val playerDragModifier = if (isQueueVisible) {
             Modifier
         } else {
             Modifier.pointerInput(maxHeightPx) {
@@ -148,7 +149,7 @@ fun PlayerOverlayHost(
                 .offset { IntOffset(0, visiblePlayerOffsetY.roundToInt()) },
         )
 
-        if (playbackState.isQueueSheetVisible) {
+        if (isQueueVisible) {
             QueueSheetOverlay(
                 tracks = playbackState.playbackQueue,
                 currentTrackId = currentTrack.id,

@@ -23,9 +23,11 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -46,7 +48,9 @@ import org.milkdev.dreamplayer.generated.resources.skip_next
 import org.milkdev.dreamplayer.generated.resources.skip_previous
 import org.milkdev.dreamplayer.library.LibraryTrack
 import org.milkdev.dreamplayer.model.PlayerViewModel
-import org.milkdev.dreamplayer.playback.Screen
+import org.milkdev.dreamplayer.navigation.AppRoute
+import org.milkdev.dreamplayer.navigation.MainDestination
+import org.milkdev.dreamplayer.navigation.MainPage
 import org.milkdev.dreamplayer.ui.*
 
 private val playerViewModelInstance = PlayerViewModel()
@@ -60,6 +64,7 @@ fun App(
     val playbackState by playerViewModel.playbackState.collectAsState()
     val libraryState by playerViewModel.libraryState.collectAsState()
     val settingsState by playerViewModel.settingsState.collectAsState()
+    val navigationState by playerViewModel.navigationState.collectAsState()
 
     LaunchedEffect(isPermissionGranted) {
         if (isPermissionGranted) {
@@ -70,7 +75,7 @@ fun App(
     val hazeState = rememberHazeState()
 
     AppTheme(darkTheme = settingsState.isForceNightMode || androidx.compose.foundation.isSystemInDarkTheme()) {
-        PlatformBackHandler(enabled = playbackState.canNavigateBack) {
+        PlatformBackHandler(enabled = navigationState.canNavigateBack) {
             playerViewModel.navigateBack()
         }
 
@@ -84,7 +89,7 @@ fun App(
 
         val activeTopRadius = when {
             playbackState.currentTrack != null -> playerBarRadius
-            playbackState.currentScreen == Screen.Search -> searchBarRadius
+            navigationState.currentContentEntry.route == AppRoute.Search -> searchBarRadius
             else -> defaultDockRadius
         }
 
@@ -99,7 +104,10 @@ fun App(
         Box(modifier = Modifier.fillMaxSize()) {
             Scaffold(
             bottomBar = {
-                if (playbackState.currentScreen != Screen.Settings && playbackState.currentScreen != Screen.AiDebugSettings) {
+                if (
+                    navigationState.currentContentEntry.route != AppRoute.Settings &&
+                    navigationState.currentContentEntry.route != AppRoute.AiDebugSettings
+                ) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -137,11 +145,12 @@ fun App(
                         Spacer(modifier = Modifier.height(spacing.medium))
 
                         BottomDock(
-                            currentScreen = playbackState.currentScreen,
+                            activeMainDestination = navigationState.activeMainDestination,
                             librarySearch = libraryState.librarySearch,
-                            onNavigate = playerViewModel::navigateTo,
+                            onHomeClick = { playerViewModel.selectMainPage(MainPage.Home) },
+                            onLibraryClick = { playerViewModel.selectMainPage(MainPage.Library) },
                             onOpenSearch = playerViewModel::openLibrarySearch,
-                            onCloseSearch = { playerViewModel.navigateBack() },
+                            onCloseSearch = playerViewModel::closeLibrarySearch,
                             onSearchQueryChange = playerViewModel::updateLibrarySearchQuery,
                         )
                         Spacer(Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars))
@@ -156,46 +165,68 @@ fun App(
                     .background(MaterialTheme.colorScheme.background)
             ) {
                 val saveableStateHolder = rememberSaveableStateHolder()
+                val latestBackStack by rememberUpdatedState(navigationState.backStack)
                 AnimatedContent(
-                    targetState = playbackState.currentScreen,
+                    targetState = navigationState.currentContentEntry,
                     transitionSpec = {
                         fadeIn(animationSpec = tween(300)) togetherWith fadeOut(animationSpec = tween(300))
                     }
-                ) { targetScreen ->
-                    saveableStateHolder.SaveableStateProvider(targetScreen) {
-                        when (targetScreen) {
-                            Screen.Home -> HomeScreen(
+                ) { targetEntry ->
+                    DisposableEffect(targetEntry.entryId) {
+                        onDispose {
+                            val hasStablePresentationIdentity =
+                                targetEntry.route == AppRoute.Home || targetEntry.route == AppRoute.Library
+                            if (
+                                !hasStablePresentationIdentity &&
+                                latestBackStack.none { it.entryId == targetEntry.entryId }
+                            ) {
+                                saveableStateHolder.removeState(targetEntry.entryId)
+                            }
+                        }
+                    }
+                    saveableStateHolder.SaveableStateProvider(targetEntry.entryId) {
+                        when (targetEntry.route) {
+                            AppRoute.Home -> HomeScreen(
                                 libraryState = libraryState,
                                 onShuffleDailyPlaylistClick = playerViewModel::shuffleDailyPlaylist,
                                 onOpenDailyPlaylistClick = playerViewModel::openDailyPlaylist,
                                 contentPadding = paddingValues,
-                                onSettingsClick = { playerViewModel.navigateTo(Screen.Settings) },
+                                onSettingsClick = playerViewModel::openSettings,
                                 onTrackClick = playerViewModel::playFromVisibleTracks
                             )
-                            Screen.Library -> LibraryScreen(
+                            AppRoute.Library -> LibraryScreen(
                                 libraryState = libraryState,
                                 currentTrack = playbackState.currentTrack,
                                 onIntent = playerViewModel::onLibraryIntent,
+                                onSettingsClick = playerViewModel::openSettings,
                                 contentPadding = paddingValues,
                             )
-                            Screen.PlaylistDetails -> PlaylistDetailsScreen(
-                                libraryState = libraryState,
-                                currentTrackId = playbackState.currentTrack?.id,
-                                onBackClick = { playerViewModel.navigateBack() },
-                                onTrackClick = playerViewModel::playFromSelectedPlaylist,
-                                onSaveTracks = playerViewModel::savePlaylistTracks,
-                                onLoadNextPickerTracks = { playerViewModel.loadPlaylistPickerPage() },
-                                contentPadding = paddingValues,
-                            )
-                            Screen.LibraryCollectionDetails -> LibraryCollectionDetailsScreen(
-                                libraryState = libraryState,
-                                currentTrackId = playbackState.currentTrack?.id,
-                                onBackClick = { playerViewModel.navigateBack() },
-                                onTrackClick = playerViewModel::playFromSelectedLibraryCollection,
-                                onAlbumClick = playerViewModel::openAlbumDetails,
-                                contentPadding = paddingValues,
-                            )
-                            Screen.Settings -> SettingsScreen(
+                            is AppRoute.Playlist -> {
+                                if (libraryState.activeDetailEntryId == targetEntry.entryId) {
+                                    PlaylistDetailsScreen(
+                                        libraryState = libraryState,
+                                        currentTrackId = playbackState.currentTrack?.id,
+                                        onBackClick = { playerViewModel.navigateBack() },
+                                        onTrackClick = playerViewModel::playFromSelectedPlaylist,
+                                        onSaveTracks = playerViewModel::savePlaylistTracks,
+                                        onLoadNextPickerTracks = { playerViewModel.loadPlaylistPickerPage() },
+                                        contentPadding = paddingValues,
+                                    )
+                                }
+                            }
+                            is AppRoute.LibraryCollection -> {
+                                if (libraryState.activeDetailEntryId == targetEntry.entryId) {
+                                    LibraryCollectionDetailsScreen(
+                                        libraryState = libraryState,
+                                        currentTrackId = playbackState.currentTrack?.id,
+                                        onBackClick = { playerViewModel.navigateBack() },
+                                        onTrackClick = playerViewModel::playFromSelectedLibraryCollection,
+                                        onAlbumClick = playerViewModel::openAlbumDetails,
+                                        contentPadding = paddingValues,
+                                    )
+                                }
+                            }
+                            AppRoute.Settings -> SettingsScreen(
                                 settingsState = settingsState,
                                 onBackClick = { playerViewModel.navigateBack() },
                                 onBlurToggle = { playerViewModel.setBlurEnabled(it) },
@@ -207,7 +238,7 @@ fun App(
                                 onAiPlaylistCustomSystemPromptChange = { playerViewModel.setAiPlaylistCustomSystemPrompt(it) },
                                 onAiPlaylistApiKeySave = { playerViewModel.saveAiPlaylistApiKey(it) },
                                 onAiPlaylistApiKeyClear = { playerViewModel.clearAiPlaylistApiKey() },
-                                onOpenAiDebugSettings = { playerViewModel.navigateTo(Screen.AiDebugSettings) },
+                                onOpenAiDebugSettings = playerViewModel::openAiDebugSettings,
                                 onLastFmApiKeySave = { playerViewModel.saveLastFmApiKey(it) },
                                 onLastFmApiKeyClear = { playerViewModel.clearLastFmApiKey() },
                                 onLastFmApiTest = { playerViewModel.testLastFmApi() },
@@ -215,7 +246,7 @@ fun App(
                                 onMusicBrainzCoverSync = { playerViewModel.startMusicBrainzCoverSync() },
                                 contentPadding = paddingValues
                             )
-                            Screen.AiDebugSettings -> AiDebugSettingsScreen(
+                            AppRoute.AiDebugSettings -> AiDebugSettingsScreen(
                                 settingsState = settingsState,
                                 librarySummary = libraryState.librarySummary,
                                 onBackClick = { playerViewModel.navigateBack() },
@@ -233,7 +264,7 @@ fun App(
                                 onPromptSend = { playerViewModel.sendAiPrompt(it) },
                                 contentPadding = paddingValues
                             )
-                            Screen.Search -> LibrarySearchScreen(
+                            AppRoute.Search -> LibrarySearchScreen(
                                 libraryState = libraryState,
                                 currentTrackId = playbackState.currentTrack?.id,
                                 onTrackClick = playerViewModel::playFromVisibleTracks,
@@ -241,7 +272,8 @@ fun App(
                                 onLoadNextSearch = { playerViewModel.loadNextSearchPage() },
                                 contentPadding = paddingValues
                             )
-                            Screen.Player, Screen.Queue -> {}
+                            AppRoute.Player,
+                            AppRoute.Queue -> Unit
                         }
                     }
                 }
@@ -249,6 +281,9 @@ fun App(
         }
             PlayerOverlayHost(
                 playbackState = playbackState,
+                isPlayerVisible = navigationState.contains(AppRoute.Player) ||
+                    navigationState.contains(AppRoute.Queue),
+                isQueueVisible = navigationState.currentDestination == AppRoute.Queue,
                 onNavigateBack = { playerViewModel.navigateBack() },
                 onOpenQueueSheet = playerViewModel::openQueueSheet,
                 onPreviousClick = playerViewModel::playPrevious,
@@ -271,9 +306,10 @@ fun App(
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 private fun BottomDock(
-    currentScreen: Screen,
+    activeMainDestination: MainDestination,
     librarySearch: org.milkdev.dreamplayer.library.LibrarySearchState,
-    onNavigate: (Screen) -> Unit,
+    onHomeClick: () -> Unit,
+    onLibraryClick: () -> Unit,
     onOpenSearch: () -> Unit,
     onCloseSearch: () -> Unit,
     onSearchQueryChange: (String) -> Unit,
@@ -286,7 +322,7 @@ private fun BottomDock(
             .padding(horizontal = 16.dp)
             .padding(bottom = AppTheme.spacing.medium)
     ) {
-        val isSearchDockVisible = currentScreen == Screen.Search
+        val isSearchDockVisible = activeMainDestination == MainDestination.Search
         val searchBoundsState = rememberSharedContentState(key = "bottom_dock_search_bounds")
         val searchIconState = rememberSharedContentState(key = "bottom_dock_search_icon")
 
@@ -317,8 +353,9 @@ private fun BottomDock(
                 )
             } else {
                 NavigationDock(
-                    currentScreen = currentScreen,
-                    onNavigate = onNavigate,
+                    activeMainDestination = activeMainDestination,
+                    onHomeClick = onHomeClick,
+                    onLibraryClick = onLibraryClick,
                     onSearchClick = onOpenSearch,
                     searchButtonModifier = Modifier.sharedBounds(
                         sharedContentState = searchBoundsState,

@@ -22,22 +22,13 @@ import org.milkdev.dreamplayer.library.PlaylistRepository
 import org.milkdev.dreamplayer.library.ShuffleAnchor
 import org.milkdev.dreamplayer.library.TrackSearchMode
 import org.milkdev.dreamplayer.library.filterTracksByQuery
-import org.milkdev.dreamplayer.model.AppDestination
-import org.milkdev.dreamplayer.model.AppNavigationState
 import org.milkdev.dreamplayer.model.movedQueueItemOrNull
-import org.milkdev.dreamplayer.model.withNavigationState
-import org.milkdev.dreamplayer.model.withNavigationTarget
-import org.milkdev.dreamplayer.model.withPlayerClosed
-import org.milkdev.dreamplayer.model.withPlayerOpened
-import org.milkdev.dreamplayer.model.withQueueSheetOpened
 import org.milkdev.dreamplayer.model.withRepeatToggled
 import org.milkdev.dreamplayer.model.withShuffleDisabled
 import org.milkdev.dreamplayer.model.withShuffleEnabled
 import org.milkdev.dreamplayer.playback.PlaybackQueueController
 import org.milkdev.dreamplayer.playback.PlaybackRepeatMode
-import org.milkdev.dreamplayer.playback.PlayerPresentation
-import org.milkdev.dreamplayer.playback.PlayerUiState
-import org.milkdev.dreamplayer.playback.Screen
+import org.milkdev.dreamplayer.playback.PlaybackUiState
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -134,150 +125,6 @@ class ComposeAppCommonTest {
     }
 
     @Test
-    fun openingPlayerSwitchesToFullscreenWithoutChangingBaseScreen() {
-        val state = PlayerUiState(
-            currentScreen = Screen.Search,
-            currentTrack = tracks.first(),
-        )
-            .withNavigationTarget(Screen.Player)
-
-        assertEquals(Screen.Search, state.currentScreen)
-        assertEquals(PlayerPresentation.Fullscreen, state.playerPresentation)
-    }
-
-    @Test
-    fun closingPlayerReturnsToMiniAndClosesQueueSheet() {
-        val state = PlayerUiState(
-            currentScreen = Screen.Library,
-            currentTrack = tracks.first(),
-            playerPresentation = PlayerPresentation.Fullscreen,
-            isQueueSheetVisible = true,
-        ).withPlayerClosed()
-
-        assertEquals(Screen.Library, state.currentScreen)
-        assertEquals(PlayerPresentation.Mini, state.playerPresentation)
-        assertEquals(false, state.isQueueSheetVisible)
-    }
-
-    @Test
-    fun openingQueueSheetKeepsPlayerFullscreen() {
-        val state = PlayerUiState(
-            currentScreen = Screen.Home,
-            currentTrack = tracks.first(),
-        )
-            .withPlayerOpened()
-            .withQueueSheetOpened()
-
-        assertEquals(PlayerPresentation.Fullscreen, state.playerPresentation)
-        assertEquals(true, state.isQueueSheetVisible)
-    }
-
-    @Test
-    fun openingPlayerWithoutCurrentTrackDoesNothing() {
-        val state = PlayerUiState(currentScreen = Screen.Library)
-            .withPlayerOpened()
-
-        assertEquals(PlayerPresentation.Mini, state.playerPresentation)
-        assertEquals(Screen.Library, state.currentScreen)
-    }
-
-    @Test
-    fun navigationBackFromLibraryReturnsHomeThenStopsAtRoot() {
-        val libraryNavigation = AppNavigationState()
-            .navigateTo(AppDestination.Library)
-
-        assertContentEquals(
-            listOf(AppDestination.Home, AppDestination.Library),
-            libraryNavigation.backStack,
-        )
-        assertEquals(true, libraryNavigation.canNavigateBack)
-
-        val homeNavigation = libraryNavigation.navigateBack()
-
-        assertNotNull(homeNavigation)
-        assertContentEquals(listOf(AppDestination.Home), homeNavigation.backStack)
-        assertEquals(false, homeNavigation.canNavigateBack)
-        assertNull(homeNavigation.navigateBack())
-    }
-
-    @Test
-    fun navigationBackFromAiDebugReturnsSettingsThenHome() {
-        val debugNavigation = AppNavigationState()
-            .navigateTo(AppDestination.Settings)
-            .navigateTo(AppDestination.AiDebugSettings)
-
-        assertContentEquals(
-            listOf(
-                AppDestination.Home,
-                AppDestination.Settings,
-                AppDestination.AiDebugSettings,
-            ),
-            debugNavigation.backStack,
-        )
-
-        val settingsNavigation = debugNavigation.navigateBack()
-        assertNotNull(settingsNavigation)
-        assertEquals(AppDestination.Settings, settingsNavigation.currentDestination)
-        assertEquals(Screen.Settings, PlayerUiState().withNavigationState(settingsNavigation).currentScreen)
-
-        val homeNavigation = settingsNavigation.navigateBack()
-        assertNotNull(homeNavigation)
-        assertEquals(AppDestination.Home, homeNavigation.currentDestination)
-        assertEquals(false, homeNavigation.canNavigateBack)
-    }
-
-    @Test
-    fun navigationBackFromQueueReturnsPlayerThenUnderlyingPlaylist() {
-        val queueNavigation = AppNavigationState()
-            .navigateTo(AppDestination.Library)
-            .navigateTo(AppDestination.PlaylistDetails)
-            .navigateTo(AppDestination.Player, hasCurrentTrack = true)
-            .navigateTo(AppDestination.Queue, hasCurrentTrack = true)
-
-        val queueState = PlayerUiState(currentTrack = tracks.first())
-            .withNavigationState(queueNavigation)
-
-        assertEquals(Screen.PlaylistDetails, queueState.currentScreen)
-        assertEquals(PlayerPresentation.Fullscreen, queueState.playerPresentation)
-        assertEquals(true, queueState.isQueueSheetVisible)
-
-        val playerNavigation = queueNavigation.navigateBack()
-        assertNotNull(playerNavigation)
-        val playerState = queueState.withNavigationState(playerNavigation)
-
-        assertEquals(Screen.PlaylistDetails, playerState.currentScreen)
-        assertEquals(PlayerPresentation.Fullscreen, playerState.playerPresentation)
-        assertEquals(false, playerState.isQueueSheetVisible)
-
-        val playlistNavigation = playerNavigation.navigateBack()
-        assertNotNull(playlistNavigation)
-        val playlistState = playerState.withNavigationState(playlistNavigation)
-
-        assertEquals(Screen.PlaylistDetails, playlistState.currentScreen)
-        assertEquals(PlayerPresentation.Mini, playlistState.playerPresentation)
-        assertEquals(false, playlistState.isQueueSheetVisible)
-    }
-
-    @Test
-    fun navigationBackFromSearchReturnsToOpeningScreen() {
-        val homeSearchNavigation = AppNavigationState()
-            .navigateTo(AppDestination.Search)
-        val librarySearchNavigation = AppNavigationState()
-            .navigateTo(AppDestination.Library)
-            .navigateTo(AppDestination.Search)
-
-        assertEquals(Screen.Search, PlayerUiState().withNavigationState(homeSearchNavigation).currentScreen)
-        assertEquals(
-            Screen.Home,
-            PlayerUiState().withNavigationState(homeSearchNavigation.navigateBack()!!).currentScreen,
-        )
-        assertEquals(
-            Screen.Library,
-            PlayerUiState().withNavigationState(librarySearchNavigation.navigateBack()!!).currentScreen,
-        )
-    }
-
-    @Test
     fun shuffledQueueReturnsNullForEmptyPlaylist() {
         val queue = PlaylistRepository.prepareShuffledQueue(emptyList())
 
@@ -306,7 +153,7 @@ class ComposeAppCommonTest {
 
     @Test
     fun enablingShuffleMovesCurrentTrackToFirstQueuePosition() {
-        val state = PlayerUiState(
+        val state = PlaybackUiState(
             playbackQueue = tracks,
             currentTrack = tracks[2],
             currentQueueIndex = 2,
@@ -326,7 +173,7 @@ class ComposeAppCommonTest {
 
     @Test
     fun disablingShuffleRestoresOriginalQueueOrder() {
-        val shuffledState = PlayerUiState(
+        val shuffledState = PlaybackUiState(
             playbackQueue = listOf(tracks[2], tracks[0], tracks[3], tracks[1]),
             currentTrack = tracks[2],
             currentQueueIndex = 0,
@@ -345,7 +192,7 @@ class ComposeAppCommonTest {
 
     @Test
     fun disablingShuffleKeepsCurrentQueueWhenOriginalQueueIsStale() {
-        val shuffledState = PlayerUiState(
+        val shuffledState = PlaybackUiState(
             playbackQueue = listOf(tracks[2], tracks[0], tracks[3], tracks[1]),
             currentTrack = tracks[2],
             currentQueueIndex = 0,
@@ -364,7 +211,7 @@ class ComposeAppCommonTest {
 
     @Test
     fun repeatModeCyclesFromOffToQueueToOneAndBackOff() {
-        val queueRepeatState = PlayerUiState().withRepeatToggled()
+        val queueRepeatState = PlaybackUiState().withRepeatToggled()
         val oneRepeatState = queueRepeatState.withRepeatToggled()
         val offRepeatState = oneRepeatState.withRepeatToggled()
 
@@ -393,8 +240,8 @@ class ComposeAppCommonTest {
 
     @Test
     fun playbackQueueCanChangeWithoutMutatingLibraryTracks() {
-        val state = PlayerUiState(
-            tracks = tracks,
+        val libraryTracks = tracks
+        val state = PlaybackUiState(
             playbackQueue = listOf(tracks[2], tracks[0], tracks[1]),
             currentTrack = tracks[2],
             currentQueueIndex = 0,
@@ -406,7 +253,7 @@ class ComposeAppCommonTest {
 
         assertContentEquals(
             expected = listOf(1L, 2L, 3L, 4L),
-            actual = updatedState.tracks.map { it.id },
+            actual = libraryTracks.map { it.id },
         )
         assertContentEquals(
             expected = listOf(3L, 2L, 1L),

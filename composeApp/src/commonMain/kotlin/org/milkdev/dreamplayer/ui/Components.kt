@@ -93,14 +93,15 @@ import org.milkdev.dreamplayer.generated.resources.star
 import org.milkdev.dreamplayer.library.LibraryTrack
 import org.milkdev.dreamplayer.model.LibraryCategory
 import org.milkdev.dreamplayer.model.LibrarySortOrder
-import org.milkdev.dreamplayer.playback.Screen
+import org.milkdev.dreamplayer.navigation.MainDestination
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 
 @Composable
 fun NavigationDock(
-    currentScreen: Screen,
-    onNavigate: (Screen) -> Unit,
+    activeMainDestination: MainDestination,
+    onHomeClick: () -> Unit,
+    onLibraryClick: () -> Unit,
     onSearchClick: () -> Unit,
     modifier: Modifier = Modifier,
     searchButtonModifier: Modifier = Modifier,
@@ -110,10 +111,6 @@ fun NavigationDock(
     val dockBackgroundColor = MaterialTheme.colorScheme.secondaryContainer
 
     LookaheadScope {
-        val isLibrarySelected = currentScreen == Screen.Library ||
-            currentScreen == Screen.PlaylistDetails ||
-            currentScreen == Screen.LibraryCollectionDetails
-
         Row(
             modifier = modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.Center,
@@ -129,20 +126,20 @@ fun NavigationDock(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 DockButton(
-                    selected = currentScreen == Screen.Home,
+                    selected = activeMainDestination == MainDestination.Home,
                     icon = Res.drawable.star,
                     label = "Главная",
                     contentDescription = "Главная",
-                    onClick = { onNavigate(Screen.Home) },
+                    onClick = onHomeClick,
                     modifier = Modifier.animateBounds(this@LookaheadScope),
                 )
 
                 DockButton(
-                    selected = isLibrarySelected,
+                    selected = activeMainDestination == MainDestination.Library,
                     icon = Res.drawable.music_note,
                     label = "Библиотека",
                     contentDescription = "Библиотека",
-                    onClick = { onNavigate(Screen.Library) },
+                    onClick = onLibraryClick,
                     modifier = Modifier.animateBounds(this@LookaheadScope),
                 )
             }

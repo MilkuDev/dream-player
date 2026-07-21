@@ -28,6 +28,7 @@ import org.milkdev.dreamplayer.generated.resources.Res
 import org.milkdev.dreamplayer.generated.resources.artist
 import org.milkdev.dreamplayer.generated.resources.playlist_add
 import org.milkdev.dreamplayer.generated.resources.playlist_play_24dp
+import org.milkdev.dreamplayer.generated.resources.settings
 import org.milkdev.dreamplayer.library.*
 import org.milkdev.dreamplayer.model.*
 import org.milkdev.dreamplayer.playback.LibraryUiState
@@ -48,6 +49,7 @@ fun LibraryScreen(
     libraryState: LibraryUiState,
     currentTrack: LibraryTrack?,
     onIntent: (LibraryIntent) -> Unit,
+    onSettingsClick: () -> Unit,
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues.Zero,
 ) {
@@ -73,11 +75,32 @@ fun LibraryScreen(
                     .fillMaxSize()
                     .statusBarsPadding()
             ) {
-                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 24.dp)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 24.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     Text(
                         text = "Библиотека",
                         style = AppTheme.typography.snPro.headlineLarge,
+                        modifier = Modifier.weight(1f),
                     )
+                    Box(
+                        modifier = Modifier
+                            .size(46.dp)
+                            .clip(M3ECookie6SidedShape)
+                            .background(MaterialTheme.colorScheme.primary)
+                            .clickable(onClick = onSettingsClick),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            painter = painterResource(Res.drawable.settings),
+                            contentDescription = "Настройки",
+                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.size(24.dp),
+                        )
+                    }
                 }
 
                 LibraryCategoryRow(

@@ -1,6 +1,7 @@
 package org.milkdev.dreamplayer.model
 
 import org.milkdev.dreamplayer.library.AlbumListItem
+import org.milkdev.dreamplayer.library.LibraryCollectionType
 import org.milkdev.dreamplayer.library.LibraryTrack
 
 enum class LibraryCategory(val label: String) {
@@ -8,12 +9,6 @@ enum class LibraryCategory(val label: String) {
     ALBUMS("Альбомы"),
     ARTISTS("Исполнители"),
     PLAYLISTS("Плейлисты")
-}
-
-enum class LibraryCollectionType {
-    ALBUM,
-    ARTIST,
-    GENRE,
 }
 
 data class LibraryCollectionDetailsUiModel(
