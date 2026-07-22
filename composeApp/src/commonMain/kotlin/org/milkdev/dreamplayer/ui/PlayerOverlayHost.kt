@@ -33,6 +33,8 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import org.milkdev.dreamplayer.diagnostics.AppDebugLog
+import org.milkdev.dreamplayer.app.AppBackGesture
+import org.milkdev.dreamplayer.app.AppBackSurface
 import org.milkdev.dreamplayer.library.LibraryTrack
 import org.milkdev.dreamplayer.playback.PlaybackUiState
 import kotlin.math.roundToInt
@@ -56,7 +58,7 @@ private data class OverlayBackSession(
 )
 
 @Composable
-fun PlayerOverlayHost(
+internal fun PlayerOverlayHost(
     playbackState: PlaybackUiState,
     topEntryId: Long,
     isPlayerVisible: Boolean,
@@ -73,6 +75,7 @@ fun PlayerOverlayHost(
     onQueueTrackClick: (Int) -> Unit,
     onMoveTrack: (Int, Int) -> Unit,
     onClearQueueClick: () -> Unit,
+    backDispatcher: PlaybackOverlayBackDispatcher,
     modifier: Modifier = Modifier,
 ) {
     var retainedPlaybackState by remember { mutableStateOf<PlaybackUiState?>(null) }
@@ -256,68 +259,67 @@ fun PlayerOverlayHost(
             }
         }
 
-        PlatformBackHandler(
-            enabled = (isPlayerVisible || isQueueVisible) &&
-                (
-                    overlayBackSession?.phase == OverlayBackPhase.Tracking ||
-                        (overlayBackSession == null && !backTransitionInProgress)
-                    ),
-            onBackStarted = {
-                if (backTransitionInProgress || overlayBackSession != null) {
-                    return@PlatformBackHandler
-                }
-                val session = OverlayBackSession(
-                    expectedTopEntryId = latestTopEntryId,
-                    overlay = if (latestQueueVisible) PlaybackOverlay.Queue else PlaybackOverlay.Player,
-                )
-                overlayBackSession = session
-                AppDebugLog.log(
-                    "predictive_back_start surface=${session.overlay.name.lowercase()} " +
-                        "entryId=${session.expectedTopEntryId}",
-                )
-            },
-            onBackProgressed = { event ->
-                val session = overlayBackSession ?: return@PlatformBackHandler
-                val routeStillMatches = when (session.overlay) {
-                    PlaybackOverlay.Player -> latestPlayerVisible && !latestQueueVisible
-                    PlaybackOverlay.Queue -> latestQueueVisible
-                }
-                if (!routeStillMatches || latestTopEntryId != session.expectedTopEntryId) {
-                    return@PlatformBackHandler
-                }
-                if (session.phase == OverlayBackPhase.Tracking) {
-                    overlayBackSession = session.copy(
-                        progress = event.progress.coerceIn(0f, 1f),
+        SideEffect {
+            backDispatcher.bind(
+                onStarted = onStarted@{ gesture ->
+                    val overlay = when (gesture.surface) {
+                        AppBackSurface.Player -> PlaybackOverlay.Player
+                        AppBackSurface.Queue -> PlaybackOverlay.Queue
+                        AppBackSurface.Content -> return@onStarted false
+                    }
+                    if (
+                        backTransitionInProgress ||
+                        overlayBackSession != null
+                    ) {
+                        return@onStarted false
+                    }
+
+                    val session = OverlayBackSession(
+                        expectedTopEntryId = gesture.expectedTopEntryId,
+                        overlay = overlay,
                     )
-                }
-            },
-            onBackCancelled = {
-                val session = overlayBackSession ?: return@PlatformBackHandler
-                if (session.phase == OverlayBackPhase.Tracking) {
-                    overlayBackSession = session.copy(phase = OverlayBackPhase.Cancelling)
+                    overlayBackSession = session
                     AppDebugLog.log(
-                        "predictive_back_cancel surface=${session.overlay.name.lowercase()} " +
+                        "predictive_back_start surface=${session.overlay.name.lowercase()} " +
                             "entryId=${session.expectedTopEntryId}",
                     )
-                }
-            },
-            onBackCommitted = { hadProgress ->
-                val session = overlayBackSession ?: OverlayBackSession(
-                    expectedTopEntryId = latestTopEntryId,
-                    overlay = if (latestQueueVisible) PlaybackOverlay.Queue else PlaybackOverlay.Player,
-                )
-                AppDebugLog.log(
-                    "predictive_back_commit surface=${session.overlay.name.lowercase()} " +
-                        "entryId=${session.expectedTopEntryId}",
-                )
-                if (hadProgress) {
-                    overlayBackSession = session.copy(phase = OverlayBackPhase.Committing)
-                } else {
-                    overlayBackSession = null
-                    scope.launch { finishOverlayBack(session) }
-                }
-            },
-        )
+                    true
+                },
+                onProgressed = { event ->
+                    val session = overlayBackSession
+                    if (session?.phase == OverlayBackPhase.Tracking) {
+                        overlayBackSession = session.copy(
+                            progress = event.progress.coerceIn(0f, 1f),
+                        )
+                    }
+                },
+                onCancelled = {
+                    val session = overlayBackSession
+                    if (session?.phase == OverlayBackPhase.Tracking) {
+                        overlayBackSession = session.copy(phase = OverlayBackPhase.Cancelling)
+                        AppDebugLog.log(
+                            "predictive_back_cancel surface=${session.overlay.name.lowercase()} " +
+                                "entryId=${session.expectedTopEntryId}",
+                        )
+                    }
+                },
+                onCommitted = { hadProgress ->
+                    val session = overlayBackSession
+                    if (session?.phase == OverlayBackPhase.Tracking) {
+                        AppDebugLog.log(
+                            "predictive_back_commit surface=${session.overlay.name.lowercase()} " +
+                                "entryId=${session.expectedTopEntryId}",
+                        )
+                        if (hadProgress) {
+                            overlayBackSession = session.copy(phase = OverlayBackPhase.Committing)
+                        } else {
+                            overlayBackSession = null
+                            scope.launch { finishOverlayBack(session) }
+                        }
+                    }
+                },
+            )
+        }
 
         LaunchedEffect(isPlayerVisible, renderedPlaybackState?.currentTrack?.id) {
             if (isPlayerVisible && renderedPlaybackState?.currentTrack != null) {

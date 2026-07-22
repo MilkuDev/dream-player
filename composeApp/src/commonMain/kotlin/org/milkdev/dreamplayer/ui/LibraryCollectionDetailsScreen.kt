@@ -47,21 +47,21 @@ import org.milkdev.dreamplayer.generated.resources.artist
 import org.milkdev.dreamplayer.library.AlbumListItem
 import org.milkdev.dreamplayer.library.LibraryTrack
 import org.milkdev.dreamplayer.library.LibraryCollectionType
-import org.milkdev.dreamplayer.playback.LibraryUiState
+import org.milkdev.dreamplayer.model.LibraryCollectionDetailUiState
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LibraryCollectionDetailsScreen(
     modifier: Modifier = Modifier,
-    libraryState: LibraryUiState,
+    detailState: LibraryCollectionDetailUiState,
     onBackClick: () -> Unit,
     onTrackClick: (LibraryTrack) -> Unit,
     onAlbumClick: (AlbumListItem) -> Unit = {},
     contentPadding: PaddingValues = PaddingValues.Zero,
     currentTrackId: Long? = null,
 ) {
-    val collection = libraryState.selectedLibraryCollection
-    var selectedGenreTab by remember(collection?.title) { mutableStateOf(0) }
+    val collection = detailState.collection
+    var selectedGenreTab by remember(collection.title) { mutableStateOf(0) }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -71,13 +71,13 @@ fun LibraryCollectionDetailsScreen(
                 title = {
                     Column {
                         Text(
-                            text = collection?.title ?: "Коллекция",
+                            text = collection.title,
                             style = AppTheme.typography.snPro.headlineMedium,
                             fontWeight = FontWeight.ExtraBold,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
-                        collection?.subtitle?.let { subtitle ->
+                        collection.subtitle.takeIf { it.isNotEmpty() }?.let { subtitle ->
                             Text(
                                 text = subtitle,
                                 style = AppTheme.typography.snPro.bodyMedium,
@@ -103,9 +103,9 @@ fun LibraryCollectionDetailsScreen(
             )
         },
     ) { innerPadding ->
-        val isGenre = collection?.type == LibraryCollectionType.GENRE
-        val tracks = collection?.tracks.orEmpty()
-        val albums = collection?.albums.orEmpty()
+        val isGenre = collection.type == LibraryCollectionType.GENRE
+        val tracks = collection.tracks
+        val albums = collection.albums
         val isEmpty = if (isGenre && selectedGenreTab == 0) albums.isEmpty() else tracks.isEmpty()
 
         if (isEmpty && !isGenre) {
@@ -184,11 +184,10 @@ fun LibraryCollectionDetailsScreen(
                                 LibraryCollectionTrackItem(
                                     track = track,
                                     selected = track.id == currentTrackId,
-                                    fallbackIcon = when (collection?.type) {
+                                    fallbackIcon = when (collection.type) {
                                         LibraryCollectionType.ARTIST -> Res.drawable.artist
                                         LibraryCollectionType.ALBUM,
-                                        LibraryCollectionType.GENRE,
-                                        null -> Res.drawable.album
+                                        LibraryCollectionType.GENRE -> Res.drawable.album
                                     },
                                     onClick = { onTrackClick(track) },
                                 )

@@ -14,8 +14,6 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import org.milkdev.dreamplayer.navigation.AppRoute
-import org.milkdev.dreamplayer.navigation.MainDestination
-import org.milkdev.dreamplayer.navigation.NavigationEntry
 
 internal enum class BackSwipeEdge {
     Left,
@@ -28,36 +26,6 @@ internal data class PlatformBackEvent(
     val swipeEdge: BackSwipeEdge,
 )
 
-internal data class ContentNavigationSnapshot(
-    val currentEntry: NavigationEntry,
-    val contentStack: List<NavigationEntry>,
-) {
-    val activeMainDestination: MainDestination
-        get() = contentStack.asReversed().firstNotNullOfOrNull { entry ->
-            when (entry.route) {
-                AppRoute.Home -> MainDestination.Home
-                AppRoute.Library -> MainDestination.Library
-                AppRoute.Search -> MainDestination.Search
-                else -> null
-            }
-        } ?: MainDestination.Home
-}
-
-internal data class ContentBackSession(
-    val originTopEntryId: Long,
-    val origin: ContentNavigationSnapshot,
-    val preview: ContentNavigationSnapshot,
-    val phase: ContentBackPhase = ContentBackPhase.Tracking,
-    val progress: Float = 0f,
-    val swipeEdge: BackSwipeEdge = BackSwipeEdge.None,
-)
-
-internal enum class ContentBackPhase {
-    Tracking,
-    Cancelling,
-    Committing,
-}
-
 internal enum class NavigationMotionKind {
     None,
     Forward,
@@ -65,21 +33,9 @@ internal enum class NavigationMotionKind {
     FadeThrough,
 }
 
-internal fun contentNavigationSnapshot(
-    backStack: List<NavigationEntry>,
-): ContentNavigationSnapshot {
-    val contentStack = backStack.takeWhile { entry ->
-        entry.route != AppRoute.Player && entry.route != AppRoute.Queue
-    }
-    return ContentNavigationSnapshot(
-        currentEntry = contentStack.last(),
-        contentStack = contentStack,
-    )
-}
-
 internal fun resolveNavigationMotion(
-    initial: ContentNavigationSnapshot,
-    target: ContentNavigationSnapshot,
+    initial: ContentSceneSnapshot,
+    target: ContentSceneSnapshot,
 ): NavigationMotionKind {
     if (initial.currentEntry.entryId == target.currentEntry.entryId) {
         return NavigationMotionKind.None
@@ -111,8 +67,8 @@ internal fun resolveNavigationMotion(
 }
 
 internal fun navigationContentTransform(
-    initial: ContentNavigationSnapshot,
-    target: ContentNavigationSnapshot,
+    initial: ContentSceneSnapshot,
+    target: ContentSceneSnapshot,
 ): ContentTransform {
     val motionKind = resolveNavigationMotion(initial, target)
     val transform = when (motionKind) {

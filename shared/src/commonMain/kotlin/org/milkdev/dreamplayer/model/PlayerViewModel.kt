@@ -89,6 +89,10 @@ class PlayerViewModel {
     private val _libraryState = MutableStateFlow(LibraryUiState())
     val libraryState: StateFlow<LibraryUiState> = _libraryState.asStateFlow()
 
+    private val _detailPresentationState = MutableStateFlow(DetailPresentationState())
+    val detailPresentationState: StateFlow<DetailPresentationState> =
+        _detailPresentationState.asStateFlow()
+
     private val _settingsState = MutableStateFlow(SettingsUiState())
     val settingsState: StateFlow<SettingsUiState> = _settingsState.asStateFlow()
 
@@ -149,26 +153,37 @@ class PlayerViewModel {
                         } else {
                             DailyPlaylistUiState.Available(tracks)
                         },
-                        selectedPlaylistTracks = if (currentState.selectedPlaylist?.id == SystemPlaylists.DailyPlaylist.id) {
-                            tracks
-                        } else {
-                            currentState.selectedPlaylistTracks
-                        },
                     )
+                }
+                _detailPresentationState.update { currentState ->
+                    currentState.mapEntries { entry ->
+                        if (
+                            entry is PlaylistDetailUiState &&
+                            entry.playlist.id == SystemPlaylists.DailyPlaylist.id
+                        ) {
+                            entry.copy(tracks = tracks, isLoading = false)
+                        } else {
+                            entry
+                        }
+                    }
                 }
             }
         }
 
         storeScope.launch {
             PlaylistRepository.visiblePlaylists.collect { playlists ->
-                _libraryState.update { currentState ->
-                    val selectedPlaylist = currentState.selectedPlaylist?.let { selected ->
-                        playlists.firstOrNull { it.id == selected.id } ?: selected
+                _libraryState.update { currentState -> currentState.copy(playlists = playlists) }
+                _detailPresentationState.update { currentState ->
+                    currentState.mapEntries { entry ->
+                        if (entry is PlaylistDetailUiState) {
+                            entry.copy(
+                                playlist = playlists.firstOrNull { it.id == entry.playlist.id }
+                                    ?: entry.playlist,
+                            )
+                        } else {
+                            entry
+                        }
                     }
-                    currentState.copy(
-                        playlists = playlists,
-                        selectedPlaylist = selectedPlaylist,
-                    )
                 }
             }
         }
@@ -619,6 +634,12 @@ class PlayerViewModel {
         return true
     }
 
+    fun retainDetailPresentations(retainedEntryIds: Set<Long>) {
+        _detailPresentationState.update { currentState ->
+            currentState.retainEntries(retainedEntryIds)
+        }
+    }
+
     fun openPlayer() {
         AppDebugLog.log("open_player tracks=${_libraryState.value.librarySummary.trackCount}")
         if (_playbackState.value.currentTrack == null) return
@@ -857,12 +878,17 @@ class PlayerViewModel {
         }
     }
 
-    fun playFromSelectedPlaylist(track: LibraryTrack) {
-        playFromVisibleTracks(_libraryState.value.selectedPlaylistTracks, track)
+    fun playFromPlaylistEntry(entryId: Long, track: LibraryTrack) {
+        val detail = _detailPresentationState.value.entry(entryId) as? PlaylistDetailUiState
+            ?: return
+        playFromVisibleTracks(detail.tracks, track)
     }
 
-    fun playFromSelectedLibraryCollection(track: LibraryTrack) {
-        playFromVisibleTracks(_libraryState.value.selectedLibraryCollection?.tracks.orEmpty(), track)
+    fun playFromLibraryCollectionEntry(entryId: Long, track: LibraryTrack) {
+        val detail = _detailPresentationState.value.entry(entryId)
+            as? LibraryCollectionDetailUiState
+            ?: return
+        playFromVisibleTracks(detail.collection.tracks, track)
     }
 
     fun playQueueItem(index: Int) {
@@ -1366,48 +1392,41 @@ class PlayerViewModel {
         entryId: Long,
         descriptor: DetailEntryDescriptor,
     ) {
-        _libraryState.update { currentState ->
-            when (descriptor) {
-                is PlaylistDetailDescriptor -> currentState.copy(
-                    selectedPlaylist = descriptor.playlist,
-                    selectedPlaylistTracks = if (
+        _detailPresentationState.update { currentState ->
+            val initialState = when (descriptor) {
+                is PlaylistDetailDescriptor -> PlaylistDetailUiState(
+                    playlist = descriptor.playlist,
+                    tracks = if (
                         descriptor.playlist.id == SystemPlaylists.DailyPlaylist.id
                     ) {
-                        (currentState.dailyPlaylistState as? DailyPlaylistUiState.Available)
+                        (_libraryState.value.dailyPlaylistState as? DailyPlaylistUiState.Available)
                             ?.tracks
                             .orEmpty()
                     } else {
                         emptyList()
                     },
-                    selectedLibraryCollection = null,
-                    activeDetailEntryId = entryId,
+                    isLoading = descriptor.playlist.id != SystemPlaylists.DailyPlaylist.id,
                 )
 
-                is LibraryCollectionDetailDescriptor -> currentState.copy(
-                    selectedPlaylist = null,
-                    selectedPlaylistTracks = emptyList(),
-                    selectedLibraryCollection = LibraryCollectionDetailsUiModel(
+                is LibraryCollectionDetailDescriptor -> LibraryCollectionDetailUiState(
+                    collection = LibraryCollectionDetailsUiModel(
                         type = descriptor.type,
                         title = descriptor.title,
                         subtitle = descriptor.subtitle,
                         artworkUri = descriptor.artworkUri,
                         tracks = emptyList(),
                     ),
-                    activeDetailEntryId = entryId,
                 )
             }
+            currentState.activate(
+                entryId = entryId,
+                initialState = initialState,
+            )
         }
     }
 
     private fun clearActiveDetailUi() {
-        _libraryState.update { currentState ->
-            currentState.copy(
-                selectedPlaylist = null,
-                selectedPlaylistTracks = emptyList(),
-                selectedLibraryCollection = null,
-                activeDetailEntryId = null,
-            )
-        }
+        _detailPresentationState.update(DetailPresentationState::deactivate)
     }
 
     private fun startDetailObservation(
@@ -1418,8 +1437,13 @@ class PlayerViewModel {
             when (descriptor) {
                 is PlaylistDetailDescriptor -> {
                     PlaylistRepository.tracksForPlaylist(descriptor.playlist.id).collect { tracks ->
-                        updateActiveDetail(entryId) { currentState ->
-                            currentState.copy(selectedPlaylistTracks = tracks)
+                        updateActiveDetail(entryId) { currentEntry ->
+                            val playlist = currentEntry as? PlaylistDetailUiState
+                                ?: return@updateActiveDetail currentEntry
+                            playlist.copy(
+                                tracks = tracks,
+                                isLoading = false,
+                            )
                         }
                     }
                 }
@@ -1428,10 +1452,12 @@ class PlayerViewModel {
                     when (descriptor.type) {
                         LibraryCollectionType.ALBUM -> {
                             MusicLibrarySource.getTracksByAlbum(descriptor.collectionId).collect { tracks ->
-                                updateActiveDetail(entryId) { currentState ->
-                                    currentState.copy(
-                                        selectedLibraryCollection = currentState.selectedLibraryCollection
-                                            ?.copy(tracks = tracks),
+                                updateActiveDetail(entryId) { currentEntry ->
+                                    val collection = currentEntry as? LibraryCollectionDetailUiState
+                                        ?: return@updateActiveDetail currentEntry
+                                    collection.copy(
+                                        collection = collection.collection.copy(tracks = tracks),
+                                        isLoading = false,
                                     )
                                 }
                             }
@@ -1439,10 +1465,12 @@ class PlayerViewModel {
 
                         LibraryCollectionType.ARTIST -> {
                             MusicLibrarySource.getTracksByArtist(descriptor.collectionId).collect { tracks ->
-                                updateActiveDetail(entryId) { currentState ->
-                                    currentState.copy(
-                                        selectedLibraryCollection = currentState.selectedLibraryCollection
-                                            ?.copy(tracks = tracks),
+                                updateActiveDetail(entryId) { currentEntry ->
+                                    val collection = currentEntry as? LibraryCollectionDetailUiState
+                                        ?: return@updateActiveDetail currentEntry
+                                    collection.copy(
+                                        collection = collection.collection.copy(tracks = tracks),
+                                        isLoading = false,
                                     )
                                 }
                             }
@@ -1454,14 +1482,16 @@ class PlayerViewModel {
                                 MusicLibrarySource.getTracksByGenre(descriptor.collectionId),
                             ) { albums, tracks -> albums to tracks }
                                 .collect { (albums, tracks) ->
-                                    updateActiveDetail(entryId) { currentState ->
-                                        currentState.copy(
-                                            selectedLibraryCollection = currentState.selectedLibraryCollection
-                                                ?.copy(
-                                                    artworkUri = albums.firstOrNull()?.artworkUri,
-                                                    albums = albums,
-                                                    tracks = tracks,
-                                                ),
+                                    updateActiveDetail(entryId) { currentEntry ->
+                                        val collection = currentEntry as? LibraryCollectionDetailUiState
+                                            ?: return@updateActiveDetail currentEntry
+                                        collection.copy(
+                                            collection = collection.collection.copy(
+                                                artworkUri = albums.firstOrNull()?.artworkUri,
+                                                albums = albums,
+                                                tracks = tracks,
+                                            ),
+                                            isLoading = false,
                                         )
                                     }
                                 }
@@ -1474,10 +1504,10 @@ class PlayerViewModel {
 
     private fun updateActiveDetail(
         expectedEntryId: Long,
-        transform: (LibraryUiState) -> LibraryUiState,
+        transform: (DetailEntryUiState) -> DetailEntryUiState,
     ) {
-        _libraryState.update { currentState ->
-            currentState.updateForActiveDetail(
+        _detailPresentationState.update { currentState ->
+            currentState.updateActiveEntry(
                 expectedEntryId = expectedEntryId,
                 currentContentEntryId = currentNavigationState.currentContentEntry.entryId,
                 transform = transform,

@@ -4,7 +4,6 @@ import org.milkdev.dreamplayer.library.LibraryCollectionType
 import org.milkdev.dreamplayer.library.UserPlaylist
 import org.milkdev.dreamplayer.navigation.AppRoute
 import org.milkdev.dreamplayer.navigation.NavigationEntry
-import org.milkdev.dreamplayer.playback.LibraryUiState
 
 internal sealed interface DetailEntryDescriptor {
     val route: AppRoute
@@ -63,17 +62,61 @@ internal class DetailEntryStore {
         get() = descriptors.size
 }
 
-internal inline fun LibraryUiState.updateForActiveDetail(
+internal fun DetailPresentationState.activate(
+    entryId: Long,
+    initialState: DetailEntryUiState,
+): DetailPresentationState {
+    return copy(
+        activeEntryId = entryId,
+        entries = if (entryId in entries) {
+            entries
+        } else {
+            entries + (entryId to initialState)
+        },
+    )
+}
+
+internal fun DetailPresentationState.deactivate(): DetailPresentationState {
+    return if (activeEntryId == null) this else copy(activeEntryId = null)
+}
+
+internal fun DetailPresentationState.updateActiveEntry(
     expectedEntryId: Long,
     currentContentEntryId: Long,
-    transform: (LibraryUiState) -> LibraryUiState,
-): LibraryUiState {
+    transform: (DetailEntryUiState) -> DetailEntryUiState,
+): DetailPresentationState {
     return if (
-        activeDetailEntryId == expectedEntryId &&
+        activeEntryId == expectedEntryId &&
         currentContentEntryId == expectedEntryId
     ) {
-        transform(this)
+        val currentEntry = entries[expectedEntryId] ?: return this
+        copy(entries = entries + (expectedEntryId to transform(currentEntry)))
     } else {
         this
+    }
+}
+
+internal fun DetailPresentationState.mapEntries(
+    transform: (DetailEntryUiState) -> DetailEntryUiState,
+): DetailPresentationState {
+    val updatedEntries = entries.mapValues { (_, entry) -> transform(entry) }
+    return if (updatedEntries == entries) this else copy(entries = updatedEntries)
+}
+
+internal fun DetailPresentationState.retainEntries(
+    retainedEntryIds: Set<Long>,
+): DetailPresentationState {
+    val retainedEntries = entries.filterKeys(retainedEntryIds::contains)
+    val retainedActiveEntryId = activeEntryId?.takeIf(retainedEntryIds::contains)
+    return if (
+        retainedEntries == entries &&
+        retainedActiveEntryId == activeEntryId
+    ) {
+        this
+    } else {
+        copy(
+            activeEntryId = retainedActiveEntryId,
+            entries = retainedEntries,
+        )
     }
 }

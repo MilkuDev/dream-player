@@ -3,7 +3,7 @@ package org.milkdev.dreamplayer.model
 import org.milkdev.dreamplayer.library.UserPlaylist
 import org.milkdev.dreamplayer.navigation.AppRoute
 import org.milkdev.dreamplayer.navigation.NavigationEntry
-import org.milkdev.dreamplayer.playback.LibraryUiState
+import org.milkdev.dreamplayer.library.LibraryCollectionType
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -66,25 +66,72 @@ class DetailEntryStoreTest {
     }
 
     @Test
-    fun activeDetailUpdateRequiresMatchingUiAndNavigationTokens() {
-        val state = LibraryUiState(activeDetailEntryId = 10L)
+    fun activeDetailUpdateRequiresMatchingPresentationAndNavigationTokens() {
+        val originalEntry = collectionState("Original")
+        val state = DetailPresentationState().activate(10L, originalEntry)
 
-        val updated = state.updateForActiveDetail(
+        val updated = state.updateActiveEntry(
             expectedEntryId = 10L,
             currentContentEntryId = 10L,
-        ) { it.copy(error = "updated") }
-        val staleNavigation = state.updateForActiveDetail(
+        ) { collectionState("Updated") }
+        val staleNavigation = state.updateActiveEntry(
             expectedEntryId = 10L,
             currentContentEntryId = 11L,
-        ) { it.copy(error = "wrong") }
-        val staleUi = state.copy(activeDetailEntryId = 11L).updateForActiveDetail(
+        ) { collectionState("Wrong") }
+        val stalePresentation = state.copy(activeEntryId = 11L).updateActiveEntry(
             expectedEntryId = 10L,
             currentContentEntryId = 10L,
-        ) { it.copy(error = "wrong") }
+        ) { collectionState("Wrong") }
 
-        assertEquals("updated", updated.error)
+        assertEquals(collectionState("Updated"), updated.entry(10L))
         assertSame(state, staleNavigation)
-        assertEquals(null, staleUi.error)
+        assertSame(state.entries[10L], stalePresentation.entries[10L])
+    }
+
+    @Test
+    fun genreStateSurvivesAlbumPushPreviewCancelAndCommitReactivation() {
+        val genre = collectionState("Loaded genre")
+        val album = collectionState("Loaded album")
+        val genreEntryId = 10L
+        val albumEntryId = 11L
+
+        val genreActive = DetailPresentationState().activate(genreEntryId, genre)
+        val albumActive = genreActive.activate(albumEntryId, album)
+
+        assertSame(genre, albumActive.entry(genreEntryId))
+        assertEquals(albumEntryId, albumActive.activeEntryId)
+
+        val predictivePreview = albumActive.entry(genreEntryId)
+        assertSame(genre, predictivePreview)
+        assertEquals(albumEntryId, albumActive.activeEntryId)
+
+        val afterCancel = albumActive
+        assertSame(albumActive, afterCancel)
+
+        val afterCommit = albumActive.activate(
+            entryId = genreEntryId,
+            initialState = collectionState("Empty replacement", isLoading = true),
+        )
+        assertEquals(genreEntryId, afterCommit.activeEntryId)
+        assertSame(genre, afterCommit.entry(genreEntryId))
+        assertSame(album, afterCommit.entry(albumEntryId))
+
+        val afterTransitionSettled = afterCommit.retainEntries(setOf(genreEntryId))
+        assertEquals(genreEntryId, afterTransitionSettled.activeEntryId)
+        assertSame(genre, afterTransitionSettled.entry(genreEntryId))
+        assertEquals(null, afterTransitionSettled.entry(albumEntryId))
+    }
+
+    @Test
+    fun presentationEntriesArePrunedOnlyByExplicitRetainedSet() {
+        val state = DetailPresentationState()
+            .activate(10L, collectionState("Genre"))
+            .activate(11L, collectionState("Album"))
+
+        val retained = state.retainEntries(setOf(10L))
+
+        assertEquals(setOf(10L), retained.entries.keys)
+        assertEquals(null, retained.activeEntryId)
     }
 
     private fun playlistEntry(entryId: Long): NavigationEntry {
@@ -101,6 +148,22 @@ class DetailEntryStoreTest {
                 name = name,
                 createdAt = 1L,
             ),
+        )
+    }
+
+    private fun collectionState(
+        title: String,
+        isLoading: Boolean = false,
+    ): LibraryCollectionDetailUiState {
+        return LibraryCollectionDetailUiState(
+            collection = LibraryCollectionDetailsUiModel(
+                type = LibraryCollectionType.GENRE,
+                title = title,
+                subtitle = "Subtitle",
+                artworkUri = null,
+                tracks = emptyList(),
+            ),
+            isLoading = isLoading,
         )
     }
 

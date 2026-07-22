@@ -48,6 +48,7 @@ import org.milkdev.dreamplayer.generated.resources.arrow_back
 import org.milkdev.dreamplayer.generated.resources.music_note
 import org.milkdev.dreamplayer.generated.resources.playlist_add
 import org.milkdev.dreamplayer.library.LibraryTrack
+import org.milkdev.dreamplayer.model.PlaylistDetailUiState
 import org.milkdev.dreamplayer.playback.LibraryUiState
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -55,6 +56,7 @@ import org.milkdev.dreamplayer.playback.LibraryUiState
 fun PlaylistDetailsScreen(
     modifier: Modifier = Modifier,
     libraryState: LibraryUiState,
+    detailState: PlaylistDetailUiState,
     onBackClick: () -> Unit,
     onTrackClick: (LibraryTrack) -> Unit,
     onSaveTracks: (Long, List<Long>) -> Unit,
@@ -62,8 +64,8 @@ fun PlaylistDetailsScreen(
     contentPadding: PaddingValues = PaddingValues.Zero,
     currentTrackId: Long? = null,
 ) {
-    val playlist = libraryState.selectedPlaylist
-    val editablePlaylist = playlist?.takeIf { it.canEditTracks }
+    val playlist = detailState.playlist
+    val editablePlaylist = playlist.takeIf { it.canEditTracks }
     var isTrackPickerVisible by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -73,7 +75,7 @@ fun PlaylistDetailsScreen(
             TopAppBar(
                 title = {
                     Text(
-                        text = playlist?.name ?: "Плейлист",
+                        text = playlist.name,
                         style = AppTheme.typography.snPro.headlineMedium,
                         fontWeight = FontWeight.ExtraBold,
                         maxLines = 1,
@@ -108,7 +110,7 @@ fun PlaylistDetailsScreen(
             }
         },
     ) { innerPadding ->
-        if (libraryState.selectedPlaylistTracks.isEmpty()) {
+        if (detailState.tracks.isEmpty()) {
             EmptyPlaylistMessage(
                 modifier = Modifier
                     .fillMaxSize()
@@ -129,7 +131,7 @@ fun PlaylistDetailsScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(
-                    items = libraryState.selectedPlaylistTracks,
+                    items = detailState.tracks,
                     key = { it.id },
                     contentType = { "playlist_track" },
                 ) { track ->
@@ -146,7 +148,7 @@ fun PlaylistDetailsScreen(
     if (isTrackPickerVisible && editablePlaylist != null) {
         PlaylistTrackPickerDialog(
             allTracks = libraryState.playlistPickerTrackItems.map { it.toLibraryTrack() },
-            currentPlaylistTracks = libraryState.selectedPlaylistTracks,
+            currentPlaylistTracks = detailState.tracks,
             hasMoreTracks = libraryState.hasMorePlaylistPickerTracks,
             isLoadingMore = libraryState.isPlaylistPickerPageLoading,
             onLoadMore = onLoadNextPickerTracks,
