@@ -1,7 +1,10 @@
 package org.milkdev.dreamplayer.app
 
+import org.milkdev.dreamplayer.navigation.AppNavigationSnapshot
+import org.milkdev.dreamplayer.navigation.AppNavigationState
 import org.milkdev.dreamplayer.navigation.AppRoute
 import org.milkdev.dreamplayer.navigation.NavigationEntry
+import org.milkdev.dreamplayer.navigation.planBack
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -92,15 +95,17 @@ class ContentNavigationPresentationTest {
     }
 
     @Test
-    fun backStartCannotDuplicateCommitForSameEntryButCanFollowCommittedRouteChange() {
+    fun backStartCannotDuplicateCommitButCanFollowEntryOrRevisionChange() {
         val session = session(progress = 1f)
         val committing = ContentNavigationPresentationState.Committing(session)
         val sameEntry = session.copy(sessionId = 11L, progress = 0f)
-        val nextEntry = ContentBackSession(
+        val nextEntry = session(
             sessionId = 12L,
-            originTopEntryId = 4L,
-            origin = snapshot(4L, AppRoute.Search),
-            preview = snapshot(1L, AppRoute.Home),
+            route = AppRoute.Search,
+        )
+        val revisedSameEntry = session(
+            sessionId = 13L,
+            route = AppRoute.Settings,
         )
 
         assertSame(
@@ -115,6 +120,13 @@ class ContentNavigationPresentationTest {
             reduceContentNavigationPresentation(
                 committing,
                 ContentNavigationPresentationEvent.BackStarted(nextEntry),
+            ),
+        )
+        assertEquals(
+            ContentNavigationPresentationState.Tracking(revisedSameEntry),
+            reduceContentNavigationPresentation(
+                committing,
+                ContentNavigationPresentationEvent.BackStarted(revisedSameEntry),
             ),
         )
     }
@@ -282,13 +294,14 @@ class ContentNavigationPresentationTest {
         val recovery = snapshot(4L, AppRoute.Search)
         val controller = ContentNavigationPresentationController(origin.origin)
         controller.startPredictiveBack(
-            originTopEntryId = origin.originTopEntryId,
+            backPlan = origin.backPlan,
             origin = origin.origin,
             preview = origin.preview,
         )
 
         val invalidated = controller.invalidateIfOriginChanged(
-            currentTopEntryId = 4L,
+            currentTopEntryId = origin.originTopEntryId,
+            currentRevision = origin.originRevision + 1L,
             committedSnapshot = recovery,
         )
 
@@ -300,18 +313,29 @@ class ContentNavigationPresentationTest {
         )
     }
 
-    private fun session(progress: Float = 0f): ContentBackSession {
+    private fun session(
+        progress: Float = 0f,
+        sessionId: Long = 10L,
+        route: AppRoute = AppRoute.Settings,
+    ): ContentBackSession {
+        val navigationState = when (route) {
+            AppRoute.Settings -> AppNavigationState().push(AppRoute.Settings)
+            AppRoute.Search -> AppNavigationState()
+                .push(AppRoute.Settings)
+                .openSearch()
+
+            else -> error("Unsupported test route: $route")
+        }
+        val navigationSnapshot = AppNavigationSnapshot(
+            state = navigationState,
+            revision = sessionId,
+        )
+        val backPlan = checkNotNull(navigationSnapshot.planBack())
         return ContentBackSession(
-            sessionId = 10L,
-            originTopEntryId = 2L,
-            origin = ContentSceneSnapshot(
-                currentEntry = NavigationEntry(2L, AppRoute.Settings),
-                contentStack = listOf(
-                    NavigationEntry(1L, AppRoute.Home),
-                    NavigationEntry(2L, AppRoute.Settings),
-                ),
-            ),
-            preview = snapshot(1L, AppRoute.Home),
+            sessionId = sessionId,
+            backPlan = backPlan,
+            origin = contentSceneSnapshot(navigationState.backStack),
+            preview = contentSceneSnapshot(backPlan.targetState.backStack),
             progress = progress,
         )
     }

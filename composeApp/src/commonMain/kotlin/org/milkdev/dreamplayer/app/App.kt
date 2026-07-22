@@ -82,7 +82,8 @@ fun App(
     val libraryState by playerViewModel.libraryState.collectAsState()
     val detailPresentationState by playerViewModel.detailPresentationState.collectAsState()
     val settingsState by playerViewModel.settingsState.collectAsState()
-    val navigationState by playerViewModel.navigationState.collectAsState()
+    val navigationSnapshot by playerViewModel.navigationSnapshot.collectAsState()
+    val navigationState = navigationSnapshot.state
     val committedContentSnapshot = contentSceneSnapshot(navigationState.backStack)
     val contentPresentationController = remember {
         ContentNavigationPresentationController(committedContentSnapshot)
@@ -97,12 +98,19 @@ fun App(
     val contentPresentationState = contentPresentationController.state
     val contentBackSession = contentPresentationState.backSession
     LaunchedEffect(committedContentSnapshot) {
-        contentPresentationController.onCommittedSnapshotChanged(committedContentSnapshot)
+        contentPresentationController.onCommittedSnapshotChanged(
+            snapshot = committedContentSnapshot,
+            transaction = navigationSnapshot.lastTransaction,
+        )
     }
 
-    LaunchedEffect(navigationState.currentEntry.entryId) {
+    LaunchedEffect(
+        navigationState.currentEntry.entryId,
+        navigationSnapshot.revision,
+    ) {
         val staleSession = contentPresentationController.invalidateIfOriginChanged(
             currentTopEntryId = navigationState.currentEntry.entryId,
+            currentRevision = navigationSnapshot.revision,
             committedSnapshot = committedContentSnapshot,
         )
         if (staleSession != null) {
@@ -146,14 +154,12 @@ fun App(
             )
 
             is ContentTransitionCompletion.CommitReady -> {
-                val didPop = playerViewModel.navigateBack(
-                    expectedTopEntryId = completion.session.originTopEntryId,
-                )
+                val didPop = playerViewModel.commitBack(completion.session.backPlan)
                 contentPresentationController.onCommitPopCompleted(
                     sessionId = completion.session.sessionId,
                     didPop = didPop,
                     recoveryTarget = contentSceneSnapshot(
-                        playerViewModel.navigationState.value.backStack,
+                        playerViewModel.navigationSnapshot.value.state.backStack,
                     ),
                 )
                 AppDebugLog.log(
@@ -200,28 +206,28 @@ fun App(
         PlatformBackHandler(
             enabled = navigationState.canNavigateBack,
             onBackStarted = {
-                val origin = playerViewModel.navigationState.value
+                val originSnapshot = playerViewModel.navigationSnapshot.value
+                val origin = originSnapshot.state
                 val surface = when (origin.currentDestination) {
                     AppRoute.Player -> AppBackSurface.Player
                     AppRoute.Queue -> AppBackSurface.Queue
                     else -> AppBackSurface.Content
                 }
-                val gesture = AppBackGesture(
-                    surface = surface,
-                    expectedTopEntryId = origin.currentEntry.entryId,
-                )
-                val accepted = if (!origin.canNavigateBack) {
-                    false
-                } else when (surface) {
-                    AppBackSurface.Content -> {
-                        val preview = origin.previewBack()
-                        val session = preview?.let {
-                            contentPresentationController.startPredictiveBack(
-                                originTopEntryId = origin.currentEntry.entryId,
-                                origin = contentSceneSnapshot(origin.backStack),
-                                preview = contentSceneSnapshot(it.backStack),
-                            )
-                        }
+                val backPlan = playerViewModel.planBack()
+                val gesture = backPlan?.let { plan ->
+                    AppBackGesture(
+                        surface = surface,
+                        backPlan = plan,
+                    )
+                }
+                val accepted = when {
+                    gesture == null -> false
+                    surface == AppBackSurface.Content -> {
+                        val session = contentPresentationController.startPredictiveBack(
+                            backPlan = gesture.backPlan,
+                            origin = contentSceneSnapshot(origin.backStack),
+                            preview = contentSceneSnapshot(gesture.backPlan.targetState.backStack),
+                        )
                         if (session != null) {
                             AppDebugLog.log(
                                 "predictive_back_start surface=content " +
@@ -233,8 +239,7 @@ fun App(
                         }
                     }
 
-                    AppBackSurface.Player,
-                    AppBackSurface.Queue -> playbackOverlayBackDispatcher.start(gesture)
+                    else -> playbackOverlayBackDispatcher.start(gesture)
                 }
                 appBackGestureCoordinator.begin(
                     gesture = gesture,
@@ -243,11 +248,14 @@ fun App(
             },
             onBackProgressed = { event ->
                 when (appBackGestureCoordinator.routedGesture?.surface) {
-                    AppBackSurface.Content ->
+                    AppBackSurface.Content -> {
+                        val currentNavigation = playerViewModel.navigationSnapshot.value
                         contentPresentationController.progressPredictiveBack(
                             event = event,
-                            currentTopEntryId = playerViewModel.navigationState.value.currentEntry.entryId,
+                            currentTopEntryId = currentNavigation.state.currentEntry.entryId,
+                            currentRevision = currentNavigation.revision,
                         )
+                    }
 
                     AppBackSurface.Player,
                     AppBackSurface.Queue -> playbackOverlayBackDispatcher.progress(event)
@@ -279,9 +287,8 @@ fun App(
                             ContentBackCommitResult.NoSession,
                             ContentBackCommitResult.Ignored -> Unit
 
-                            is ContentBackCommitResult.Immediate -> playerViewModel.navigateBack(
-                                expectedTopEntryId = result.session.originTopEntryId,
-                            )
+                            is ContentBackCommitResult.Immediate ->
+                                playerViewModel.commitBack(result.session.backPlan)
 
                             is ContentBackCommitResult.Animated -> AppDebugLog.log(
                                 "predictive_back_commit surface=content " +
@@ -438,7 +445,14 @@ fun App(
                     transitionSpec = {
                         val session = contentBackSession
                         when {
-                            session == null -> navigationContentTransform(initialState, targetState)
+                            session == null -> navigationContentTransform(
+                                initial = initialState,
+                                target = targetState,
+                                transaction = contentPresentationController.transactionFor(
+                                    initial = initialState,
+                                    target = targetState,
+                                ),
+                            )
                             contentPresentationState is ContentNavigationPresentationState.Cancelling &&
                                 contentTransition.pendingTargetState == null ->
                                 predictiveBackCancelContentTransform()
@@ -633,12 +647,12 @@ fun App(
             PlayerOverlayHost(
                 playbackState = playbackState,
                 topEntryId = navigationState.currentEntry.entryId,
+                navigationRevision = navigationSnapshot.revision,
                 isPlayerVisible = navigationState.contains(AppRoute.Player) ||
                     navigationState.contains(AppRoute.Queue),
                 isQueueVisible = navigationState.currentDestination == AppRoute.Queue,
-                onNavigateBack = { entryId ->
-                    playerViewModel.navigateBack(expectedTopEntryId = entryId)
-                },
+                onPlanBack = playerViewModel::planBack,
+                onCommitBack = playerViewModel::commitBack,
                 onOpenQueueSheet = playerViewModel::openQueueSheet,
                 onPreviousClick = playerViewModel::playPrevious,
                 onNextClick = playerViewModel::playNext,

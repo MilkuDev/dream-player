@@ -56,9 +56,14 @@ import org.milkdev.dreamplayer.library.SettingsRepository
 import org.milkdev.dreamplayer.library.ShuffleAnchor
 import org.milkdev.dreamplayer.library.UserPlaylist
 import org.milkdev.dreamplayer.library.dailyPlaylistRepository
-import org.milkdev.dreamplayer.navigation.AppNavigationState
+import org.milkdev.dreamplayer.navigation.AppNavigationSnapshot
+import org.milkdev.dreamplayer.navigation.AppNavigator
 import org.milkdev.dreamplayer.navigation.AppRoute
 import org.milkdev.dreamplayer.navigation.MainPage
+import org.milkdev.dreamplayer.navigation.NavigationCause
+import org.milkdev.dreamplayer.navigation.NavigationIntent
+import org.milkdev.dreamplayer.navigation.NavigationPlan
+import org.milkdev.dreamplayer.navigation.NavigationTransaction
 import org.milkdev.dreamplayer.playback.AudioPlayer
 import org.milkdev.dreamplayer.playback.DailyPlaylistUiState
 import org.milkdev.dreamplayer.playback.PlaybackQueueController
@@ -96,8 +101,9 @@ class PlayerViewModel {
     private val _settingsState = MutableStateFlow(SettingsUiState())
     val settingsState: StateFlow<SettingsUiState> = _settingsState.asStateFlow()
 
-    private val _navigationState = MutableStateFlow(AppNavigationState())
-    val navigationState: StateFlow<AppNavigationState> = _navigationState.asStateFlow()
+    private val _navigationSnapshot = MutableStateFlow(AppNavigationSnapshot())
+    val navigationSnapshot: StateFlow<AppNavigationSnapshot> =
+        _navigationSnapshot.asStateFlow()
 
     private val aiDailyPlaylistFeature = PlatformFeatureProvider.aiDailyPlaylistApi
     private val aiNetworkDiagnosticsService = AiNetworkDiagnosticsService()
@@ -118,8 +124,10 @@ class PlayerViewModel {
     private var playlistPickerPageCursor: LibraryPageCursor? = null
     private var restoreAttempted = false
     private var pendingResumePositionMs: Long = 0L
-    private val currentNavigationState: AppNavigationState
-        get() = _navigationState.value
+    private val currentNavigationSnapshot: AppNavigationSnapshot
+        get() = _navigationSnapshot.value
+    private val currentNavigationState
+        get() = currentNavigationSnapshot.state
 
     private val savePointWorker = SavePointWorker(
         scope = storeScope,
@@ -236,7 +244,7 @@ class PlayerViewModel {
                 }
 
                 if (currentTrack == null) {
-                    publishNavigationState(currentNavigationState.removePlaybackOverlays())
+                    commitNavigationIntent(NavigationIntent.RemovePlaybackOverlays)
                 }
             }
         }
@@ -613,25 +621,32 @@ class PlayerViewModel {
     }
 
     fun selectMainPage(page: MainPage) {
-        publishNavigationState(currentNavigationState.selectMainPage(page))
+        commitNavigationIntent(NavigationIntent.SelectMain(page))
     }
 
     fun openSettings() {
-        publishNavigationState(currentNavigationState.push(AppRoute.Settings))
+        commitNavigationIntent(NavigationIntent.Push(AppRoute.Settings))
     }
 
     fun openAiDebugSettings() {
-        publishNavigationState(currentNavigationState.push(AppRoute.AiDebugSettings))
+        commitNavigationIntent(NavigationIntent.Push(AppRoute.AiDebugSettings))
     }
 
     fun navigateBack(expectedTopEntryId: Long? = null): Boolean {
-        val nextNavigationState = currentNavigationState.pop(expectedTopEntryId) ?: return false
-        AppDebugLog.log(
-            "navigate_back from=${currentNavigationState.currentDestination} " +
-                "to=${nextNavigationState.currentDestination}"
+        val plan = planBack(expectedTopEntryId) ?: return false
+        return commitBack(plan)
+    }
+
+    fun planBack(expectedTopEntryId: Long? = null): NavigationPlan? {
+        return AppNavigator.plan(
+            currentNavigationSnapshot,
+            NavigationIntent.Pop(expectedTopEntryId),
         )
-        publishNavigationState(nextNavigationState)
-        return true
+    }
+
+    fun commitBack(plan: NavigationPlan): Boolean {
+        if (plan.cause != NavigationCause.Back) return false
+        return commitNavigationPlan(plan) != null
     }
 
     fun retainDetailPresentations(retainedEntryIds: Set<Long>) {
@@ -643,15 +658,13 @@ class PlayerViewModel {
     fun openPlayer() {
         AppDebugLog.log("open_player tracks=${_libraryState.value.librarySummary.trackCount}")
         if (_playbackState.value.currentTrack == null) return
-        publishNavigationState(currentNavigationState.push(AppRoute.Player))
+        commitNavigationIntent(NavigationIntent.Push(AppRoute.Player))
     }
 
     fun openQueueSheet() {
         AppDebugLog.log("open_queue_sheet tracks=${_playbackState.value.playbackQueue.size}")
         if (_playbackState.value.currentTrack == null) return
-        val nextNavigationState = currentNavigationState.push(AppRoute.Queue)
-        if (nextNavigationState === currentNavigationState) return
-        publishNavigationState(nextNavigationState)
+        if (commitNavigationIntent(NavigationIntent.Push(AppRoute.Queue)) == null) return
         refreshQueueDisplay(playbackQueueController.snapshot())
     }
 
@@ -728,12 +741,12 @@ class PlayerViewModel {
 
     fun openLibrarySearch() {
         _libraryState.update { it.copy(librarySearch = it.librarySearch.copy(isActive = true)) }
-        publishNavigationState(currentNavigationState.openSearch())
+        commitNavigationIntent(NavigationIntent.OpenSearch)
         loadNextSearchPage(reset = true)
     }
 
     fun closeLibrarySearch() {
-        publishNavigationState(currentNavigationState.closeSearch())
+        commitNavigationIntent(NavigationIntent.CloseSearch)
     }
 
     fun updateLibrarySearchQuery(query: String) {
@@ -1029,7 +1042,7 @@ class PlayerViewModel {
                 isShuffleEnabled = false,
             )
         }
-        publishNavigationState(currentNavigationState.removePlaybackOverlays())
+        commitNavigationIntent(NavigationIntent.RemovePlaybackOverlays)
         SettingsRepository.clearPlaybackState()
     }
 
@@ -1380,12 +1393,14 @@ class PlayerViewModel {
     }
 
     private fun openDetail(descriptor: DetailEntryDescriptor) {
-        val nextNavigationState = currentNavigationState.push(descriptor.route)
-        if (nextNavigationState === currentNavigationState) return
+        val plan = AppNavigator.plan(
+            currentNavigationSnapshot,
+            NavigationIntent.Push(descriptor.route),
+        ) ?: return
 
-        val entry = nextNavigationState.currentContentEntry
+        val entry = plan.targetState.currentContentEntry
         detailEntryStore.register(entry, descriptor)
-        publishNavigationState(nextNavigationState)
+        commitNavigationPlan(plan)
     }
 
     private fun prepareDetailUi(
@@ -1777,11 +1792,20 @@ class PlayerViewModel {
         )
     }
 
-    private fun publishNavigationState(
-        nextNavigationState: AppNavigationState,
-    ) {
-        val previousNavigationState = currentNavigationState
-        if (nextNavigationState === previousNavigationState) return
+    private fun commitNavigationIntent(
+        intent: NavigationIntent,
+    ): NavigationTransaction? {
+        val plan = AppNavigator.plan(currentNavigationSnapshot, intent) ?: return null
+        return commitNavigationPlan(plan)
+    }
+
+    private fun commitNavigationPlan(
+        plan: NavigationPlan,
+    ): NavigationTransaction? {
+        val previousSnapshot = currentNavigationSnapshot
+        val commit = AppNavigator.commit(previousSnapshot, plan) ?: return null
+        val previousNavigationState = previousSnapshot.state
+        val nextNavigationState = commit.snapshot.state
 
         val contentChanged = previousNavigationState.currentContentEntry.entryId !=
             nextNavigationState.currentContentEntry.entryId
@@ -1812,7 +1836,7 @@ class PlayerViewModel {
             }
         }
 
-        _navigationState.value = nextNavigationState
+        _navigationSnapshot.value = commit.snapshot
 
         if (
             previousNavigationState.contains(AppRoute.Search) &&
@@ -1841,6 +1865,22 @@ class PlayerViewModel {
             startDetailObservation(
                 entryId = nextNavigationState.currentContentEntry.entryId,
                 descriptor = nextDetailDescriptor,
+            )
+        }
+        logNavigationTransaction(commit.transaction)
+        return commit.transaction
+    }
+
+    private fun logNavigationTransaction(transaction: NavigationTransaction) {
+        AppDebugLog.log(
+            "navigation_commit id=${transaction.id} " +
+                "operation=${transaction.operation.logName} " +
+                "from=${transaction.fromEntry.route} to=${transaction.toEntry.route}",
+        )
+        if (transaction.cause == NavigationCause.Back) {
+            AppDebugLog.log(
+                "navigate_back from=${transaction.fromEntry.route} " +
+                    "to=${transaction.toEntry.route}",
             )
         }
     }

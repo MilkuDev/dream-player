@@ -36,6 +36,7 @@ import org.milkdev.dreamplayer.diagnostics.AppDebugLog
 import org.milkdev.dreamplayer.app.AppBackGesture
 import org.milkdev.dreamplayer.app.AppBackSurface
 import org.milkdev.dreamplayer.library.LibraryTrack
+import org.milkdev.dreamplayer.navigation.NavigationPlan
 import org.milkdev.dreamplayer.playback.PlaybackUiState
 import kotlin.math.roundToInt
 
@@ -51,19 +52,27 @@ private enum class OverlayBackPhase {
 }
 
 private data class OverlayBackSession(
-    val expectedTopEntryId: Long,
+    val backPlan: NavigationPlan,
     val overlay: PlaybackOverlay,
     val phase: OverlayBackPhase = OverlayBackPhase.Tracking,
     val progress: Float = 0f,
-)
+) {
+    val expectedTopEntryId: Long
+        get() = backPlan.expectedTopEntryId
+
+    val expectedRevision: Long
+        get() = backPlan.expectedRevision
+}
 
 @Composable
 internal fun PlayerOverlayHost(
     playbackState: PlaybackUiState,
     topEntryId: Long,
+    navigationRevision: Long,
     isPlayerVisible: Boolean,
     isQueueVisible: Boolean,
-    onNavigateBack: (expectedTopEntryId: Long) -> Boolean,
+    onPlanBack: () -> NavigationPlan?,
+    onCommitBack: (NavigationPlan) -> Boolean,
     onOpenQueueSheet: () -> Unit,
     onPreviousClick: () -> Unit,
     onNextClick: () -> Unit,
@@ -97,6 +106,7 @@ internal fun PlayerOverlayHost(
         var overlayBackSession by remember { mutableStateOf<OverlayBackSession?>(null) }
         var backTransitionInProgress by remember { mutableStateOf(false) }
         val latestTopEntryId by rememberUpdatedState(topEntryId)
+        val latestNavigationRevision by rememberUpdatedState(navigationRevision)
         val latestPlayerVisible by rememberUpdatedState(isPlayerVisible)
         val latestQueueVisible by rememberUpdatedState(isQueueVisible)
 
@@ -128,7 +138,7 @@ internal fun PlayerOverlayHost(
                         durationMillis = if (session.overlay == PlaybackOverlay.Queue) 240 else 280,
                     ),
                 )
-                if (!onNavigateBack(session.expectedTopEntryId)) {
+                if (!onCommitBack(session.backPlan)) {
                     restoreOverlay(session.overlay)
                 }
             } finally {
@@ -139,10 +149,17 @@ internal fun PlayerOverlayHost(
 
         fun requestOverlayBack(overlay: PlaybackOverlay) {
             if (backTransitionInProgress || overlayBackSession != null) return
+            val backPlan = onPlanBack() ?: return
+            if (
+                backPlan.expectedTopEntryId != latestTopEntryId ||
+                backPlan.expectedRevision != latestNavigationRevision
+            ) {
+                return
+            }
             scope.launch {
                 finishOverlayBack(
                     OverlayBackSession(
-                        expectedTopEntryId = latestTopEntryId,
+                        backPlan = backPlan,
                         overlay = overlay,
                     )
                 )
@@ -211,7 +228,7 @@ internal fun PlayerOverlayHost(
                         PlaybackOverlay.Player -> playerProgress.snapTo(1f)
                         PlaybackOverlay.Queue -> queueProgress.snapTo(1f)
                     }
-                    val didPop = onNavigateBack(session.expectedTopEntryId)
+                    val didPop = onCommitBack(session.backPlan)
                     if (!didPop) {
                         commitProgress.animateTo(
                             targetValue = 0f,
@@ -240,13 +257,17 @@ internal fun PlayerOverlayHost(
             }
         }
 
-        LaunchedEffect(topEntryId, isPlayerVisible, isQueueVisible) {
+        LaunchedEffect(topEntryId, navigationRevision, isPlayerVisible, isQueueVisible) {
             val session = overlayBackSession ?: return@LaunchedEffect
             val routeStillMatches = when (session.overlay) {
                 PlaybackOverlay.Player -> isPlayerVisible && !isQueueVisible
                 PlaybackOverlay.Queue -> isQueueVisible
             }
-            if (!routeStillMatches || topEntryId != session.expectedTopEntryId) {
+            if (
+                !routeStillMatches ||
+                topEntryId != session.expectedTopEntryId ||
+                navigationRevision != session.expectedRevision
+            ) {
                 when (session.overlay) {
                     PlaybackOverlay.Player -> playerProgress.snapTo(session.progress)
                     PlaybackOverlay.Queue -> queueProgress.snapTo(session.progress)
@@ -275,7 +296,7 @@ internal fun PlayerOverlayHost(
                     }
 
                     val session = OverlayBackSession(
-                        expectedTopEntryId = gesture.expectedTopEntryId,
+                        backPlan = gesture.backPlan,
                         overlay = overlay,
                     )
                     overlayBackSession = session

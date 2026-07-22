@@ -1,5 +1,7 @@
 package org.milkdev.dreamplayer.app
 
+import org.milkdev.dreamplayer.navigation.NavigationPlan
+
 internal enum class AppBackSurface {
     Content,
     Player,
@@ -8,8 +10,14 @@ internal enum class AppBackSurface {
 
 internal data class AppBackGesture(
     val surface: AppBackSurface,
-    val expectedTopEntryId: Long,
-)
+    val backPlan: NavigationPlan,
+) {
+    val expectedTopEntryId: Long
+        get() = backPlan.expectedTopEntryId
+
+    val expectedRevision: Long
+        get() = backPlan.expectedRevision
+}
 
 /**
  * Keeps one platform gesture bound to the surface that accepted its start.
@@ -30,11 +38,11 @@ internal class AppBackGestureCoordinator {
         get() = (activeGesture as? ActiveGesture.Routed)?.gesture
 
     fun begin(
-        gesture: AppBackGesture,
+        gesture: AppBackGesture?,
         acceptedBySurface: Boolean,
     ) {
         if (activeGesture != null) return
-        activeGesture = if (acceptedBySurface) {
+        activeGesture = if (gesture != null && acceptedBySurface) {
             ActiveGesture.Routed(gesture)
         } else {
             ActiveGesture.Consumed

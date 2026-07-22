@@ -1,8 +1,12 @@
 package org.milkdev.dreamplayer.app
 
+import org.milkdev.dreamplayer.navigation.AppNavigationSnapshot
+import org.milkdev.dreamplayer.navigation.AppNavigationState
 import org.milkdev.dreamplayer.navigation.AppRoute
 import org.milkdev.dreamplayer.navigation.MainDestination
+import org.milkdev.dreamplayer.navigation.MainPage
 import org.milkdev.dreamplayer.navigation.NavigationEntry
+import org.milkdev.dreamplayer.navigation.planBack
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -20,30 +24,36 @@ class ContentScenePresentationTest {
 
     @Test
     fun hiddenOriginRevealsDestinationChromeBelowPredictiveForeground() {
-        val settings = scene(2L, AppRoute.Settings)
-        val library = scene(1L, AppRoute.Library)
+        val backSession = session(
+            AppNavigationState()
+                .selectMainPage(MainPage.Library)
+                .push(AppRoute.Settings),
+        )
 
         val layers = resolveContentChromeLayers(
-            committedScene = settings,
-            backSession = session(settings, library),
+            committedScene = backSession.origin,
+            backSession = backSession,
         )
 
         assertNull(layers.persistent)
-        assertEquals(library.currentEntry.entryId, layers.destination?.entryId)
+        assertEquals(backSession.preview.currentEntry.entryId, layers.destination?.entryId)
         assertEquals(MainDestination.Library, layers.destination?.chrome?.activeMainDestination)
     }
 
     @Test
     fun visibleOriginKeepsOnePersistentChromeUntilCommit() {
-        val details = scene(3L, AppRoute.LibraryCollection(
-            type = org.milkdev.dreamplayer.library.LibraryCollectionType.GENRE,
-            collectionId = 9L,
-        ))
-        val library = scene(1L, AppRoute.Library)
+        val backSession = session(
+            AppNavigationState()
+                .selectMainPage(MainPage.Library)
+                .push(AppRoute.LibraryCollection(
+                    type = org.milkdev.dreamplayer.library.LibraryCollectionType.GENRE,
+                    collectionId = 9L,
+                )),
+        )
 
         val layers = resolveContentChromeLayers(
-            committedScene = details,
-            backSession = session(details, library),
+            committedScene = backSession.origin,
+            backSession = backSession,
         )
 
         assertEquals(MainDestination.Library, layers.persistent?.activeMainDestination)
@@ -52,12 +62,15 @@ class ContentScenePresentationTest {
 
     @Test
     fun hiddenOriginAndHiddenDestinationRenderNoChrome() {
-        val debug = scene(3L, AppRoute.AiDebugSettings)
-        val settings = scene(2L, AppRoute.Settings)
+        val backSession = session(
+            AppNavigationState()
+                .push(AppRoute.Settings)
+                .push(AppRoute.AiDebugSettings),
+        )
 
         val layers = resolveContentChromeLayers(
-            committedScene = debug,
-            backSession = session(debug, settings),
+            committedScene = backSession.origin,
+            backSession = backSession,
         )
 
         assertNull(layers.persistent)
@@ -65,14 +78,16 @@ class ContentScenePresentationTest {
     }
 
     private fun session(
-        origin: ContentSceneSnapshot,
-        preview: ContentSceneSnapshot,
-    ) = ContentBackSession(
-        sessionId = 1L,
-        originTopEntryId = origin.currentEntry.entryId,
-        origin = origin,
-        preview = preview,
-    )
+        state: AppNavigationState,
+    ): ContentBackSession {
+        val backPlan = checkNotNull(AppNavigationSnapshot(state = state).planBack())
+        return ContentBackSession(
+            sessionId = 1L,
+            backPlan = backPlan,
+            origin = contentSceneSnapshot(state.backStack),
+            preview = contentSceneSnapshot(backPlan.targetState.backStack),
+        )
+    }
 
     private fun scene(
         entryId: Long,

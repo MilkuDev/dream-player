@@ -14,6 +14,8 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import org.milkdev.dreamplayer.navigation.AppRoute
+import org.milkdev.dreamplayer.navigation.NavigationOperation
+import org.milkdev.dreamplayer.navigation.NavigationTransaction
 
 internal enum class BackSwipeEdge {
     Left,
@@ -36,41 +38,48 @@ internal enum class NavigationMotionKind {
 internal fun resolveNavigationMotion(
     initial: ContentSceneSnapshot,
     target: ContentSceneSnapshot,
+    transaction: NavigationTransaction?,
 ): NavigationMotionKind {
     if (initial.currentEntry.entryId == target.currentEntry.entryId) {
         return NavigationMotionKind.None
     }
 
-    val initialRoute = initial.currentEntry.route
-    val targetRoute = target.currentEntry.route
+    val committedTransaction = transaction?.takeIf {
+        it.affectsContent &&
+            it.fromContentEntry.entryId == initial.currentEntry.entryId &&
+            it.toContentEntry.entryId == target.currentEntry.entryId
+    } ?: return NavigationMotionKind.FadeThrough
+
     if (
-        initialRoute.isMainMotionRoute() ||
-        targetRoute.isMainMotionRoute() ||
-        kotlin.math.abs(initial.contentStack.size - target.contentStack.size) > 1
+        committedTransaction.operation == NavigationOperation.MainSwitch ||
+        committedTransaction.operation == NavigationOperation.SearchOpen ||
+        committedTransaction.operation == NavigationOperation.SearchClose ||
+        initial.currentEntry.route.isMainMotionRoute() ||
+        target.currentEntry.route.isMainMotionRoute()
     ) {
         return NavigationMotionKind.FadeThrough
     }
 
-    val initialRemainsInTarget = target.contentStack.any {
-        it.entryId == initial.currentEntry.entryId
-    }
-    if (initialRemainsInTarget) return NavigationMotionKind.Forward
+    return when (committedTransaction.operation) {
+        NavigationOperation.Push -> NavigationMotionKind.Forward
+        NavigationOperation.Pop -> NavigationMotionKind.Backward
 
-    val targetExistedInInitial = initial.contentStack.any {
-        it.entryId == target.currentEntry.entryId
-    }
-    return if (targetExistedInInitial) {
-        NavigationMotionKind.Backward
-    } else {
-        NavigationMotionKind.FadeThrough
+        NavigationOperation.MainSwitch,
+        NavigationOperation.SearchOpen,
+        NavigationOperation.SearchClose -> NavigationMotionKind.FadeThrough
+
+        NavigationOperation.OverlayOpen,
+        NavigationOperation.OverlayClose,
+        NavigationOperation.OverlayReset -> NavigationMotionKind.None
     }
 }
 
 internal fun navigationContentTransform(
     initial: ContentSceneSnapshot,
     target: ContentSceneSnapshot,
+    transaction: NavigationTransaction?,
 ): ContentTransform {
-    val motionKind = resolveNavigationMotion(initial, target)
+    val motionKind = resolveNavigationMotion(initial, target, transaction)
     val transform = when (motionKind) {
         NavigationMotionKind.None -> fadeIn(tween(0)) togetherWith fadeOut(tween(0))
 

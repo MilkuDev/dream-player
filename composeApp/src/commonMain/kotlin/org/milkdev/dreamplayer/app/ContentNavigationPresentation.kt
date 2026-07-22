@@ -9,15 +9,24 @@ import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import org.milkdev.dreamplayer.navigation.NavigationCause
+import org.milkdev.dreamplayer.navigation.NavigationPlan
+import org.milkdev.dreamplayer.navigation.NavigationTransaction
 
 internal data class ContentBackSession(
     val sessionId: Long,
-    val originTopEntryId: Long,
+    val backPlan: NavigationPlan,
     val origin: ContentSceneSnapshot,
     val preview: ContentSceneSnapshot,
     val progress: Float = 0f,
     val swipeEdge: BackSwipeEdge = BackSwipeEdge.None,
-)
+) {
+    val originTopEntryId: Long
+        get() = backPlan.expectedTopEntryId
+
+    val originRevision: Long
+        get() = backPlan.expectedRevision
+}
 
 internal sealed interface ContentNavigationPresentationState {
     data object Idle : ContentNavigationPresentationState
@@ -117,7 +126,10 @@ internal fun reduceContentNavigationPresentation(
 
             is ContentNavigationPresentationState.Tracking -> state
             is ContentNavigationPresentationState.Committing -> {
-                if (state.session.originTopEntryId != event.session.originTopEntryId) {
+                if (
+                    state.session.originTopEntryId != event.session.originTopEntryId ||
+                    state.session.originRevision != event.session.originRevision
+                ) {
                     ContentNavigationPresentationState.Tracking(event.session)
                 } else {
                     state
@@ -259,13 +271,21 @@ internal class ContentNavigationPresentationController(
         get() = state.backSession
 
     private var nextSessionId = 1L
+    private var ordinaryTransaction: NavigationTransaction? = null
 
     fun canRequestContentBack(isTransitionRunning: Boolean): Boolean {
         return state is ContentNavigationPresentationState.Idle && !isTransitionRunning
     }
 
-    fun onCommittedSnapshotChanged(snapshot: ContentSceneSnapshot) {
+    fun onCommittedSnapshotChanged(
+        snapshot: ContentSceneSnapshot,
+        transaction: NavigationTransaction?,
+    ) {
         if (state.backSession != null) return
+        ordinaryTransaction = transaction?.takeIf { committedTransaction ->
+            committedTransaction.affectsContent &&
+                committedTransaction.toContentEntry.entryId == snapshot.currentEntry.entryId
+        }
         if (
             transitionState.currentState == snapshot &&
             transitionState.targetState == snapshot &&
@@ -289,14 +309,31 @@ internal class ContentNavigationPresentationController(
         transitionState.animateTo(snapshot)
     }
 
+    fun transactionFor(
+        initial: ContentSceneSnapshot,
+        target: ContentSceneSnapshot,
+    ): NavigationTransaction? {
+        return ordinaryTransaction?.takeIf { transaction ->
+            transaction.fromContentEntry.entryId == initial.currentEntry.entryId &&
+                transaction.toContentEntry.entryId == target.currentEntry.entryId
+        }
+    }
+
     fun startPredictiveBack(
-        originTopEntryId: Long,
+        backPlan: NavigationPlan,
         origin: ContentSceneSnapshot,
         preview: ContentSceneSnapshot,
     ): ContentBackSession? {
+        if (
+            backPlan.cause != NavigationCause.Back ||
+            backPlan.expectedTopEntryId != origin.currentEntry.entryId ||
+            backPlan.targetState.currentContentEntry.entryId != preview.currentEntry.entryId
+        ) {
+            return null
+        }
         val session = ContentBackSession(
             sessionId = nextSessionId++,
-            originTopEntryId = originTopEntryId,
+            backPlan = backPlan,
             origin = origin,
             preview = preview,
         )
@@ -319,9 +356,15 @@ internal class ContentNavigationPresentationController(
     fun progressPredictiveBack(
         event: PlatformBackEvent,
         currentTopEntryId: Long,
+        currentRevision: Long,
     ) {
         val tracking = state as? ContentNavigationPresentationState.Tracking ?: return
-        if (tracking.session.originTopEntryId != currentTopEntryId) return
+        if (
+            tracking.session.originTopEntryId != currentTopEntryId ||
+            tracking.session.originRevision != currentRevision
+        ) {
+            return
+        }
 
         state = reduceContentNavigationPresentation(
             state,
@@ -395,10 +438,16 @@ internal class ContentNavigationPresentationController(
 
     fun invalidateIfOriginChanged(
         currentTopEntryId: Long,
+        currentRevision: Long,
         committedSnapshot: ContentSceneSnapshot,
     ): ContentBackSession? {
         val session = state.backSession ?: return null
-        if (session.originTopEntryId == currentTopEntryId) return null
+        if (
+            session.originTopEntryId == currentTopEntryId &&
+            session.originRevision == currentRevision
+        ) {
+            return null
+        }
 
         state = reduceContentNavigationPresentation(
             state,
