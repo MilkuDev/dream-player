@@ -25,9 +25,6 @@ internal data class ContentSceneSnapshot(
      */
     val contentLayer: Float
         get() = contentStack.lastIndex.toFloat()
-
-    val activeMainDestination: MainDestination
-        get() = chrome.activeMainDestination
 }
 
 internal data class DestinationChromePresentation(

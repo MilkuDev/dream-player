@@ -26,9 +26,6 @@ data class NavigationTransaction(
     val fromContentEntry: NavigationEntry,
     val toContentEntry: NavigationEntry,
 ) {
-    val revision: Long
-        get() = id
-
     val affectsContent: Boolean
         get() = fromContentEntry.entryId != toContentEntry.entryId
 }

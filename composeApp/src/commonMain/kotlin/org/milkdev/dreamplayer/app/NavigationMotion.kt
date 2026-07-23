@@ -67,14 +67,6 @@ private fun resolveNavigationMotion(
             it.toContentEntryId == target.currentEntry.entryId
     } ?: return NavigationMotionKind.FadeThrough
 
-    if (
-        motionContext.operation == NavigationOperation.MainSwitch ||
-        motionContext.operation == NavigationOperation.SearchOpen ||
-        motionContext.operation == NavigationOperation.SearchClose
-    ) {
-        return NavigationMotionKind.FadeThrough
-    }
-
     return when (motionContext.operation) {
         NavigationOperation.Push -> NavigationMotionKind.Forward
         NavigationOperation.Pop -> NavigationMotionKind.Backward
