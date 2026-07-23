@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.StateFlow
 expect object AudioPlayer {
     val state: StateFlow<AudioPlayerState>
     val playbackTimeSource: PlaybackTimeSource
+    fun prepare(snapshot: PlaybackSnapshot, startPositionMs: Long = 0L)
     fun play(snapshot: PlaybackSnapshot, startPositionMs: Long = 0L)
     fun updateQueue(snapshot: PlaybackSnapshot)
     fun moveQueueItem(fromIndex: Int, toIndex: Int, snapshot: PlaybackSnapshot)

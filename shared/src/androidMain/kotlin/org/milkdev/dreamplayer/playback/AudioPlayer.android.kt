@@ -40,6 +40,10 @@ actual object AudioPlayer {
     private var controller: MediaController? = null
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var playbackSnapshot: PlaybackSnapshot? = null
+    private var preparedPositionMs: Long = 0L
+    private var isLogicallyPrepared: Boolean = false
+    private var nextPreparedResumeRequestId: Long = 1L
+    private var preparedResumeRequestId: Long? = null
 
     private var controllerIndexToQueueIndex: List<Int> = emptyList()
     private var repeatMode: PlaybackRepeatMode = PlaybackRepeatMode.Off
@@ -50,16 +54,27 @@ actual object AudioPlayer {
 
     actual val playbackTimeSource: PlaybackTimeSource = object : PlaybackTimeSource {
         override fun snapshot(): PlaybackTimeSnapshot {
-            val c = synchronized(lock) { controller }
+            val (c, logicallyPrepared, preparedPosition) = synchronized(lock) {
+                Triple(controller, isLogicallyPrepared, preparedPositionMs)
+            }
             val s = _state.value
-            val rawPosition = c?.currentPosition
-            val positionMs = rawPosition?.coerceAtLeast(0L) ?: 0L
+            val positionMs = if (logicallyPrepared) {
+                preparedPosition
+            } else {
+                c?.currentPosition?.coerceAtLeast(0L) ?: 0L
+            }
             val durationMs = s.totalDurationMs
-            val bufferedPositionMs = c?.bufferedPosition?.coerceAtLeast(0L) ?: s.totalDurationMs
-            val playbackSpeed = c?.playbackParameters?.speed ?: 1f
+            val bufferedPositionMs = if (logicallyPrepared) {
+                0L
+            } else {
+                c?.bufferedPosition?.coerceAtLeast(0L) ?: s.totalDurationMs
+            }
+            val playbackSpeed = if (logicallyPrepared) {
+                1f
+            } else {
+                c?.playbackParameters?.speed ?: 1f
+            }
             val isPlaying = s.isPlaying
-            val playbackState = c?.playbackState
-            val playWhenReady = c?.playWhenReady
 
             return PlaybackTimeSnapshot(
                 positionMs = positionMs,
@@ -145,6 +160,7 @@ actual object AudioPlayer {
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            if (synchronized(lock) { isLogicallyPrepared }) return
             withController { mediaController ->
                 syncCurrentTrackFromController(mediaController)
                 mediaController.ensureUpcomingItem()
@@ -153,6 +169,7 @@ actual object AudioPlayer {
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
+            if (synchronized(lock) { isLogicallyPrepared }) return
             if (playbackState == Player.STATE_ENDED) {
                 withController { mediaController ->
                     syncCurrentTrackFromController(mediaController)
@@ -162,10 +179,26 @@ actual object AudioPlayer {
         }
     }
 
+    actual fun prepare(snapshot: PlaybackSnapshot, startPositionMs: Long) {
+        PlaybackTrace.event(
+            TraceCategory.Playback,
+            "PREPARE",
+            "startPositionMs=$startPositionMs itemCount=${snapshot.items.size}"
+        )
+        updateJob?.cancel()
+        setLogicalPreparation(snapshot, startPositionMs)
+    }
+
     actual fun play(snapshot: PlaybackSnapshot, startPositionMs: Long) {
         currentSessionId = nextSessionId++
         val sessionId = currentSessionId
+        updateJob?.cancel()
         setSnapshot(snapshot)
+        synchronized(lock) {
+            preparedPositionMs = snapshot.currentItem().clampPosition(startPositionMs)
+            isLogicallyPrepared = false
+            preparedResumeRequestId = null
+        }
         withController { mediaController ->
             val hash = System.identityHashCode(mediaController)
             PlaybackTrace.event(
@@ -191,6 +224,8 @@ actual object AudioPlayer {
             "UPDATE_QUEUE",
             "queueVersion=${snapshot.queue.queueVersion} itemCount=${snapshot.items.size}"
         )
+
+        if (updateLogicalPreparation(snapshot)) return
 
         updateJob?.cancel()
 
@@ -248,6 +283,8 @@ actual object AudioPlayer {
             "fromIndex=$fromIndex toIndex=$toIndex"
         )
 
+        if (updateLogicalPreparation(snapshot)) return
+
         updateJob?.cancel()
 
         updateJob = playerScope.launch {
@@ -285,6 +322,17 @@ actual object AudioPlayer {
     }
 
     actual fun pause() {
+        val handledLogicalPreparation = synchronized(lock) {
+            if (isLogicallyPrepared) {
+                preparedResumeRequestId = null
+                _state.value = _state.value.copy(isPlaying = false)
+                true
+            } else {
+                false
+            }
+        }
+        if (handledLogicalPreparation) return
+
         withController { mediaController ->
             val hash = System.identityHashCode(mediaController)
             PlaybackTrace.event(
@@ -298,6 +346,44 @@ actual object AudioPlayer {
     }
 
     actual fun resume() {
+        val logicalResumeRequestId = synchronized(lock) {
+            if (isLogicallyPrepared && preparedResumeRequestId == null) {
+                nextPreparedResumeRequestId++.also { requestId ->
+                    preparedResumeRequestId = requestId
+                }
+            } else {
+                null
+            }
+        }
+        if (logicalResumeRequestId != null) {
+            withController { mediaController ->
+                val preparedSnapshot = synchronized(lock) {
+                    playbackSnapshot?.takeIf {
+                        isLogicallyPrepared &&
+                            preparedResumeRequestId == logicalResumeRequestId
+                    }
+                } ?: return@withController
+                val hash = System.identityHashCode(mediaController)
+                PlaybackTrace.event(
+                    TraceCategory.Playback,
+                    "RESUME_PREPARED",
+                    "queueVersion=${preparedSnapshot.queue.queueVersion} controllerHash=$hash"
+                )
+                replaceControllerQueue(
+                    mediaController = mediaController,
+                    snapshot = preparedSnapshot,
+                    startPositionMs = 0L,
+                    playWhenReady = true,
+                    reason = "resume_prepared",
+                    preparedQueueVersionToConsume = preparedSnapshot.queue.queueVersion,
+                    preparedResumeRequestIdToConsume = logicalResumeRequestId,
+                )
+            }
+            return
+        }
+
+        if (synchronized(lock) { isLogicallyPrepared }) return
+
         withController { mediaController ->
             val hash = System.identityHashCode(mediaController)
             PlaybackTrace.event(
@@ -325,17 +411,24 @@ actual object AudioPlayer {
     }
 
     actual fun stop() {
-        withController { mediaController ->
+        updateJob?.cancel()
+        val mediaController = synchronized(lock) {
+            playbackSnapshot = null
+            preparedPositionMs = 0L
+            isLogicallyPrepared = false
+            preparedResumeRequestId = null
+            controllerIndexToQueueIndex = emptyList()
+            pendingActions.clear()
+            _state.value = AudioPlayerState()
+            controller
+        }
+        if (mediaController != null) {
             val hash = System.identityHashCode(mediaController)
             PlaybackTrace.event(
                 TraceCategory.Playback,
                 "STOP",
                 "controllerHash=$hash"
             )
-            synchronized(lock) {
-                playbackSnapshot = null
-                controllerIndexToQueueIndex = emptyList()
-            }
             mediaController.stop()
             mediaController.clearMediaItems()
             syncStateFromController(mediaController)
@@ -343,6 +436,29 @@ actual object AudioPlayer {
     }
 
     actual fun seekTo(positionMs: Long) {
+        val preparedSeekPosition = synchronized(lock) {
+            if (!isLogicallyPrepared) {
+                null
+            } else {
+                val currentItem = playbackSnapshot?.currentItem()
+                if (currentItem == null) {
+                    null
+                } else {
+                    currentItem.clampPosition(positionMs).also {
+                        preparedPositionMs = it
+                    }
+                }
+            }
+        }
+        if (preparedSeekPosition != null) {
+            PlaybackTrace.event(
+                TraceCategory.Playback,
+                "SEEK_PREPARED",
+                "requestedPositionMs=$positionMs positionMs=$preparedSeekPosition"
+            )
+            return
+        }
+
         withController { mediaController ->
             if (mediaController.mediaItemCount == 0) return@withController
 
@@ -364,10 +480,11 @@ actual object AudioPlayer {
 
     actual fun setRepeatMode(mode: PlaybackRepeatMode) {
         AppDebugLog.log("audio_repeat_mode mode=$mode")
-        synchronized(lock) {
+        val mediaController = synchronized(lock) {
             repeatMode = mode
+            if (isLogicallyPrepared) null else controller
         }
-        withController { mediaController ->
+        if (mediaController != null) {
             mediaController.repeatMode = mode.toMedia3RepeatMode()
             syncStateFromController(mediaController)
         }
@@ -375,10 +492,63 @@ actual object AudioPlayer {
 
     private fun setSnapshot(snapshot: PlaybackSnapshot) {
         synchronized(lock) {
-            playbackSnapshot = snapshot.copy(
-                queue = snapshot.queue.copy(trackIds = snapshot.queue.trackIds.copyOf()),
-                items = snapshot.items.toList(),
+            playbackSnapshot = snapshot.copyForPlayer()
+        }
+    }
+
+    private fun setLogicalPreparation(snapshot: PlaybackSnapshot, startPositionMs: Long) {
+        synchronized(lock) {
+            pendingActions.clear()
+            if (snapshot.items.isEmpty()) {
+                playbackSnapshot = null
+                preparedPositionMs = 0L
+                isLogicallyPrepared = false
+                preparedResumeRequestId = null
+                controllerIndexToQueueIndex = emptyList()
+                _state.value = AudioPlayerState()
+                return
+            }
+
+            val copiedSnapshot = snapshot.copyForPlayer()
+            val currentItem = copiedSnapshot.currentItem()
+            playbackSnapshot = copiedSnapshot
+            preparedPositionMs = currentItem.clampPosition(startPositionMs)
+            isLogicallyPrepared = currentItem != null
+            preparedResumeRequestId = null
+            controllerIndexToQueueIndex = emptyList()
+            _state.value = AudioPlayerState(
+                currentTrackId = currentItem?.trackId,
+                isPlaying = false,
+                totalDurationMs = currentItem?.metadata?.durationMs ?: 0L,
+                queue = copiedSnapshot.queue.copy(trackIds = copiedSnapshot.queue.trackIds.copyOf()),
             )
+        }
+    }
+
+    private fun updateLogicalPreparation(snapshot: PlaybackSnapshot): Boolean {
+        return synchronized(lock) {
+            if (!isLogicallyPrepared) return@synchronized false
+
+            val previousTrackId = playbackSnapshot?.queue?.currentTrackId
+            val previousPositionMs = preparedPositionMs
+            val copiedSnapshot = snapshot.copyForPlayer()
+            val currentItem = copiedSnapshot.currentItem()
+            playbackSnapshot = copiedSnapshot
+            preparedPositionMs = if (currentItem?.trackId == previousTrackId) {
+                currentItem.clampPosition(previousPositionMs)
+            } else {
+                0L
+            }
+            isLogicallyPrepared = currentItem != null
+            preparedResumeRequestId = null
+            controllerIndexToQueueIndex = emptyList()
+            _state.value = AudioPlayerState(
+                currentTrackId = currentItem?.trackId,
+                isPlaying = false,
+                totalDurationMs = currentItem?.metadata?.durationMs ?: 0L,
+                queue = copiedSnapshot.queue.copy(trackIds = copiedSnapshot.queue.trackIds.copyOf()),
+            )
+            true
         }
     }
 
@@ -420,6 +590,7 @@ actual object AudioPlayer {
                         if (controllerFuture === future) {
                             controllerFuture = null
                         }
+                        preparedResumeRequestId = null
                     }
                     return@addListener
                 }
@@ -482,6 +653,8 @@ actual object AudioPlayer {
         startPositionMs: Long,
         playWhenReady: Boolean,
         reason: String,
+        preparedQueueVersionToConsume: Long? = null,
+        preparedResumeRequestIdToConsume: Long? = null,
     ) {
         val availableIndexedItems = snapshot.items.mapIndexed { index, item -> index to item }
             .filter { (_, item) -> item.ref.availability == TrackAvailability.AVAILABLE && item.ref.uri.isNotBlank() }
@@ -510,17 +683,40 @@ actual object AudioPlayer {
             val mediaItems = withContext(Dispatchers.Default) {
                 availableIndexedItems.map { (queueIndex, item) -> item.toCachedMediaItem(queueIndex) }
             }
+            val effectiveStartPositionMs = if (preparedQueueVersionToConsume != null) {
+                synchronized(lock) {
+                    val canConsumePreparation =
+                        isLogicallyPrepared &&
+                            preparedResumeRequestId == preparedResumeRequestIdToConsume &&
+                            playbackSnapshot?.queue?.queueVersion == preparedQueueVersionToConsume
+                    if (!canConsumePreparation) return@launch
+                    preparedPositionMs
+                }
+            } else {
+                startPositionMs
+            }
             val hash = System.identityHashCode(mediaController)
             PlaybackTrace.event(
                 TraceCategory.Playback,
                 "SET_MEDIA_ITEMS",
-                "reason=$reason startIndex=$startIndex startPosition=${startPositionMs.coerceAtLeast(0L)} itemCount=${mediaItems.size} controllerHash=$hash"
+                "reason=$reason startIndex=$startIndex startPosition=${effectiveStartPositionMs.coerceAtLeast(0L)} itemCount=${mediaItems.size} controllerHash=$hash"
             )
             mediaController.setMediaItems(
                 mediaItems,
                 startIndex,
-                startPositionMs.coerceAtLeast(0L),
+                effectiveStartPositionMs.coerceAtLeast(0L),
             )
+            if (preparedQueueVersionToConsume != null) {
+                synchronized(lock) {
+                    if (
+                        playbackSnapshot?.queue?.queueVersion == preparedQueueVersionToConsume
+                            && preparedResumeRequestId == preparedResumeRequestIdToConsume
+                    ) {
+                        isLogicallyPrepared = false
+                        preparedResumeRequestId = null
+                    }
+                }
+            }
             mediaController.prepare()
             if (playWhenReady) {
                 mediaController.play()
@@ -549,6 +745,7 @@ actual object AudioPlayer {
         val playingTrackId = currentMediaItem.mediaId.substringAfter("_").toLongOrNull() ?: return
 
         synchronized(lock) {
+            if (isLogicallyPrepared) return@synchronized
             val snapshot = playbackSnapshot ?: return@synchronized
             val currentControllerIndex = mediaController.currentMediaItemIndex
 
@@ -658,6 +855,7 @@ actual object AudioPlayer {
 
     private fun syncStateFromController(mediaController: MediaController? = synchronized(lock) { controller }) {
         synchronized(lock) {
+            if (isLogicallyPrepared) return
             val snapshot = playbackSnapshot
             val queue = snapshot?.queue ?: EmptyPlaybackQueueSnapshot
             val currentTrackId = queue.currentTrackId
@@ -681,6 +879,28 @@ actual object AudioPlayer {
                 totalDurationMs = resolvedDurationMs,
                 queue = queue.copy(trackIds = queue.trackIds.copyOf()),
             )
+        }
+    }
+
+    private fun PlaybackSnapshot.copyForPlayer(): PlaybackSnapshot {
+        return copy(
+            queue = queue.copy(trackIds = queue.trackIds.copyOf()),
+            items = items.toList(),
+        )
+    }
+
+    private fun PlaybackSnapshot.currentItem(): ResolvedPlaybackItem? {
+        val currentTrackId = queue.currentTrackId
+        return items.firstOrNull { it.trackId == currentTrackId }
+            ?: items.getOrNull(queue.currentIndex)
+    }
+
+    private fun ResolvedPlaybackItem?.clampPosition(positionMs: Long): Long {
+        val durationMs = this?.metadata?.durationMs ?: 0L
+        return if (durationMs > 0L) {
+            positionMs.coerceIn(0L, durationMs)
+        } else {
+            positionMs.coerceAtLeast(0L)
         }
     }
 }

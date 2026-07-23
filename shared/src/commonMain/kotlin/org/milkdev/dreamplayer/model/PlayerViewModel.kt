@@ -68,10 +68,11 @@ import org.milkdev.dreamplayer.playback.AudioPlayer
 import org.milkdev.dreamplayer.playback.DailyPlaylistUiState
 import org.milkdev.dreamplayer.playback.PlaybackQueueController
 import org.milkdev.dreamplayer.playback.PlaybackQueueSnapshot
+import org.milkdev.dreamplayer.playback.PlaybackPersistenceCoordinator
+import org.milkdev.dreamplayer.playback.PlaybackProgressWorker
 import org.milkdev.dreamplayer.playback.PlaybackRepeatMode
 import org.milkdev.dreamplayer.playback.PlaybackResolver
 import org.milkdev.dreamplayer.playback.PlaybackSnapshot
-import org.milkdev.dreamplayer.playback.SavePointWorker
 import org.milkdev.dreamplayer.playback.LibraryUiState
 import org.milkdev.dreamplayer.playback.PlaybackUiState
 import org.milkdev.dreamplayer.playback.ResolvedPlaybackItem
@@ -79,6 +80,7 @@ import org.milkdev.dreamplayer.playback.SettingsUiState
 import org.milkdev.dreamplayer.playback.TrackAvailability
 import org.milkdev.dreamplayer.playback.matchesQueue
 import org.milkdev.dreamplayer.playback.movedCopy
+import org.milkdev.dreamplayer.playback.planPlaybackRestore
 import org.milkdev.dreamplayer.playback.shuffledWithCurrentFirst
 import kotlin.random.Random
 import kotlin.time.Clock
@@ -123,16 +125,17 @@ class PlayerViewModel {
     private var searchPageCursor: LibraryPageCursor? = null
     private var playlistPickerPageCursor: LibraryPageCursor? = null
     private var restoreAttempted = false
-    private var pendingResumePositionMs: Long = 0L
     private val currentNavigationSnapshot: AppNavigationSnapshot
         get() = _navigationSnapshot.value
     private val currentNavigationState
         get() = currentNavigationSnapshot.state
 
-    private val savePointWorker = SavePointWorker(
+    private val playbackPersistence = PlaybackPersistenceCoordinator(storeScope)
+    private val playbackProgressWorker = PlaybackProgressWorker(
         scope = storeScope,
         audioPlayerState = AudioPlayer.state,
         playbackTimeSource = AudioPlayer.playbackTimeSource,
+        onCheckpoint = playbackPersistence::savePosition,
     )
 
     init {
@@ -209,7 +212,7 @@ class PlayerViewModel {
                 val previousTrackId = _playbackState.value.currentTrack?.id
                 val newTrackId = currentQueueSnapshot.currentTrackId
                 if (previousTrackId != null && newTrackId != null && previousTrackId != newTrackId) {
-                    savePlaybackState()
+                    savePlaybackState(positionMs = 0L)
                 }
 
                 val queueTracks = when {
@@ -353,7 +356,7 @@ class PlayerViewModel {
                 }
             }
         }
-        savePointWorker.start()
+        playbackProgressWorker.start()
         storeScope.launch {
             @OptIn(ExperimentalCoroutinesApi::class)
             AudioPlayer.state
@@ -910,12 +913,9 @@ class PlayerViewModel {
         if (AudioPlayer.state.value.currentTrackId == null) {
             val snapshot = playbackQueueController.snapshot()
             if (snapshot.trackIds.isNotEmpty()) {
-                val restoredPosition = pendingResumePositionMs
-                pendingResumePositionMs = 0L
                 applyQueueSnapshot(
                     snapshot,
                     PlaybackSnapshotApplyMode.Play,
-                    startPositionMs = restoredPosition,
                 )
                 return
             }
@@ -936,7 +936,16 @@ class PlayerViewModel {
     }
 
     fun seekTo(positionMs: Long) {
-        AudioPlayer.seekTo(positionMs)
+        val durationMs = AudioPlayer.state.value.totalDurationMs
+        val clampedPositionMs = if (durationMs > 0L) {
+            positionMs.coerceIn(0L, durationMs)
+        } else {
+            positionMs.coerceAtLeast(0L)
+        }
+        AudioPlayer.seekTo(clampedPositionMs)
+        playbackQueueController.currentTrackId?.let { trackId ->
+            playbackPersistence.savePosition(trackId, clampedPositionMs)
+        }
     }
 
     fun toggleShuffle() {
@@ -1016,6 +1025,7 @@ class PlayerViewModel {
                 moveRequest = QueueMoveRequest(fromIndex, toIndex),
                 shuffleApplyMode = ShuffleApplyMode.QueueVisible,
             )
+            savePlaybackState()
         }
     }
 
@@ -1034,7 +1044,7 @@ class PlayerViewModel {
             )
         }
         commitNavigationIntent(NavigationIntent.RemovePlaybackOverlays)
-        SettingsRepository.clearPlaybackState()
+        playbackPersistence.clear()
     }
 
     fun setBlurEnabled(enabled: Boolean) {
@@ -1575,7 +1585,10 @@ class PlayerViewModel {
             }
 
             when (mode) {
-                PlaybackSnapshotApplyMode.Play -> AudioPlayer.play(playbackSnapshot, startPositionMs)
+                PlaybackSnapshotApplyMode.Play -> {
+                    AudioPlayer.play(playbackSnapshot, startPositionMs)
+                    savePlaybackState(positionMs = startPositionMs)
+                }
                 PlaybackSnapshotApplyMode.Update -> AudioPlayer.updateQueue(playbackSnapshot)
                 PlaybackSnapshotApplyMode.Move -> {
                     val request = moveRequest ?: return@launch
@@ -1613,19 +1626,22 @@ class PlayerViewModel {
         }
     }
 
-    private fun savePlaybackState() {
+    private fun savePlaybackState(positionMs: Long? = null) {
         val snapshot = playbackQueueController.snapshot()
         if (snapshot.trackIds.isEmpty()) return
+        val currentTrackId = snapshot.currentTrackId ?: return
         val currentPlaybackState = _playbackState.value
-        val positionMs = AudioPlayer.playbackTimeSource.snapshot().positionMs
-        SettingsRepository.savePlaybackState(
+        val resolvedPositionMs = positionMs
+            ?: AudioPlayer.playbackTimeSource.snapshot().positionMs
+        playbackPersistence.saveState(
             SettingsRepository.SavedPlaybackState(
                 queueTrackIds = playbackQueueController.originalTrackIdsSnapshot().toList(),
                 queueShuffledIds = if (playbackQueueController.isShuffleEnabled) {
                     snapshot.trackIds.toList()
                 } else null,
                 queueIndex = snapshot.currentIndex,
-                trackPositionMs = positionMs,
+                currentTrackId = currentTrackId,
+                trackPositionMs = resolvedPositionMs.coerceAtLeast(0L),
                 shuffleEnabled = playbackQueueController.isShuffleEnabled,
                 repeatMode = currentPlaybackState.repeatMode.name,
             )
@@ -1647,26 +1663,34 @@ class PlayerViewModel {
             .filter { it.ref.availability != TrackAvailability.MISSING }
             .map { it.trackId }
 
-        if (availableIds.isEmpty()) {
-            SettingsRepository.clearPlaybackState()
+        val restorePlan = planPlaybackRestore(
+            originalTrackIds = savedState.queueTrackIds,
+            shuffledTrackIds = savedState.queueShuffledIds,
+            shuffleEnabled = savedState.shuffleEnabled,
+            queueIndex = savedState.queueIndex,
+            savedCurrentTrackId = savedState.currentTrackId,
+            savedPositionMs = savedState.trackPositionMs,
+            availableTrackIds = availableIds.toSet(),
+        )
+        if (restorePlan == null) {
+            playbackPersistence.clear()
+            playbackPersistence.flush()
             return
         }
 
-        val filteredIds = availableIds.toLongArray()
-        val queueIndex = savedState.queueIndex.coerceIn(0, filteredIds.lastIndex)
-        val currentId = filteredIds.getOrNull(queueIndex) ?: return
-
-        val snapshot = playbackQueueController.setQueue(filteredIds, queueIndex)
+        val originalIds = restorePlan.originalTrackIds.toLongArray()
+        val originalCurrentIndex = restorePlan.originalTrackIds
+            .indexOf(restorePlan.currentTrackId)
+            .coerceAtLeast(0)
+        val snapshot = playbackQueueController.setQueue(originalIds, originalCurrentIndex)
 
         if (savedState.shuffleEnabled) {
-            val shuffledIds = savedState.queueShuffledIds
-                ?.filter { it in availableIds.toSet() }
-                ?.toLongArray()
-            if (shuffledIds != null && shuffledIds.size == filteredIds.size) {
+            val shuffledIds = restorePlan.shuffledTrackIds?.toLongArray()
+            if (shuffledIds != null) {
                 playbackQueueController.replaceActiveOrder(
                     expectedQueueVersion = snapshot.queueVersion,
                     orderedTrackIds = shuffledIds,
-                    currentTrackId = currentId,
+                    currentTrackId = restorePlan.currentTrackId,
                     shuffleEnabled = true,
                     updateOriginalOrder = false,
                 )
@@ -1679,7 +1703,10 @@ class PlayerViewModel {
         val displayQueue = withContext(Dispatchers.Default) {
             MusicLibrarySource.resolveDisplayQueue(finalSnapshot.trackIds)
         }
-        val resolvedTrack = resolvedItems.firstOrNull { it.trackId == currentId }
+        val preparedPlaybackSnapshot = PlaybackResolver.resolve(finalSnapshot)
+        val resolvedTrack = resolvedItems.firstOrNull {
+            it.trackId == restorePlan.currentTrackId
+        }
         val libraryTrack = resolvedTrack?.let { item ->
             LibraryTrack(
                 id = item.trackId,
@@ -1696,10 +1723,11 @@ class PlayerViewModel {
         } catch (_: IllegalArgumentException) {
             PlaybackRepeatMode.Off
         }
-        val maxDuration = displayQueue.firstOrNull { it.id == currentId }?.durationMs ?: 0L
-        val clampedPosition = savedState.trackPositionMs.coerceIn(0L, maxDuration)
-
-        pendingResumePositionMs = clampedPosition
+        val maxDuration = displayQueue
+            .firstOrNull { it.id == restorePlan.currentTrackId }
+            ?.durationMs
+            ?: 0L
+        val clampedPosition = restorePlan.trackPositionMs.coerceIn(0L, maxDuration)
 
         _playbackState.update {
             it.copy(
@@ -1713,6 +1741,9 @@ class PlayerViewModel {
                 isPlaying = false,
             )
         }
+        AudioPlayer.prepare(preparedPlaybackSnapshot, clampedPosition)
+        AudioPlayer.setRepeatMode(repeatMode)
+        savePlaybackState(positionMs = clampedPosition)
     }
 
     private suspend fun refreshAiPlaylistApiKeyConfigured(providerId: String) {
