@@ -13,14 +13,40 @@ import org.milkdev.dreamplayer.navigation.NavigationCause
 import org.milkdev.dreamplayer.navigation.NavigationPlan
 import org.milkdev.dreamplayer.navigation.NavigationTransaction
 
+/** A scene paired with the transaction-scoped motion that presents it. */
+internal data class ContentTransitionFrame(
+    val scene: ContentSceneSnapshot,
+    val motionContext: NavigationMotionContext? = null,
+)
+
+internal enum class ContentBackMode {
+    Predictive,
+    TimeDriven,
+}
+
+internal enum class ContentBackSource {
+    Platform,
+    Ui,
+}
+
 internal data class ContentBackSession(
     val sessionId: Long,
     val backPlan: NavigationPlan,
-    val origin: ContentSceneSnapshot,
-    val preview: ContentSceneSnapshot,
+    val originFrame: ContentTransitionFrame,
+    val previewFrame: ContentTransitionFrame,
+    val mode: ContentBackMode = ContentBackMode.Predictive,
+    val source: ContentBackSource = ContentBackSource.Platform,
     val progress: Float = 0f,
+    val progressEventCount: Int = 0,
+    val maxProgress: Float = 0f,
     val swipeEdge: BackSwipeEdge = BackSwipeEdge.None,
 ) {
+    val origin: ContentSceneSnapshot
+        get() = originFrame.scene
+
+    val preview: ContentSceneSnapshot
+        get() = previewFrame.scene
+
     val originTopEntryId: Long
         get() = backPlan.expectedTopEntryId
 
@@ -65,6 +91,10 @@ internal sealed interface ContentNavigationPresentationEvent {
     ) : ContentNavigationPresentationEvent
 
     data class BackStarted(
+        val session: ContentBackSession,
+    ) : ContentNavigationPresentationEvent
+
+    data class TimeDrivenBackStarted(
         val session: ContentBackSession,
     ) : ContentNavigationPresentationEvent
 
@@ -137,12 +167,27 @@ internal fun reduceContentNavigationPresentation(
             }
         }
 
+        is ContentNavigationPresentationEvent.TimeDrivenBackStarted -> when (state) {
+            ContentNavigationPresentationState.Idle ->
+                ContentNavigationPresentationState.Committing(event.session)
+
+            is ContentNavigationPresentationState.Animating,
+            is ContentNavigationPresentationState.Tracking,
+            is ContentNavigationPresentationState.Cancelling,
+            is ContentNavigationPresentationState.Committing -> state
+        }
+
         is ContentNavigationPresentationEvent.BackProgressed -> {
             val tracking = state as? ContentNavigationPresentationState.Tracking
             if (tracking?.session?.sessionId == event.sessionId) {
                 tracking.copy(
                     session = tracking.session.copy(
                         progress = event.progress.coerceIn(0f, 1f),
+                        progressEventCount = tracking.session.progressEventCount + 1,
+                        maxProgress = maxOf(
+                            tracking.session.maxProgress,
+                            event.progress.coerceIn(0f, 1f),
+                        ),
                         swipeEdge = event.swipeEdge,
                     ),
                 )
@@ -164,10 +209,16 @@ internal fun reduceContentNavigationPresentation(
             val tracking = state as? ContentNavigationPresentationState.Tracking
             if (tracking?.session?.sessionId != event.sessionId) {
                 state
-            } else if (event.hadProgress) {
-                ContentNavigationPresentationState.Committing(tracking.session)
             } else {
-                ContentNavigationPresentationState.Idle
+                ContentNavigationPresentationState.Committing(
+                    tracking.session.copy(
+                        mode = if (event.hadProgress) {
+                            ContentBackMode.Predictive
+                        } else {
+                            ContentBackMode.TimeDriven
+                        },
+                    ),
+                )
             }
         }
 
@@ -236,10 +287,6 @@ internal sealed interface ContentBackCommitResult {
     data object NoSession : ContentBackCommitResult
     data object Ignored : ContentBackCommitResult
 
-    data class Immediate(
-        val session: ContentBackSession,
-    ) : ContentBackCommitResult
-
     data class Animated(
         val session: ContentBackSession,
     ) : ContentBackCommitResult
@@ -260,7 +307,11 @@ internal sealed interface ContentTransitionCompletion {
 internal class ContentNavigationPresentationController(
     initialSnapshot: ContentSceneSnapshot,
 ) {
-    val transitionState = DeferredTransitionState(initialSnapshot)
+    val transitionState = DeferredTransitionState(
+        ContentTransitionFrame(
+            scene = initialSnapshot,
+        ),
+    )
 
     var state: ContentNavigationPresentationState by mutableStateOf(
         ContentNavigationPresentationState.Idle,
@@ -271,10 +322,12 @@ internal class ContentNavigationPresentationController(
         get() = state.backSession
 
     private var nextSessionId = 1L
-    private var ordinaryTransaction: NavigationTransaction? = null
 
     fun canRequestContentBack(isTransitionRunning: Boolean): Boolean {
-        return state is ContentNavigationPresentationState.Idle && !isTransitionRunning
+        return state is ContentNavigationPresentationState.Idle &&
+            !isTransitionRunning &&
+            transitionState.pendingTargetState == null &&
+            transitionState.currentState == transitionState.targetState
     }
 
     fun onCommittedSnapshotChanged(
@@ -282,13 +335,9 @@ internal class ContentNavigationPresentationController(
         transaction: NavigationTransaction?,
     ) {
         if (state.backSession != null) return
-        ordinaryTransaction = transaction?.takeIf { committedTransaction ->
-            committedTransaction.affectsContent &&
-                committedTransaction.toContentEntry.entryId == snapshot.currentEntry.entryId
-        }
         if (
-            transitionState.currentState == snapshot &&
-            transitionState.targetState == snapshot &&
+            transitionState.currentState.scene == snapshot &&
+            transitionState.targetState.scene == snapshot &&
             transitionState.pendingTargetState == null
         ) {
             state = reduceContentNavigationPresentation(
@@ -301,22 +350,16 @@ internal class ContentNavigationPresentationController(
             )
             return
         }
+        val targetFrame = newTransitionFrame(
+            scene = snapshot,
+            motionContext = transaction?.toMotionContext(),
+        )
 
         state = reduceContentNavigationPresentation(
             state,
             ContentNavigationPresentationEvent.AnimationStarted(snapshot),
         )
-        transitionState.animateTo(snapshot)
-    }
-
-    fun transactionFor(
-        initial: ContentSceneSnapshot,
-        target: ContentSceneSnapshot,
-    ): NavigationTransaction? {
-        return ordinaryTransaction?.takeIf { transaction ->
-            transaction.fromContentEntry.entryId == initial.currentEntry.entryId &&
-                transaction.toContentEntry.entryId == target.currentEntry.entryId
-        }
+        transitionState.animateTo(targetFrame)
     }
 
     fun startPredictiveBack(
@@ -331,11 +374,22 @@ internal class ContentNavigationPresentationController(
         ) {
             return null
         }
+        if (
+            transitionState.targetState.scene != origin ||
+            transitionState.pendingTargetState != null
+        ) {
+            return null
+        }
+        val originFrame = transitionState.targetState
+        val previewFrame = newTransitionFrame(
+            scene = preview,
+            motionContext = backPlan.toMotionContext(origin, preview),
+        )
         val session = ContentBackSession(
             sessionId = nextSessionId++,
             backPlan = backPlan,
-            origin = origin,
-            preview = preview,
+            originFrame = originFrame,
+            previewFrame = previewFrame,
         )
         val updatedState = reduceContentNavigationPresentation(
             state,
@@ -349,7 +403,50 @@ internal class ContentNavigationPresentationController(
         }
 
         state = updatedState
-        transitionState.defer(preview)
+        transitionState.defer(previewFrame)
+        return session
+    }
+
+    fun startTimeDrivenBack(
+        backPlan: NavigationPlan,
+        origin: ContentSceneSnapshot,
+        preview: ContentSceneSnapshot,
+    ): ContentBackSession? {
+        if (
+            state !is ContentNavigationPresentationState.Idle ||
+            backPlan.cause != NavigationCause.Back ||
+            backPlan.expectedTopEntryId != origin.currentEntry.entryId ||
+            backPlan.targetState.currentContentEntry.entryId != preview.currentEntry.entryId ||
+            transitionState.targetState.scene != origin ||
+            transitionState.pendingTargetState != null
+        ) {
+            return null
+        }
+
+        val session = ContentBackSession(
+            sessionId = nextSessionId++,
+            backPlan = backPlan,
+            originFrame = transitionState.targetState,
+            previewFrame = newTransitionFrame(
+                scene = preview,
+                motionContext = backPlan.toMotionContext(origin, preview),
+            ),
+            mode = ContentBackMode.TimeDriven,
+            source = ContentBackSource.Ui,
+        )
+        val updatedState = reduceContentNavigationPresentation(
+            state,
+            ContentNavigationPresentationEvent.TimeDrivenBackStarted(session),
+        )
+        if (
+            updatedState !is ContentNavigationPresentationState.Committing ||
+            updatedState.session.sessionId != session.sessionId
+        ) {
+            return null
+        }
+
+        state = updatedState
+        transitionState.animateTo(session.previewFrame)
         return session
     }
 
@@ -400,13 +497,10 @@ internal class ContentNavigationPresentationController(
                 hadProgress = hadProgress,
             ),
         )
-        return if (hadProgress) {
-            transitionState.animateTo(tracking.session.preview)
-            ContentBackCommitResult.Animated(tracking.session)
-        } else {
-            transitionState.animateTo(tracking.session.origin)
-            ContentBackCommitResult.Immediate(tracking.session)
-        }
+        val committing = state as? ContentNavigationPresentationState.Committing
+            ?: return ContentBackCommitResult.Ignored
+        transitionState.animateTo(committing.session.previewFrame)
+        return ContentBackCommitResult.Animated(committing.session)
     }
 
     suspend fun settleCancellation(sessionId: Long) {
@@ -432,7 +526,7 @@ internal class ContentNavigationPresentationController(
 
         val current = state as? ContentNavigationPresentationState.Cancelling
         if (current?.session?.sessionId == sessionId) {
-            transitionState.animateTo(current.session.origin)
+            transitionState.animateTo(current.session.originFrame)
         }
     }
 
@@ -453,14 +547,14 @@ internal class ContentNavigationPresentationController(
             state,
             ContentNavigationPresentationEvent.RouteInvalidated(committedSnapshot),
         )
-        transitionState.animateTo(committedSnapshot)
+        transitionState.animateTo(newTransitionFrame(scene = committedSnapshot))
         return session
     }
 
     fun onTransitionObserved(
-        currentState: ContentSceneSnapshot,
-        targetState: ContentSceneSnapshot,
-        pendingTargetState: ContentSceneSnapshot?,
+        currentState: ContentTransitionFrame,
+        targetState: ContentTransitionFrame,
+        pendingTargetState: ContentTransitionFrame?,
         isRunning: Boolean,
     ): ContentTransitionCompletion? {
         if (pendingTargetState != null || isRunning || currentState != targetState) return null
@@ -468,7 +562,7 @@ internal class ContentNavigationPresentationController(
         val previousState = state
         val updatedState = reduceContentNavigationPresentation(
             state,
-            ContentNavigationPresentationEvent.TransitionSettled(currentState),
+            ContentNavigationPresentationEvent.TransitionSettled(currentState.scene),
         )
         state = updatedState
         return when {
@@ -503,7 +597,32 @@ internal class ContentNavigationPresentationController(
             ),
         )
         if (matchesPendingPop && !didPop) {
-            transitionState.animateTo(recoveryTarget)
+            val recoveryFrame = committing.session.originFrame
+                .takeIf { it.scene == recoveryTarget }
+                ?: newTransitionFrame(scene = recoveryTarget)
+            transitionState.animateTo(recoveryFrame)
         }
     }
+
+    private fun newTransitionFrame(
+        scene: ContentSceneSnapshot,
+        motionContext: NavigationMotionContext? = null,
+    ): ContentTransitionFrame {
+        return ContentTransitionFrame(
+            scene = scene,
+            motionContext = motionContext,
+        )
+    }
+}
+
+private fun NavigationPlan.toMotionContext(
+    origin: ContentSceneSnapshot,
+    preview: ContentSceneSnapshot,
+): NavigationMotionContext {
+    return NavigationMotionContext(
+        transitionId = expectedRevision + 1L,
+        operation = operation,
+        fromContentEntryId = origin.currentEntry.entryId,
+        toContentEntryId = preview.currentEntry.entryId,
+    )
 }

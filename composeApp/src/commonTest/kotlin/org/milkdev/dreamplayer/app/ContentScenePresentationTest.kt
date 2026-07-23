@@ -84,8 +84,12 @@ class ContentScenePresentationTest {
         return ContentBackSession(
             sessionId = 1L,
             backPlan = backPlan,
-            origin = contentSceneSnapshot(state.backStack),
-            preview = contentSceneSnapshot(backPlan.targetState.backStack),
+            originFrame = ContentTransitionFrame(
+                scene = contentSceneSnapshot(state.backStack),
+            ),
+            previewFrame = ContentTransitionFrame(
+                scene = contentSceneSnapshot(backPlan.targetState.backStack),
+            ),
         )
     }
 

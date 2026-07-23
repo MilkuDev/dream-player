@@ -13,7 +13,6 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
-import org.milkdev.dreamplayer.navigation.AppRoute
 import org.milkdev.dreamplayer.navigation.NavigationOperation
 import org.milkdev.dreamplayer.navigation.NavigationTransaction
 
@@ -35,32 +34,48 @@ internal enum class NavigationMotionKind {
     FadeThrough,
 }
 
+internal data class NavigationMotionContext(
+    val transitionId: Long,
+    val operation: NavigationOperation,
+    val fromContentEntryId: Long,
+    val toContentEntryId: Long,
+)
+
 internal fun resolveNavigationMotion(
     initial: ContentSceneSnapshot,
     target: ContentSceneSnapshot,
     transaction: NavigationTransaction?,
 ): NavigationMotionKind {
+    return resolveNavigationMotion(
+        initial = initial,
+        target = target,
+        context = transaction?.toMotionContext(),
+    )
+}
+
+private fun resolveNavigationMotion(
+    initial: ContentSceneSnapshot,
+    target: ContentSceneSnapshot,
+    context: NavigationMotionContext?,
+): NavigationMotionKind {
     if (initial.currentEntry.entryId == target.currentEntry.entryId) {
         return NavigationMotionKind.None
     }
 
-    val committedTransaction = transaction?.takeIf {
-        it.affectsContent &&
-            it.fromContentEntry.entryId == initial.currentEntry.entryId &&
-            it.toContentEntry.entryId == target.currentEntry.entryId
+    val motionContext = context?.takeIf {
+        it.fromContentEntryId == initial.currentEntry.entryId &&
+            it.toContentEntryId == target.currentEntry.entryId
     } ?: return NavigationMotionKind.FadeThrough
 
     if (
-        committedTransaction.operation == NavigationOperation.MainSwitch ||
-        committedTransaction.operation == NavigationOperation.SearchOpen ||
-        committedTransaction.operation == NavigationOperation.SearchClose ||
-        initial.currentEntry.route.isMainMotionRoute() ||
-        target.currentEntry.route.isMainMotionRoute()
+        motionContext.operation == NavigationOperation.MainSwitch ||
+        motionContext.operation == NavigationOperation.SearchOpen ||
+        motionContext.operation == NavigationOperation.SearchClose
     ) {
         return NavigationMotionKind.FadeThrough
     }
 
-    return when (committedTransaction.operation) {
+    return when (motionContext.operation) {
         NavigationOperation.Push -> NavigationMotionKind.Forward
         NavigationOperation.Pop -> NavigationMotionKind.Backward
 
@@ -77,9 +92,9 @@ internal fun resolveNavigationMotion(
 internal fun navigationContentTransform(
     initial: ContentSceneSnapshot,
     target: ContentSceneSnapshot,
-    transaction: NavigationTransaction?,
+    context: NavigationMotionContext?,
 ): ContentTransform {
-    val motionKind = resolveNavigationMotion(initial, target, transaction)
+    val motionKind = resolveNavigationMotion(initial, target, context)
     val transform = when (motionKind) {
         NavigationMotionKind.None -> fadeIn(tween(0)) togetherWith fadeOut(tween(0))
 
@@ -122,20 +137,24 @@ internal fun navigationContentTransform(
     return ContentTransform(
         targetContentEnter = transform.targetContentEnter,
         initialContentExit = transform.initialContentExit,
-        targetContentZIndex = when (motionKind) {
-            NavigationMotionKind.Backward -> -1f
-
-            NavigationMotionKind.Forward,
-            NavigationMotionKind.FadeThrough -> 1f
-
-            NavigationMotionKind.None -> 0f
-        },
+        targetContentZIndex = target.contentLayer,
         sizeTransform = SizeTransform(clip = false),
+    )
+}
+
+internal fun NavigationTransaction.toMotionContext(): NavigationMotionContext? {
+    if (!affectsContent) return null
+    return NavigationMotionContext(
+        transitionId = id,
+        operation = operation,
+        fromContentEntryId = fromContentEntry.entryId,
+        toContentEntryId = toContentEntry.entryId,
     )
 }
 
 internal fun predictiveBackContentTransform(
     swipeEdge: BackSwipeEdge,
+    target: ContentSceneSnapshot,
 ): ContentTransform {
     val direction = if (swipeEdge == BackSwipeEdge.Right) -1 else 1
     val exit = slideOutHorizontally(
@@ -148,22 +167,20 @@ internal fun predictiveBackContentTransform(
     return ContentTransform(
         targetContentEnter = EnterTransition.None,
         initialContentExit = exit,
-        targetContentZIndex = -1f,
+        targetContentZIndex = target.contentLayer,
         sizeTransform = SizeTransform(clip = false),
     )
 }
 
-internal fun predictiveBackCancelContentTransform(): ContentTransform {
+internal fun predictiveBackCancelContentTransform(
+    target: ContentSceneSnapshot,
+): ContentTransform {
     return ContentTransform(
         targetContentEnter = EnterTransition.None,
         initialContentExit = ExitTransition.None,
-        targetContentZIndex = 1f,
+        targetContentZIndex = target.contentLayer,
         sizeTransform = SizeTransform(clip = false),
     )
-}
-
-private fun AppRoute.isMainMotionRoute(): Boolean {
-    return this == AppRoute.Home || this == AppRoute.Library || this == AppRoute.Search
 }
 
 private val MotionEnterEasing = CubicBezierEasing(0.05f, 0.7f, 0.1f, 1f)

@@ -66,7 +66,6 @@ internal sealed interface NavigationIntent {
     ) : NavigationIntent
 
     data object OpenSearch : NavigationIntent
-    data object CloseSearch : NavigationIntent
 
     data class Pop(
         val expectedTopEntryId: Long? = null,
@@ -90,7 +89,6 @@ internal object AppNavigator {
             is NavigationIntent.SelectMain -> currentState.selectMainPage(intent.page)
             is NavigationIntent.Push -> currentState.push(intent.route)
             NavigationIntent.OpenSearch -> currentState.openSearch()
-            NavigationIntent.CloseSearch -> currentState.closeSearch()
             is NavigationIntent.Pop -> currentState.pop(intent.expectedTopEntryId)
             NavigationIntent.RemovePlaybackOverlays -> currentState.removePlaybackOverlays()
         } ?: return null
@@ -146,8 +144,7 @@ private fun NavigationIntent.cause(): NavigationCause {
         NavigationIntent.RemovePlaybackOverlays -> NavigationCause.SystemCorrection
         is NavigationIntent.SelectMain,
         is NavigationIntent.Push,
-        NavigationIntent.OpenSearch,
-        NavigationIntent.CloseSearch -> NavigationCause.Direct
+        NavigationIntent.OpenSearch -> NavigationCause.Direct
     }
 }
 
@@ -163,7 +160,6 @@ private fun NavigationIntent.operation(
         }
 
         NavigationIntent.OpenSearch -> NavigationOperation.SearchOpen
-        NavigationIntent.CloseSearch -> NavigationOperation.SearchClose
         is NavigationIntent.Pop -> when (currentState.currentDestination) {
             AppRoute.Player,
             AppRoute.Queue -> NavigationOperation.OverlayClose

@@ -17,6 +17,15 @@ internal data class ContentSceneSnapshot(
         contentStack = contentStack,
     ),
 ) {
+    /**
+     * Stable draw order owned by the scene's position in navigation history.
+     *
+     * AnimatedContent retains the z-index assigned when content enters. Using stack depth keeps a
+     * restored scene below the scene being popped on every consecutive Back transition.
+     */
+    val contentLayer: Float
+        get() = contentStack.lastIndex.toFloat()
+
     val activeMainDestination: MainDestination
         get() = chrome.activeMainDestination
 }

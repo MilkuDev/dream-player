@@ -154,6 +154,19 @@ fun App(
             )
 
             is ContentTransitionCompletion.CommitReady -> {
+                val readyLogEvent = when (completion.session.source) {
+                    ContentBackSource.Platform -> "predictive_back_transition_ready"
+                    ContentBackSource.Ui -> "content_back_transition_ready"
+                }
+                AppDebugLog.log(
+                    "$readyLogEvent surface=content " +
+                        "entryId=${completion.session.originTopEntryId} " +
+                        "origin=${completion.session.origin.currentEntry.route} " +
+                        "preview=${completion.session.preview.currentEntry.route} " +
+                        "mode=${completion.session.mode.name.lowercase()} " +
+                        "events=${completion.session.progressEventCount} " +
+                        "maxProgress=${completion.session.maxProgress}",
+                )
                 val didPop = playerViewModel.commitBack(completion.session.backPlan)
                 contentPresentationController.onCommitPopCompleted(
                     sessionId = completion.session.sessionId,
@@ -162,8 +175,12 @@ fun App(
                         playerViewModel.navigationSnapshot.value.state.backStack,
                     ),
                 )
+                val logEvent = when (completion.session.source) {
+                    ContentBackSource.Platform -> "predictive_back_settled"
+                    ContentBackSource.Ui -> "content_back_settled"
+                }
                 AppDebugLog.log(
-                    "predictive_back_settled surface=content " +
+                    "$logEvent surface=content " +
                         "result=${if (didPop) "committed" else "stale"} " +
                         "entryId=${completion.session.originTopEntryId}",
                 )
@@ -185,8 +202,8 @@ fun App(
             contentBackSession == null &&
                 !contentTransition.isRunning &&
                 contentTransition.pendingTargetState == null &&
-                contentTransition.currentState == committedContentSnapshot &&
-                contentTransition.targetState == committedContentSnapshot
+                contentTransition.currentState.scene == committedContentSnapshot &&
+                contentTransition.targetState.scene == committedContentSnapshot
         if (isCommittedSceneSettled) {
             playerViewModel.retainDetailPresentations(
                 navigationState.backStack.mapTo(mutableSetOf()) { it.entryId },
@@ -231,7 +248,13 @@ fun App(
                         if (session != null) {
                             AppDebugLog.log(
                                 "predictive_back_start surface=content " +
-                                    "entryId=${session.originTopEntryId}",
+                                    "entryId=${session.originTopEntryId} " +
+                                    "revision=${session.originRevision} " +
+                                    "origin=${session.origin.currentEntry.route} " +
+                                    "preview=${session.preview.currentEntry.route} " +
+                                    "originLayer=${session.origin.contentLayer} " +
+                                    "previewLayer=${session.preview.contentLayer} " +
+                                    "motionId=${session.previewFrame.motionContext?.transitionId}",
                             )
                             true
                         } else {
@@ -287,12 +310,13 @@ fun App(
                             ContentBackCommitResult.NoSession,
                             ContentBackCommitResult.Ignored -> Unit
 
-                            is ContentBackCommitResult.Immediate ->
-                                playerViewModel.commitBack(result.session.backPlan)
-
                             is ContentBackCommitResult.Animated -> AppDebugLog.log(
                                 "predictive_back_commit surface=content " +
-                                    "entryId=${result.session.originTopEntryId}",
+                                    "entryId=${result.session.originTopEntryId} " +
+                                    "hadProgress=$hadProgress " +
+                                    "mode=${result.session.mode.name.lowercase()} " +
+                                    "events=${result.session.progressEventCount} " +
+                                    "maxProgress=${result.session.maxProgress}",
                             )
                         }
                     }
@@ -310,7 +334,21 @@ fun App(
                     isTransitionRunning = contentTransition.isRunning,
                 )
             ) {
-                playerViewModel.navigateBack()
+                val originSnapshot = playerViewModel.navigationSnapshot.value
+                val backPlan = playerViewModel.planBack()
+                val session = backPlan?.let { plan ->
+                    contentPresentationController.startTimeDrivenBack(
+                        backPlan = plan,
+                        origin = contentSceneSnapshot(originSnapshot.state.backStack),
+                        preview = contentSceneSnapshot(plan.targetState.backStack),
+                    )
+                }
+                if (session != null) {
+                    AppDebugLog.log(
+                        "content_back_start surface=content mode=time_driven " +
+                            "entryId=${session.originTopEntryId}",
+                    )
+                }
             }
         }
 
@@ -411,7 +449,7 @@ fun App(
                         playerViewModel.selectMainPage(MainPage.Library)
                     },
                     onOpenSearch = enabledAction { playerViewModel.openLibrarySearch() },
-                    onCloseSearch = enabledAction { playerViewModel.closeLibrarySearch() },
+                    onCloseSearch = enabledAction(onContentBack),
                     onSearchQueryChange = { query ->
                         if (interactive) playerViewModel.updateLibrarySearchQuery(query)
                     },
@@ -446,24 +484,29 @@ fun App(
                         val session = contentBackSession
                         when {
                             session == null -> navigationContentTransform(
-                                initial = initialState,
-                                target = targetState,
-                                transaction = contentPresentationController.transactionFor(
-                                    initial = initialState,
-                                    target = targetState,
-                                ),
+                                initial = initialState.scene,
+                                target = targetState.scene,
+                                context = targetState.motionContext,
                             )
                             contentPresentationState is ContentNavigationPresentationState.Cancelling &&
                                 contentTransition.pendingTargetState == null ->
-                                predictiveBackCancelContentTransform()
-                            else -> predictiveBackContentTransform(session.swipeEdge)
+                                predictiveBackCancelContentTransform(targetState.scene)
+                            session.mode == ContentBackMode.TimeDriven ->
+                                navigationContentTransform(
+                                    initial = initialState.scene,
+                                    target = targetState.scene,
+                                    context = targetState.motionContext,
+                                )
+                            else -> predictiveBackContentTransform(
+                                swipeEdge = session.swipeEdge,
+                                target = targetState.scene,
+                            )
                         }
                     },
-                    contentKey = { it.currentEntry.entryId },
+                    contentKey = { it.scene.currentEntry.entryId },
                     mutableTransformSpec = {
-                        if (
-                            contentPresentationController.backSession == null
-                        ) {
+                        val session = contentPresentationController.backSession
+                        if (session?.mode != ContentBackMode.Predictive) {
                             return@DeferredAnimatedContent null
                         }
                         MutableContentTransform(targetVeilMatchParentSize = true) {
@@ -490,7 +533,8 @@ fun App(
                             }
                         }
                     },
-                ) { targetSnapshot ->
+                ) { targetFrame ->
+                    val targetSnapshot = targetFrame.scene
                     val targetEntry = targetSnapshot.currentEntry
                     DisposableEffect(targetEntry.entryId) {
                         onDispose {

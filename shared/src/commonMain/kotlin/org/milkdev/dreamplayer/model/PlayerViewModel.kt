@@ -632,11 +632,6 @@ class PlayerViewModel {
         commitNavigationIntent(NavigationIntent.Push(AppRoute.AiDebugSettings))
     }
 
-    fun navigateBack(expectedTopEntryId: Long? = null): Boolean {
-        val plan = planBack(expectedTopEntryId) ?: return false
-        return commitBack(plan)
-    }
-
     fun planBack(expectedTopEntryId: Long? = null): NavigationPlan? {
         return AppNavigator.plan(
             currentNavigationSnapshot,
@@ -743,10 +738,6 @@ class PlayerViewModel {
         _libraryState.update { it.copy(librarySearch = it.librarySearch.copy(isActive = true)) }
         commitNavigationIntent(NavigationIntent.OpenSearch)
         loadNextSearchPage(reset = true)
-    }
-
-    fun closeLibrarySearch() {
-        commitNavigationIntent(NavigationIntent.CloseSearch)
     }
 
     fun updateLibrarySearchQuery(query: String) {

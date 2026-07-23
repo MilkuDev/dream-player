@@ -40,7 +40,9 @@ internal fun ContentSceneHost(
         ?.takeIf { it.entryId == scene.currentEntry.entryId }
         ?.chrome
     val destinationHazeState = rememberHazeState()
-    val isPredictiveOrigin = backSession?.origin
+    val isPredictiveOrigin = backSession
+        ?.takeIf { it.mode == ContentBackMode.Predictive }
+        ?.origin
         ?.currentEntry
         ?.entryId == scene.currentEntry.entryId
 
