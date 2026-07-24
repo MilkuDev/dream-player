@@ -60,6 +60,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -85,6 +86,7 @@ import org.jetbrains.compose.resources.DrawableResource
 import org.jetbrains.compose.resources.painterResource
 import org.milkdev.dreamplayer.app.AppTheme
 import org.milkdev.dreamplayer.app.AppTheme.spacing
+import org.milkdev.dreamplayer.app.LocalSceneExecutionPolicy
 import org.milkdev.dreamplayer.generated.resources.Res
 import org.milkdev.dreamplayer.generated.resources.close
 import org.milkdev.dreamplayer.generated.resources.music_note
@@ -168,6 +170,8 @@ fun SharedTransitionScope.SearchDock(
     query: String,
     onQueryChange: (String) -> Unit,
     onCloseClick: () -> Unit,
+    allowsFocusAndPopups: Boolean = true,
+    authorityEpoch: Long = 0L,
     modifier: Modifier = Modifier,
     containerModifier: Modifier = Modifier,
     searchIconModifier: Modifier = Modifier,
@@ -175,10 +179,17 @@ fun SharedTransitionScope.SearchDock(
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
     val contentColor = MaterialTheme.colorScheme.onPrimary
+    var autofocusConsumed by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
-        focusRequester.requestFocus()
-        keyboardController?.show()
+    LaunchedEffect(
+        allowsFocusAndPopups,
+        authorityEpoch,
+    ) {
+        if (allowsFocusAndPopups && !autofocusConsumed) {
+            autofocusConsumed = true
+            focusRequester.requestFocus()
+            keyboardController?.show()
+        }
     }
 
     Row(
@@ -444,10 +455,13 @@ fun <T : LibrarySortOrder> SortButtonGroupRow(
 @Composable
 fun InfiniteListHandler(
     listState: LazyListState,
+    enabled: Boolean = true,
+    hasMore: Boolean = true,
+    isLoading: Boolean = false,
     buffer: Int = 8,
     onLoadMore: () -> Unit
 ) {
-    val shouldLoadMore by remember {
+    val shouldLoadMore by remember(listState, buffer) {
         derivedStateOf {
             val totalItems = listState.layoutInfo.totalItemsCount
             if (totalItems == 0) return@derivedStateOf false
@@ -456,8 +470,24 @@ fun InfiniteListHandler(
         }
     }
 
-    LaunchedEffect(shouldLoadMore) {
-        if (shouldLoadMore) {
+    var demandAdmitted by remember(listState) { mutableStateOf(false) }
+    var wasLoading by remember(listState) { mutableStateOf(isLoading) }
+    LaunchedEffect(enabled, shouldLoadMore, hasMore, isLoading) {
+        if (!enabled || !hasMore || !shouldLoadMore) {
+            demandAdmitted = false
+            wasLoading = isLoading
+            return@LaunchedEffect
+        }
+        if (isLoading) {
+            wasLoading = true
+            return@LaunchedEffect
+        }
+        if (wasLoading) {
+            wasLoading = false
+            demandAdmitted = false
+        }
+        if (!demandAdmitted) {
+            demandAdmitted = true
             onLoadMore()
         }
     }
@@ -466,10 +496,13 @@ fun InfiniteListHandler(
 @Composable
 fun InfiniteGridHandler(
     gridState: LazyGridState,
+    enabled: Boolean = true,
+    hasMore: Boolean = true,
+    isLoading: Boolean = false,
     buffer: Int = 8,
     onLoadMore: () -> Unit
 ) {
-    val shouldLoadMore by remember {
+    val shouldLoadMore by remember(gridState, buffer) {
         derivedStateOf {
             val totalItems = gridState.layoutInfo.totalItemsCount
             if (totalItems == 0) return@derivedStateOf false
@@ -478,8 +511,24 @@ fun InfiniteGridHandler(
         }
     }
 
-    LaunchedEffect(shouldLoadMore) {
-        if (shouldLoadMore) {
+    var demandAdmitted by remember(gridState) { mutableStateOf(false) }
+    var wasLoading by remember(gridState) { mutableStateOf(isLoading) }
+    LaunchedEffect(enabled, shouldLoadMore, hasMore, isLoading) {
+        if (!enabled || !hasMore || !shouldLoadMore) {
+            demandAdmitted = false
+            wasLoading = isLoading
+            return@LaunchedEffect
+        }
+        if (isLoading) {
+            wasLoading = true
+            return@LaunchedEffect
+        }
+        if (wasLoading) {
+            wasLoading = false
+            demandAdmitted = false
+        }
+        if (!demandAdmitted) {
+            demandAdmitted = true
             onLoadMore()
         }
     }
@@ -580,7 +629,10 @@ fun ContentSection(
             contentPadding = PaddingValues(horizontal = 20.dp),
             horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            items(tracks) { track ->
+            items(
+                items = tracks,
+                key = { track -> track.id },
+            ) { track ->
                 RecommendationCard(
                     title = track.title,
                     subtitle = track.artistName,
@@ -603,6 +655,8 @@ fun Modifier.shapeClickableWithFeedback(
     fadeOutDuration: Duration = BorderDelays.ExpressiveFade,
     onClick: () -> Unit
 ): Modifier {
+    val executionPolicy = LocalSceneExecutionPolicy.current
+    val latestExecutionPolicy by rememberUpdatedState(executionPolicy)
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
 
@@ -627,12 +681,19 @@ fun Modifier.shapeClickableWithFeedback(
             interactionSource = interactionSource,
             indication = LocalIndication.current,
             onClick = {
+                if (!executionPolicy.allowsInputAndSemantics) return@clickable
+                val clickAuthorityEpoch = executionPolicy.authorityEpoch
                 scope.launch {
                     isVisualPressed = true
 
                     launch {
                         delay(onClickDelay)
-                        onClick()
+                        if (
+                            latestExecutionPolicy.allowsInputAndSemantics &&
+                            latestExecutionPolicy.authorityEpoch == clickAuthorityEpoch
+                        ) {
+                            onClick()
+                        }
                     }
 
                     val visualDuration = if (onClickDelay < borderDuration) borderDuration else onClickDelay

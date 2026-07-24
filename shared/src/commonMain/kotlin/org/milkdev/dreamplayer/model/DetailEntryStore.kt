@@ -58,6 +58,10 @@ internal class DetailEntryStore {
         return entryId in descriptors
     }
 
+    fun remove(entryId: Long) {
+        descriptors.remove(entryId)
+    }
+
     val size: Int
         get() = descriptors.size
 }
@@ -119,4 +123,14 @@ internal fun DetailPresentationState.retainEntries(
             entries = retainedEntries,
         )
     }
+}
+
+internal fun DetailPresentationState.removeEntry(
+    entryId: Long,
+): DetailPresentationState {
+    if (entryId !in entries && activeEntryId != entryId) return this
+    return copy(
+        activeEntryId = activeEntryId?.takeUnless { it == entryId },
+        entries = entries - entryId,
+    )
 }

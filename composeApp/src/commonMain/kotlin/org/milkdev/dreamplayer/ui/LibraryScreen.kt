@@ -24,6 +24,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import org.jetbrains.compose.resources.painterResource
 import org.milkdev.dreamplayer.app.AppTheme
+import org.milkdev.dreamplayer.app.LocalSceneExecutionPolicy
 import org.milkdev.dreamplayer.generated.resources.Res
 import org.milkdev.dreamplayer.generated.resources.artist
 import org.milkdev.dreamplayer.generated.resources.playlist_add
@@ -53,16 +54,47 @@ fun LibraryScreen(
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues.Zero,
 ) {
+    val executionPolicy = LocalSceneExecutionPolicy.current
     val lazyListState = rememberLazyListState()
     val lazyGridState = rememberLazyGridState()
 
-    val loadUncachedListArtwork = rememberLazyArtworkLoadingEnabled(listState = lazyListState)
-    val loadUncachedGridArtwork = rememberLazyArtworkLoadingEnabled(gridState = lazyGridState)
+    val loadUncachedListArtwork = rememberLazyArtworkLoadingEnabled(
+        listState = lazyListState,
+        enabled = executionPolicy.allowsUncachedArtwork &&
+            libraryState.currentCategory == LibraryCategory.TRACKS &&
+            libraryState.trackSortOrder != TrackSortOrder.GENRE,
+    )
+    val loadUncachedGridArtwork = rememberLazyArtworkLoadingEnabled(
+        gridState = lazyGridState,
+        enabled = executionPolicy.allowsUncachedArtwork && (
+            libraryState.currentCategory == LibraryCategory.ARTISTS ||
+                (
+                    libraryState.currentCategory == LibraryCategory.ALBUMS &&
+                        libraryState.albumSortOrder != AlbumSortOrder.GENRE
+                    )
+            ),
+    )
 
-    LaunchedEffect(libraryState.currentCategory) {
-        if (!libraryState.isLoading) {
+    var observedCategory by remember {
+        mutableStateOf(libraryState.currentCategory)
+    }
+    LaunchedEffect(
+        libraryState.currentCategory,
+        libraryState.isLoading,
+        executionPolicy.allowsImperativeScroll,
+        executionPolicy.authorityEpoch,
+    ) {
+        if (!executionPolicy.allowsImperativeScroll) {
+            observedCategory = libraryState.currentCategory
+            return@LaunchedEffect
+        }
+        if (
+            observedCategory != libraryState.currentCategory &&
+            !libraryState.isLoading
+        ) {
             lazyListState.scrollToItem(0)
             lazyGridState.scrollToItem(0)
+            observedCategory = libraryState.currentCategory
         }
     }
 
@@ -133,7 +165,12 @@ fun LibraryScreen(
                         }
 
                         if (libraryState.trackSortOrder == TrackSortOrder.GENRE) {
-                            InfiniteGridHandler(lazyGridState) { onIntent(LibraryIntent.LoadNextGenres) }
+                            InfiniteGridHandler(
+                                gridState = lazyGridState,
+                                enabled = executionPolicy.allowsPagingDemand,
+                                hasMore = libraryState.hasMoreGenres,
+                                isLoading = libraryState.isGenrePageLoading,
+                            ) { onIntent(LibraryIntent.LoadNextGenres) }
                             LibraryGenreGrid(
                                 genres = libraryState.genreListItems,
                                 onIntent = onIntent,
@@ -141,7 +178,12 @@ fun LibraryScreen(
                                 contentPadding = contentPadding
                             )
                         } else {
-                            InfiniteListHandler(lazyListState) { onIntent(LibraryIntent.LoadNextTracks) }
+                            InfiniteListHandler(
+                                listState = lazyListState,
+                                enabled = executionPolicy.allowsPagingDemand,
+                                hasMore = libraryState.hasMoreTracks,
+                                isLoading = libraryState.isTrackPageLoading,
+                            ) { onIntent(LibraryIntent.LoadNextTracks) }
                             LibraryTrackList(
                                 tracks = mappedTracks,
                                 currentTrack = currentTrack,
@@ -154,7 +196,12 @@ fun LibraryScreen(
                     }
                     LibraryCategory.ALBUMS -> {
                         if (libraryState.albumSortOrder == AlbumSortOrder.GENRE) {
-                            InfiniteGridHandler(lazyGridState) { onIntent(LibraryIntent.LoadNextGenres) }
+                            InfiniteGridHandler(
+                                gridState = lazyGridState,
+                                enabled = executionPolicy.allowsPagingDemand,
+                                hasMore = libraryState.hasMoreGenres,
+                                isLoading = libraryState.isGenrePageLoading,
+                            ) { onIntent(LibraryIntent.LoadNextGenres) }
                             LibraryGenreGrid(
                                 genres = libraryState.genreListItems,
                                 onIntent = onIntent,
@@ -162,7 +209,12 @@ fun LibraryScreen(
                                 contentPadding = contentPadding
                             )
                         } else {
-                            InfiniteGridHandler(lazyGridState) { onIntent(LibraryIntent.LoadNextAlbums) }
+                            InfiniteGridHandler(
+                                gridState = lazyGridState,
+                                enabled = executionPolicy.allowsPagingDemand,
+                                hasMore = libraryState.hasMoreAlbums,
+                                isLoading = libraryState.isAlbumPageLoading,
+                            ) { onIntent(LibraryIntent.LoadNextAlbums) }
                             LibraryAlbumGrid(
                                 albums = libraryState.albumListItems,
                                 onIntent = onIntent,
@@ -173,7 +225,12 @@ fun LibraryScreen(
                         }
                     }
                     LibraryCategory.ARTISTS -> {
-                        InfiniteGridHandler(lazyGridState) { onIntent(LibraryIntent.LoadNextArtists) }
+                        InfiniteGridHandler(
+                            gridState = lazyGridState,
+                            enabled = executionPolicy.allowsPagingDemand,
+                            hasMore = libraryState.hasMoreArtists,
+                            isLoading = libraryState.isArtistPageLoading,
+                        ) { onIntent(LibraryIntent.LoadNextArtists) }
                         LibraryArtistGrid(
                             artists = libraryState.artistListItems,
                             onIntent = onIntent,

@@ -5,6 +5,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toComposeImageBitmap
@@ -15,8 +17,10 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.first
 import org.jetbrains.compose.resources.DrawableResource
 import org.jetbrains.compose.resources.painterResource
+import org.milkdev.dreamplayer.app.LocalSceneExecutionPolicy
 import org.jetbrains.skia.Bitmap
 import org.jetbrains.skia.EncodedImageFormat
 import org.jetbrains.skia.Image as SkiaImage
@@ -43,6 +47,9 @@ actual fun TrackImage(
     maxDecodeSizePx: Int,
     loadUncached: Boolean,
 ) {
+    val executionPolicy = LocalSceneExecutionPolicy.current
+    val effectiveLoadUncached =
+        loadUncached && executionPolicy.allowsUncachedArtwork
     val cacheDecodeSizePx = remember(maxDecodeSizePx) {
         maxDecodeSizePx.normalizedArtworkDecodeSize()
     }
@@ -52,7 +59,8 @@ actual fun TrackImage(
     val cachedImageBitmap = remember(cacheKey) {
         cacheKey?.let { TrackImageCache.get(it) }
     }
-    val imageBitmap by produceState<ImageBitmap?>(cachedImageBitmap, cacheKey, loadUncached) {
+    val loadUncachedState = rememberUpdatedState(effectiveLoadUncached)
+    val imageBitmap by produceState<ImageBitmap?>(cachedImageBitmap, cacheKey) {
 
         if (uri == null || cacheKey == null) {
             value = null
@@ -69,7 +77,8 @@ actual fun TrackImage(
             return@produceState
         }
 
-        if (!loadUncached || TrackImageCache.isFailed(cacheKey)) {
+        snapshotFlow { loadUncachedState.value }.first { isAllowed -> isAllowed }
+        if (TrackImageCache.isFailed(cacheKey)) {
             value = null
             return@produceState
         }

@@ -15,31 +15,54 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboard
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import org.milkdev.dreamplayer.app.LocalSceneExecutionPolicy
+import org.milkdev.dreamplayer.diagnostics.LogEntry
 import org.milkdev.dreamplayer.diagnostics.LogStorage
 
 @Composable
 fun LogConsole(
     modifier: Modifier = Modifier,
     title: String = "Terminal Output",
-    logsFlow: StateFlow<List<String>> = LogStorage.logs,
+    logsFlow: StateFlow<List<LogEntry>> = LogStorage.logs,
     onClear: () -> Unit = LogStorage::clear,
     consoleHeight: Dp = 300.dp,
     emptyText: String = "Пока пусто",
 ) {
-    val logs by logsFlow.collectAsState()
+    val executionPolicy = LocalSceneExecutionPolicy.current
+    var logs by remember(logsFlow) { mutableStateOf(logsFlow.value) }
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
-    LaunchedEffect(logs.size) {
-        if (logs.isNotEmpty()) {
-            listState.animateScrollToItem(logs.size - 1)
+
+    LaunchedEffect(
+        logsFlow,
+        executionPolicy.allowsDiagnosticCollection,
+        executionPolicy.authorityEpoch,
+    ) {
+        if (!executionPolicy.allowsDiagnosticCollection) return@LaunchedEffect
+        logs = logsFlow.value
+        var observedTailId = logs.lastOrNull()?.sequenceId
+        logsFlow.collectLatest { nextLogs ->
+            val wasFollowingTail =
+                logs.isEmpty() ||
+                    listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index == logs.lastIndex
+            val nextTailId = nextLogs.lastOrNull()?.sequenceId
+            logs = nextLogs
+            if (
+                wasFollowingTail &&
+                nextLogs.isNotEmpty() &&
+                nextTailId != observedTailId
+            ) {
+                listState.animateScrollToItem(nextLogs.lastIndex)
+            }
+            observedTailId = nextTailId
         }
     }
     Column(
@@ -62,17 +85,21 @@ fun LogConsole(
                 fontFamily = FontFamily.Monospace
             )
             Row {
-                TextButton(onClick = onClear) {
+                TextButton(
+                    enabled = executionPolicy.allowsInputAndSemantics,
+                    onClick = onClear,
+                ) {
                     Text("Очистить", color = Color.Red, fontSize = 12.sp)
                 }
                 TextButton(
                     onClick = {
-                        val allLogs = logs.joinToString("\n")
+                        val allLogs = logs.joinToString("\n") { entry -> entry.message }
                         val clipEntry = buildTextClipEntry(allLogs)
                         scope.launch {
                             clipboard.setClipEntry(clipEntry)
                         }
-                    }
+                    },
+                    enabled = executionPolicy.allowsInputAndSemantics,
                 ) {
                     Text("Копировать", color = Color(0xFF01FFE1), fontSize = 12.sp)
                 }
@@ -94,9 +121,12 @@ fun LogConsole(
                         )
                     }
                 }
-                items(logs) { logMessage ->
+                items(
+                    items = logs,
+                    key = { entry -> entry.sequenceId },
+                ) { logEntry ->
                     Text(
-                        text = logMessage,
+                        text = logEntry.message,
                         color = Color(0xFF00D500),
                         fontFamily = FontFamily.Monospace,
                         fontSize = 11.sp,

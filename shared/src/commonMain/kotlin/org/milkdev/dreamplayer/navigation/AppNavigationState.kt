@@ -44,6 +44,12 @@ class AppNavigationState private constructor(
     val activeMainTab: MainTab
         get() = checkNotNull(backStack.first().route.toMainTabOrNull())
 
+    val isSettingsFlowActive: Boolean
+        get() = backStack.any { it.route == AppRoute.Settings }
+
+    val canUseMainDestinationDock: Boolean
+        get() = !isSettingsFlowActive
+
     val canNavigateBack: Boolean
         get() = backStack.size > 1 || activeMainTab != MainTab.Home
 
@@ -52,10 +58,12 @@ class AppNavigationState private constructor(
     }
 
     fun selectMainTab(tab: MainTab): AppNavigationState {
+        if (!canUseMainDestinationDock) return this
         return withStack(listOf(rootEntry(tab)))
     }
 
     fun openSearch(): AppNavigationState {
+        if (!canUseMainDestinationDock) return this
         val existingSearchIndex = backStack.indexOfLast { it.route == AppRoute.Search }
         if (existingSearchIndex >= 0) {
             return withStack(backStack.take(existingSearchIndex + 1))

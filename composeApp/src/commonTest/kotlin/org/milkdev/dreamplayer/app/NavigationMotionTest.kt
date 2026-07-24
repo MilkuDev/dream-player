@@ -264,8 +264,50 @@ class NavigationMotionTest {
     @Test
     fun predictiveStackRoundsTheOriginAsItShrinks() {
         assertEquals(0.dp, predictiveStackCornerRadius(progress = 0f))
-        assertEquals(14.dp, predictiveStackCornerRadius(progress = 0.5f))
+        assertEquals(24.5.dp, predictiveStackCornerRadius(progress = 0.5f))
         assertEquals(28.dp, predictiveStackCornerRadius(progress = 1f))
+    }
+
+    @Test
+    fun supportingSceneAlwaysOccludesDeeperRetainedHistory() {
+        listOf(0f, 0.25f, 0.5f, 0.75f, 1f).forEach { progress ->
+            assertEquals(
+                RetainedSceneVisualTransform(),
+                retainedSceneVisualTransform(
+                    motionKind = NavigationMotionKind.Forward,
+                    role = ScenePresentationRole.Exiting,
+                    progress = progress,
+                ),
+            )
+            assertEquals(
+                RetainedSceneVisualTransform(),
+                retainedSceneVisualTransform(
+                    motionKind = NavigationMotionKind.Backward,
+                    role = ScenePresentationRole.Entering,
+                    progress = progress,
+                ),
+            )
+            assertEquals(
+                RetainedSceneVisualTransform(),
+                retainedSceneVisualTransform(
+                    motionKind = NavigationMotionKind.FadeThrough,
+                    role = ScenePresentationRole.Exiting,
+                    progress = progress,
+                ),
+            )
+        }
+        assertEquals(
+            RetainedSceneVisualTransform(
+                translationXFraction = 0.05f,
+                alpha = 0.5f,
+                scale = 0.98f,
+            ),
+            retainedSceneVisualTransform(
+                motionKind = NavigationMotionKind.Backward,
+                role = ScenePresentationRole.Exiting,
+                progress = 0.5f,
+            ),
+        )
     }
 
     @Test

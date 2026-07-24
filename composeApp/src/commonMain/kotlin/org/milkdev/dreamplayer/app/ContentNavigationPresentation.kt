@@ -820,9 +820,9 @@ internal class ContentNavigationPresentationController(
         pendingTargetState: ContentTransitionFrame?,
         isRunning: Boolean,
     ): ContentTransitionCompletion? {
-        // Main-tab back is settled exclusively by MainTabCarouselHost. The outer
-        // DeferredAnimatedContent intentionally stays on an arbitrary stable root
-        // frame, which can already equal the preview and must not complete the back.
+        // Main-tab back is settled exclusively by MainTabCarouselHost. This legacy
+        // controller's outer transition can already equal the preview and therefore
+        // must not independently complete the back.
         if (state.backSession?.motionStyle == PredictiveBackMotionStyle.MainTabCarousel) {
             return null
         }
@@ -895,7 +895,7 @@ private const val MillisPerSecond = 1_000f
 private const val PredictiveBackMaximumVelocitySampleMillis = 100L
 private const val PredictiveBackMaximumProgressVelocity = 20f
 
-private fun NavigationPlan.toMotionContext(
+internal fun NavigationPlan.toMotionContext(
     origin: ContentSceneSnapshot,
     preview: ContentSceneSnapshot,
 ): NavigationMotionContext {

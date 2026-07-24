@@ -33,8 +33,9 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import org.milkdev.dreamplayer.diagnostics.AppDebugLog
-import org.milkdev.dreamplayer.app.AppBackGesture
 import org.milkdev.dreamplayer.app.AppBackSurface
+import org.milkdev.dreamplayer.app.ForegroundOwner
+import org.milkdev.dreamplayer.app.ForegroundPresentation
 import org.milkdev.dreamplayer.library.LibraryTrack
 import org.milkdev.dreamplayer.navigation.NavigationPlan
 import org.milkdev.dreamplayer.playback.PlaybackUiState
@@ -71,6 +72,7 @@ internal fun PlayerOverlayHost(
     navigationRevision: Long,
     isPlayerVisible: Boolean,
     isQueueVisible: Boolean,
+    onForegroundPresentationChanged: (ForegroundPresentation) -> Unit,
     onPlanBack: () -> NavigationPlan?,
     onCommitBack: (NavigationPlan) -> Boolean,
     onOpenQueueSheet: () -> Unit,
@@ -105,10 +107,63 @@ internal fun PlayerOverlayHost(
         var renderQueue by remember { mutableStateOf(false) }
         var overlayBackSession by remember { mutableStateOf<OverlayBackSession?>(null) }
         var backTransitionInProgress by remember { mutableStateOf(false) }
+        var lastSettledForegroundOwner by remember {
+            mutableStateOf(ForegroundOwner.Content)
+        }
+        var foregroundTransitionToken by remember { mutableStateOf(0L) }
         val latestTopEntryId by rememberUpdatedState(topEntryId)
         val latestNavigationRevision by rememberUpdatedState(navigationRevision)
         val latestPlayerVisible by rememberUpdatedState(isPlayerVisible)
         val latestQueueVisible by rememberUpdatedState(isQueueVisible)
+
+        val targetForegroundOwner = when {
+            isQueueVisible -> ForegroundOwner.Queue
+            isPlayerVisible -> ForegroundOwner.Player
+            else -> ForegroundOwner.Content
+        }
+        val settledForegroundOwner = when (targetForegroundOwner) {
+            ForegroundOwner.Content -> ForegroundOwner.Content.takeIf {
+                !renderPlayer &&
+                    !renderQueue &&
+                    !backTransitionInProgress &&
+                    overlayBackSession == null
+            }
+
+            ForegroundOwner.Player -> ForegroundOwner.Player.takeIf {
+                renderPlayer &&
+                    !renderQueue &&
+                    !playerProgress.isRunning &&
+                    !queueProgress.isRunning &&
+                    !backTransitionInProgress &&
+                    overlayBackSession == null
+            }
+
+            ForegroundOwner.Queue -> ForegroundOwner.Queue.takeIf {
+                renderPlayer &&
+                    renderQueue &&
+                    !playerProgress.isRunning &&
+                    !queueProgress.isRunning &&
+                    !backTransitionInProgress &&
+                    overlayBackSession == null
+            }
+        }
+        LaunchedEffect(settledForegroundOwner, targetForegroundOwner) {
+            if (settledForegroundOwner != null) {
+                lastSettledForegroundOwner = settledForegroundOwner
+                onForegroundPresentationChanged(
+                    ForegroundPresentation.Settled(settledForegroundOwner),
+                )
+            } else {
+                foregroundTransitionToken += 1L
+                onForegroundPresentationChanged(
+                    ForegroundPresentation.Transitioning(
+                        from = lastSettledForegroundOwner,
+                        to = targetForegroundOwner,
+                        token = foregroundTransitionToken,
+                    ),
+                )
+            }
+        }
 
         suspend fun restoreOverlay(overlay: PlaybackOverlay) {
             val progress = when (overlay) {

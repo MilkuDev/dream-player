@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.key
@@ -58,6 +59,7 @@ internal fun MainTabCarouselHost(
     modifier: Modifier = Modifier,
     content: @Composable (MainTab) -> Unit,
 ) {
+    val parentExecutionPolicy = LocalSceneExecutionPolicy.current
     val carouselSession = backSession
         ?.takeIf { it.motionStyle == PredictiveBackMotionStyle.MainTabCarousel }
     val originTab = carouselSession?.origin?.currentEntry?.route?.toMainTabOrNull()
@@ -97,7 +99,17 @@ internal fun MainTabCarouselHost(
                                 },
                             ),
                     ) {
-                        content(tab)
+                        CompositionLocalProvider(
+                            LocalSceneExecutionPolicy provides if (
+                                tab == activeTab && carouselSession == null
+                            ) {
+                                parentExecutionPolicy
+                            } else {
+                                parentExecutionPolicy.restricted()
+                            },
+                        ) {
+                            content(tab)
+                        }
                     }
                 }
             }

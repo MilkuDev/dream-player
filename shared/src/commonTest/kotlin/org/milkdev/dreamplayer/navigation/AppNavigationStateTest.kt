@@ -286,6 +286,60 @@ class AppNavigationStateTest {
     }
 
     @Test
+    fun settingsFlowRejectsMainDestinationShortcuts() {
+        val settings = AppNavigationState()
+            .selectMainTab(MainTab.Library)
+            .push(AppRoute.Settings)
+        val aiDebug = settings.push(AppRoute.AiDebugSettings)
+
+        assertTrue(settings.isSettingsFlowActive)
+        assertFalse(settings.canUseMainDestinationDock)
+        assertSame(settings, settings.selectMainTab(MainTab.Home))
+        assertSame(settings, settings.openSearch())
+        assertSame(aiDebug, aiDebug.selectMainTab(MainTab.Home))
+        assertSame(aiDebug, aiDebug.openSearch())
+    }
+
+    @Test
+    fun playbackOverlaysRemainAvailableAboveSettingsFlow() {
+        val settings = AppNavigationState()
+            .selectMainTab(MainTab.Library)
+            .push(AppRoute.Settings)
+        val player = settings.push(AppRoute.Player)
+        val queue = player.push(AppRoute.Queue)
+
+        assertRoutes(
+            queue,
+            AppRoute.Library,
+            AppRoute.Settings,
+            AppRoute.Player,
+            AppRoute.Queue,
+        )
+        assertTrue(queue.isSettingsFlowActive)
+        assertFalse(queue.canUseMainDestinationDock)
+        assertRoutes(queue.navigateBack(), AppRoute.Library, AppRoute.Settings, AppRoute.Player)
+        assertRoutes(
+            queue.navigateBack()?.navigateBack(),
+            AppRoute.Library,
+            AppRoute.Settings,
+        )
+    }
+
+    @Test
+    fun mainDestinationShortcutsReturnAfterLeavingSettings() {
+        val settings = AppNavigationState()
+            .selectMainTab(MainTab.Library)
+            .push(AppRoute.Settings)
+        val library = settings.navigateBack()
+
+        assertNotNull(library)
+        assertFalse(library.isSettingsFlowActive)
+        assertTrue(library.canUseMainDestinationDock)
+        assertRoutes(library.selectMainTab(MainTab.Home), AppRoute.Home)
+        assertRoutes(library.openSearch(), AppRoute.Library, AppRoute.Search)
+    }
+
+    @Test
     fun aiDebugRequiresSettingsAsImmediatePredecessor() {
         val initial = AppNavigationState()
         val settings = initial.push(AppRoute.Settings)

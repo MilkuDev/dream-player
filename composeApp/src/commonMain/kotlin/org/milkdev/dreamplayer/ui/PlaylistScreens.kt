@@ -30,6 +30,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,6 +44,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import org.jetbrains.compose.resources.painterResource
 import org.milkdev.dreamplayer.app.AppTheme
+import org.milkdev.dreamplayer.app.LocalSceneExecutionPolicy
 import org.milkdev.dreamplayer.generated.resources.Res
 import org.milkdev.dreamplayer.generated.resources.arrow_back
 import org.milkdev.dreamplayer.generated.resources.music_note
@@ -64,9 +66,15 @@ fun PlaylistDetailsScreen(
     contentPadding: PaddingValues = PaddingValues.Zero,
     currentTrackId: Long? = null,
 ) {
+    val executionPolicy = LocalSceneExecutionPolicy.current
     val playlist = detailState.playlist
     val editablePlaylist = playlist.takeIf { it.canEditTracks }
     var isTrackPickerVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(executionPolicy.allowsFocusAndPopups) {
+        if (!executionPolicy.allowsFocusAndPopups) {
+            isTrackPickerVisible = false
+        }
+    }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -145,7 +153,11 @@ fun PlaylistDetailsScreen(
         }
     }
 
-    if (isTrackPickerVisible && editablePlaylist != null) {
+    if (
+        isTrackPickerVisible &&
+        editablePlaylist != null &&
+        executionPolicy.allowsFocusAndPopups
+    ) {
         PlaylistTrackPickerDialog(
             allTracks = libraryState.playlistPickerTrackItems.map { it.toLibraryTrack() },
             currentPlaylistTracks = detailState.tracks,

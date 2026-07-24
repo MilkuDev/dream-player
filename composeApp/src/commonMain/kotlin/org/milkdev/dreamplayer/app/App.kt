@@ -2,13 +2,11 @@ package org.milkdev.dreamplayer.app
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.BoundsTransform
-import androidx.compose.animation.DeferredAnimatedContent
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionLayout
-import androidx.compose.animation.core.ExperimentalDeferredTransitionApi
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.rememberTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -30,21 +28,26 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.chrisbanes.haze.hazeEffect
-import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
 import org.jetbrains.compose.resources.DrawableResource
 import org.jetbrains.compose.resources.painterResource
@@ -62,13 +65,13 @@ import org.milkdev.dreamplayer.navigation.AppRoute
 import org.milkdev.dreamplayer.navigation.MainTab
 import org.milkdev.dreamplayer.navigation.toMainTabOrNull
 import org.milkdev.dreamplayer.ui.*
+import kotlin.math.roundToInt
 
 private val playerViewModelInstance = PlayerViewModel()
 
 @OptIn(
     ExperimentalMaterial3Api::class,
     ExperimentalSharedTransitionApi::class,
-    ExperimentalDeferredTransitionApi::class,
 )
 @Composable
 fun App(
@@ -81,181 +84,115 @@ fun App(
     val settingsState by playerViewModel.settingsState.collectAsState()
     val navigationSnapshot by playerViewModel.navigationSnapshot.collectAsState()
     val navigationState = navigationSnapshot.state
-    val committedContentSnapshot = contentSceneSnapshot(navigationState.backStack)
-    val contentPresentationController = remember {
-        ContentNavigationPresentationController(committedContentSnapshot)
-    }
+    val committedContentScenes = contentSceneSnapshots(navigationState.backStack)
+    val retainedContentState = rememberRetainedContentStackState(
+        initialNavigationRevision = navigationSnapshot.revision,
+    )
     val appBackGestureCoordinator = remember { AppBackGestureCoordinator() }
     val playbackOverlayBackDispatcher = remember { PlaybackOverlayBackDispatcher() }
-    val contentTransitionState = contentPresentationController.transitionState
-    val contentTransition = rememberTransition(
-        transitionState = contentTransitionState,
-        label = "ContentNavigation",
-    )
-    val contentPresentationState = contentPresentationController.state
-    val contentBackSession = contentPresentationState.backSession
+    val presentationOwnerEpoch = remember(playerViewModel) {
+        playerViewModel.acquirePresentationOwner()
+    }
+    DisposableEffect(playerViewModel, presentationOwnerEpoch) {
+        onDispose {
+            playerViewModel.releasePresentationOwner(presentationOwnerEpoch)
+        }
+    }
+    val navigationForegroundOwner = when (navigationState.currentDestination) {
+        AppRoute.Player -> ForegroundOwner.Player
+        AppRoute.Queue -> ForegroundOwner.Queue
+        else -> ForegroundOwner.Content
+    }
+    var foregroundPresentation: ForegroundPresentation by remember {
+        mutableStateOf(ForegroundPresentation.Settled(navigationForegroundOwner))
+    }
+    val effectiveForegroundPresentation = if (
+        foregroundPresentation ==
+        ForegroundPresentation.Settled(ForegroundOwner.Content) &&
+        navigationForegroundOwner != ForegroundOwner.Content
+    ) {
+        ForegroundPresentation.Transitioning(
+            from = ForegroundOwner.Content,
+            to = navigationForegroundOwner,
+            token = navigationSnapshot.revision,
+        )
+    } else {
+        foregroundPresentation
+    }
+    val contentBackSession = retainedContentState.backSession
     val mainTabCarouselState = remember {
         MainTabCarouselState(navigationState.activeMainTab)
     }
     val animateMainTabSelection = isDirectRootTabSwitch(
         navigationSnapshot.lastTransaction,
     )
-    LaunchedEffect(committedContentSnapshot) {
-        contentPresentationController.onCommittedSnapshotChanged(
-            snapshot = committedContentSnapshot,
-            transaction = navigationSnapshot.lastTransaction,
-        )
-    }
-
-    LaunchedEffect(
-        navigationState.currentEntry.entryId,
-        navigationSnapshot.revision,
-    ) {
-        val staleSession = contentPresentationController.invalidateIfOriginChanged(
-            currentTopEntryId = navigationState.currentEntry.entryId,
-            currentRevision = navigationSnapshot.revision,
-            committedSnapshot = committedContentSnapshot,
-        )
-        if (staleSession != null) {
-            AppDebugLog.log(
-                "predictive_back_settled surface=content result=stale_route " +
-                    "entryId=${staleSession.originTopEntryId}",
-            )
-        }
-    }
-
-    fun logContentBackCancellation(
-        completion: ContentTransitionCompletion.Cancelled,
-    ) {
-        AppDebugLog.log(
-            "predictive_back_settled surface=content result=cancelled " +
-                "entryId=${completion.session.originTopEntryId}",
-        )
-    }
-
-    fun commitContentBack(
-        completion: ContentTransitionCompletion.CommitReady,
-    ) {
-        val readyLogEvent = when (completion.session.source) {
-            ContentBackSource.Platform -> "predictive_back_transition_ready"
-            ContentBackSource.Ui -> "content_back_transition_ready"
-        }
-        AppDebugLog.log(
-            "$readyLogEvent surface=content " +
-                "entryId=${completion.session.originTopEntryId} " +
-                "origin=${completion.session.origin.currentEntry.route} " +
-                "preview=${completion.session.preview.currentEntry.route} " +
-                "mode=${completion.session.mode.name.lowercase()} " +
-                "events=${completion.session.progressEventCount} " +
-                "maxProgress=${completion.session.maxProgress}",
-        )
-        val didPop = playerViewModel.commitBack(completion.session.backPlan)
-        contentPresentationController.onCommitPopCompleted(
-            sessionId = completion.session.sessionId,
-            didPop = didPop,
-            recoveryTarget = contentSceneSnapshot(
-                playerViewModel.navigationSnapshot.value.state.backStack,
-            ),
-        )
-        val logEvent = when (completion.session.source) {
-            ContentBackSource.Platform -> "predictive_back_settled"
-            ContentBackSource.Ui -> "content_back_settled"
-        }
-        AppDebugLog.log(
-            "$logEvent surface=content " +
-                "result=${if (didPop) "committed" else "stale"} " +
-                "entryId=${completion.session.originTopEntryId}",
-        )
-    }
-
-    val cancellingDeferredSessionId = (
-        contentPresentationState as? ContentNavigationPresentationState.Cancelling
-        )?.session
-        ?.takeUnless {
-            it.mode == ContentBackMode.Predictive &&
-                it.motionStyle == PredictiveBackMotionStyle.Stack
-        }
-        ?.sessionId
-    LaunchedEffect(cancellingDeferredSessionId) {
-        cancellingDeferredSessionId?.let { sessionId ->
-            contentPresentationController.settleCancellation(sessionId)
-                ?.let { completion -> logContentBackCancellation(completion) }
-        }
-    }
-
-    val committingMainTabCarouselSessionId = (
-        contentPresentationState as? ContentNavigationPresentationState.Committing
-        )?.session
-        ?.takeIf { it.motionStyle == PredictiveBackMotionStyle.MainTabCarousel }
-        ?.sessionId
-    LaunchedEffect(committingMainTabCarouselSessionId) {
-        committingMainTabCarouselSessionId?.let { sessionId ->
-            contentPresentationController.settleMainTabCarouselCommit(sessionId)
-                ?.let { completion -> commitContentBack(completion) }
-        }
-    }
-
-    LaunchedEffect(
-        contentBackSession?.sessionId,
-        contentPresentationState is ContentNavigationPresentationState.Animating,
-        contentPresentationState is ContentNavigationPresentationState.Cancelling,
-        contentPresentationState is ContentNavigationPresentationState.Committing,
-        contentTransition.currentState,
-        contentTransition.targetState,
-        contentTransition.pendingTargetState,
-        contentTransition.isRunning,
-    ) {
-        when (
-            val completion = contentPresentationController.onTransitionObserved(
-                currentState = contentTransition.currentState,
-                targetState = contentTransition.targetState,
-                pendingTargetState = contentTransition.pendingTargetState,
-                isRunning = contentTransition.isRunning,
-            )
-        ) {
-            is ContentTransitionCompletion.Cancelled ->
-                logContentBackCancellation(completion)
-
-            is ContentTransitionCompletion.CommitReady ->
-                commitContentBack(completion)
-
-            null -> Unit
-        }
-    }
-
-    LaunchedEffect(
-        navigationState.backStack.map { it.entryId },
-        contentBackSession?.sessionId,
-        contentTransition.currentState,
-        contentTransition.targetState,
-        contentTransition.pendingTargetState,
-        contentTransition.isRunning,
-    ) {
-        val isCommittedSceneSettled =
-            contentBackSession == null &&
-                !contentTransition.isRunning &&
-                contentTransition.pendingTargetState == null &&
-                contentTransition.currentState.scene == committedContentSnapshot &&
-                contentTransition.targetState.scene == committedContentSnapshot
-        if (isCommittedSceneSettled) {
-            playerViewModel.retainDetailPresentations(
-                navigationState.backStack.mapTo(mutableSetOf()) { it.entryId },
-            )
-        }
-    }
-
     LaunchedEffect(isPermissionGranted) {
         if (isPermissionGranted) {
             playerViewModel.loadLibrary()
         }
     }
 
-    val hazeState = rememberHazeState()
-
     AppTheme(darkTheme = settingsState.isForceNightMode || androidx.compose.foundation.isSystemInDarkTheme()) {
+        val globalChromePresentation = resolveGlobalChromePresentation(navigationState)
+        val globalHazeState = rememberHazeState()
+        val predictiveDockProgress = contentBackSession
+            ?.takeIf { session -> session.mode == ContentBackMode.Predictive }
+            ?.let { session ->
+                predictiveDockPresenceProgress(
+                    originPresented = contentStackPresentsMainDock(session.origin),
+                    previewPresented = contentStackPresentsMainDock(session.preview),
+                    progress = retainedContentState.visualBackProgress,
+                )
+            }
+        val contentPresentationSettled =
+            retainedContentState.isSettledAt(navigationSnapshot.revision)
+        val globalChromePolicy = resolveGlobalChromeExecutionPolicy(
+            foregroundPresentation = effectiveForegroundPresentation,
+            contentPresentationSettled = contentPresentationSettled,
+            isDockPresented = globalChromePresentation.isDockPresented,
+            authorityEpoch = retainedContentState.authorityEpoch,
+        )
+        val contentBackReady =
+            contentPresentationSettled &&
+                retainedContentState.canRequestBack() &&
+                effectiveForegroundPresentation ==
+                ForegroundPresentation.Settled(ForegroundOwner.Content)
+        val startTimeDrivenContentBack: () -> Unit = {
+            if (contentBackReady) {
+                val originSnapshot = playerViewModel.navigationSnapshot.value
+                val backPlan = playerViewModel.planBack()
+                val session = backPlan?.let { plan ->
+                    retainedContentState.startTimeDrivenBack(
+                        backPlan = plan,
+                        origin = contentSceneSnapshot(originSnapshot.state.backStack),
+                        preview = contentSceneSnapshot(plan.targetState.backStack),
+                    )
+                }
+                if (session != null) {
+                    AppDebugLog.log(
+                        "content_back_start surface=content mode=time_driven " +
+                            "entryId=${session.originTopEntryId}",
+                    )
+                }
+            }
+        }
+        LaunchedEffect(
+            retainedContentState.hasQueuedTimeDrivenBack,
+            contentBackReady,
+            navigationSnapshot.revision,
+        ) {
+            if (retainedContentState.takeQueuedTimeDrivenBackIf(contentBackReady)) {
+                startTimeDrivenContentBack()
+            }
+        }
+
         PlatformBackHandler(
+            // Keep the handler registered while a presentation transition is running.
+            // Its callbacks validate/queue against fresh session state instead of
+            // allowing an early platform Back to fall through to the Activity.
             enabled = navigationState.canNavigateBack,
             onBackStarted = {
+                retainedContentState.cancelDeferredBackGesture()
                 val originSnapshot = playerViewModel.navigationSnapshot.value
                 val origin = originSnapshot.state
                 val surface = when (origin.currentDestination) {
@@ -273,25 +210,33 @@ fun App(
                 val accepted = when {
                     gesture == null -> false
                     surface == AppBackSurface.Content -> {
-                        val session = contentPresentationController.startPredictiveBack(
-                            backPlan = gesture.backPlan,
-                            origin = contentSceneSnapshot(origin.backStack),
-                            preview = contentSceneSnapshot(gesture.backPlan.targetState.backStack),
-                        )
-                        if (session != null) {
-                            AppDebugLog.log(
-                                "predictive_back_start surface=content " +
-                                    "entryId=${session.originTopEntryId} " +
-                                    "revision=${session.originRevision} " +
-                                    "origin=${session.origin.currentEntry.route} " +
-                                    "preview=${session.preview.currentEntry.route} " +
-                                    "originLayer=${session.origin.contentLayer} " +
-                                    "previewLayer=${session.preview.contentLayer} " +
-                                    "motionId=${session.previewFrame.motionContext?.transitionId}",
-                            )
-                            true
-                        } else {
+                        if (!contentBackReady) {
+                            retainedContentState.beginDeferredBackGesture()
                             false
+                        } else {
+                            val session = retainedContentState.startPredictiveBack(
+                                backPlan = gesture.backPlan,
+                                origin = contentSceneSnapshot(origin.backStack),
+                                preview = contentSceneSnapshot(
+                                    gesture.backPlan.targetState.backStack,
+                                ),
+                            )
+                            if (session != null) {
+                                AppDebugLog.log(
+                                    "predictive_back_start surface=content " +
+                                        "entryId=${session.originTopEntryId} " +
+                                        "revision=${session.originRevision} " +
+                                        "origin=${session.origin.currentEntry.route} " +
+                                        "preview=${session.preview.currentEntry.route} " +
+                                        "originLayer=${session.origin.contentLayer} " +
+                                        "previewLayer=${session.preview.contentLayer} " +
+                                        "motionId=" +
+                                        session.previewFrame.motionContext?.transitionId,
+                                )
+                                true
+                            } else {
+                                false
+                            }
                         }
                     }
 
@@ -306,7 +251,7 @@ fun App(
                 when (appBackGestureCoordinator.routedGesture?.surface) {
                     AppBackSurface.Content -> {
                         val currentNavigation = playerViewModel.navigationSnapshot.value
-                        contentPresentationController.progressPredictiveBack(
+                        retainedContentState.progressPredictiveBack(
                             event = event,
                             currentTopEntryId = currentNavigation.state.currentEntry.entryId,
                             currentRevision = currentNavigation.revision,
@@ -319,9 +264,10 @@ fun App(
                 }
             },
             onBackCancelled = {
+                retainedContentState.cancelDeferredBackGesture()
                 when (appBackGestureCoordinator.finish()?.surface) {
                     AppBackSurface.Content -> {
-                        contentPresentationController.cancelPredictiveBack()?.let { session ->
+                        retainedContentState.cancelPredictiveBack()?.let { session ->
                             AppDebugLog.log(
                                 "predictive_back_cancel surface=content " +
                                     "entryId=${session.originTopEntryId}",
@@ -335,23 +281,23 @@ fun App(
                 }
             },
             onBackCommitted = { hadProgress ->
-                when (appBackGestureCoordinator.finish()?.surface) {
+                val routedGesture = appBackGestureCoordinator.finish()
+                if (routedGesture == null) {
+                    retainedContentState.commitDeferredBackGesture()
+                }
+                when (routedGesture?.surface) {
                     AppBackSurface.Content -> {
-                        when (
-                            val result = contentPresentationController.commitPredictiveBack(hadProgress)
-                        ) {
-                            ContentBackCommitResult.NoSession,
-                            ContentBackCommitResult.Ignored -> Unit
-
-                            is ContentBackCommitResult.Animated -> AppDebugLog.log(
-                                "predictive_back_commit surface=content " +
-                                    "entryId=${result.session.originTopEntryId} " +
-                                    "hadProgress=$hadProgress " +
-                                    "mode=${result.session.mode.name.lowercase()} " +
-                                    "events=${result.session.progressEventCount} " +
-                                    "maxProgress=${result.session.maxProgress}",
-                            )
-                        }
+                        retainedContentState.commitPredictiveBack(hadProgress)
+                            ?.let { session ->
+                                AppDebugLog.log(
+                                    "predictive_back_commit surface=content " +
+                                        "entryId=${session.originTopEntryId} " +
+                                        "hadProgress=$hadProgress " +
+                                        "mode=${session.mode.name.lowercase()} " +
+                                        "events=${session.progressEventCount} " +
+                                        "maxProgress=${session.maxProgress}",
+                                )
+                            }
                     }
 
                     AppBackSurface.Player,
@@ -361,29 +307,7 @@ fun App(
             },
         )
 
-        val onContentBack: () -> Unit = {
-            if (
-                contentPresentationController.canRequestContentBack(
-                    isTransitionRunning = contentTransition.isRunning,
-                )
-            ) {
-                val originSnapshot = playerViewModel.navigationSnapshot.value
-                val backPlan = playerViewModel.planBack()
-                val session = backPlan?.let { plan ->
-                    contentPresentationController.startTimeDrivenBack(
-                        backPlan = plan,
-                        origin = contentSceneSnapshot(originSnapshot.state.backStack),
-                        preview = contentSceneSnapshot(plan.targetState.backStack),
-                    )
-                }
-                if (session != null) {
-                    AppDebugLog.log(
-                        "content_back_start surface=content mode=time_driven " +
-                            "entryId=${session.originTopEntryId}",
-                    )
-                }
-            }
-        }
+        val onContentBack: () -> Unit = startTimeDrivenContentBack
 
         val spacing = AppTheme.spacing
         val playerSidePadding = 16.dp
@@ -392,20 +316,62 @@ fun App(
         val playerBarRadius = 32.dp
         val searchBarRadius = 24.dp
         val defaultDockRadius = 20.dp
-        val contentChromeLayers = resolveContentChromeLayers(
-            committedScene = committedContentSnapshot,
-            backSession = contentBackSession,
-        )
 
         @Composable
-        fun NavigationChrome(
-            presentation: NavigationChromePresentation,
-            interactive: Boolean,
+        fun GlobalNavigationChrome(
+            presentation: GlobalChromePresentation,
+            executionPolicy: GlobalChromeExecutionPolicy,
             chromeHazeState: HazeState,
+            predictivePresenceProgress: Float?,
         ) {
+            val dockTargetProgress = if (presentation.isDockPresented) 1f else 0f
+            val dockProgress = remember {
+                Animatable(dockTargetProgress)
+            }
+            var dockAnimationReady by remember { mutableStateOf(false) }
+            LaunchedEffect(Unit) {
+                withFrameNanos { }
+                dockAnimationReady = true
+            }
+            LaunchedEffect(
+                dockTargetProgress,
+                dockAnimationReady,
+                predictivePresenceProgress != null,
+            ) {
+                if (predictivePresenceProgress != null) return@LaunchedEffect
+                if (dockAnimationReady) {
+                    dockProgress.updateBounds(
+                        lowerBound = 0f,
+                        upperBound = 1f,
+                    )
+                    dockProgress.animateTo(
+                        targetValue = dockTargetProgress,
+                        animationSpec = spring(
+                            dampingRatio = 0.88f,
+                            stiffness = Spring.StiffnessMediumLow,
+                            visibilityThreshold = 0.001f,
+                        ),
+                    )
+                } else {
+                    dockProgress.snapTo(dockTargetProgress)
+                }
+            }
+            LaunchedEffect(predictivePresenceProgress) {
+                if (predictivePresenceProgress != null) {
+                    dockProgress.snapTo(predictivePresenceProgress)
+                }
+            }
+            val effectiveDockProgress =
+                predictivePresenceProgress ?: dockProgress.value
+            val activeMainTab = when (val dock = presentation.dockContent) {
+                is GlobalDockContent.Navigation -> dock.activeMainTab
+                is GlobalDockContent.Search -> dock.activeMainTab
+            }
+            val searchEntryId =
+                (presentation.dockContent as? GlobalDockContent.Search)?.entryId
             val activeTopRadius = when {
                 playbackState.currentTrack != null -> playerBarRadius
-                presentation.isSearchActive -> searchBarRadius
+                searchEntryId != null -> searchBarRadius
                 else -> defaultDockRadius
             }
             val animatedBlurContainerRadius by animateDpAsState(
@@ -415,21 +381,17 @@ fun App(
                     stiffness = Spring.StiffnessMediumLow,
                 ),
             )
-            val enabledAction: (() -> Unit) -> () -> Unit = { action ->
-                if (interactive) action else ({})
+            val miniPlayerAction: (() -> Unit) -> () -> Unit = { action ->
+                if (executionPolicy.allowsMiniPlayerInput) action else ({})
+            }
+            val dockAction: (() -> Unit) -> () -> Unit = { action ->
+                if (executionPolicy.allowsDockInput) action else ({})
             }
 
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .disableClicks()
-                    .then(
-                        if (interactive) {
-                            Modifier
-                        } else {
-                            Modifier.clearAndSetSemantics { }
-                        },
-                    )
                     .clip(
                         RoundedCornerShape(
                             topStart = animatedBlurContainerRadius,
@@ -449,98 +411,104 @@ fun App(
                     ),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Spacer(modifier = Modifier.height(playerTopPadding))
-
                 if (playbackState.currentTrack != null) {
-                    PlayerBar(
-                        currentTrack = playbackState.currentTrack,
-                        isPlaying = playbackState.isPlaying,
-                        onPreviousClick = enabledAction { playerViewModel.playPrevious() },
-                        onNextClick = enabledAction { playerViewModel.playNext() },
-                        onPlayPauseClick = enabledAction {
-                            if (playbackState.isPlaying) {
-                                playerViewModel.pause()
-                            } else {
-                                playerViewModel.resume()
-                            }
+                    Spacer(modifier = Modifier.height(playerTopPadding))
+                    Box(
+                        modifier = if (executionPolicy.allowsMiniPlayerInput) {
+                            Modifier
+                        } else {
+                            Modifier.clearAndSetSemantics { }
                         },
-                        onClick = enabledAction { playerViewModel.openPlayer() },
-                        modifier = Modifier.padding(horizontal = playerSidePadding),
-                        barRadius = playerBarRadius,
-                    )
+                    ) {
+                        PlayerBar(
+                            currentTrack = playbackState.currentTrack,
+                            isPlaying = playbackState.isPlaying,
+                            onPreviousClick = miniPlayerAction {
+                                playerViewModel.playPrevious()
+                            },
+                            onNextClick = miniPlayerAction { playerViewModel.playNext() },
+                            onPlayPauseClick = miniPlayerAction {
+                                if (playbackState.isPlaying) {
+                                    playerViewModel.pause()
+                                } else {
+                                    playerViewModel.resume()
+                                }
+                            },
+                            onClick = miniPlayerAction { playerViewModel.openPlayer() },
+                            modifier = Modifier.padding(horizontal = playerSidePadding),
+                            barRadius = playerBarRadius,
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(spacing.medium))
                 }
 
-                Spacer(modifier = Modifier.height(spacing.medium))
-
-                BottomDock(
-                    activeMainTab = presentation.activeMainTab,
-                    isSearchActive = presentation.isSearchActive,
-                    librarySearch = libraryState.librarySearch,
-                    onHomeClick = enabledAction {
-                        playerViewModel.selectMainTab(MainTab.Home)
-                    },
-                    onLibraryClick = enabledAction {
-                        playerViewModel.selectMainTab(MainTab.Library)
-                    },
-                    onOpenSearch = enabledAction { playerViewModel.openLibrarySearch() },
-                    onCloseSearch = enabledAction(onContentBack),
-                    onSearchQueryChange = { query ->
-                        if (interactive) playerViewModel.updateLibrarySearchQuery(query)
-                    },
-                )
-                Spacer(Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars))
-            }
-        }
-
-        val predictiveStackSession = contentBackSession
-            ?.takeIf { it.mode == ContentBackMode.Predictive }
-            ?.takeIf { it.motionStyle == PredictiveBackMotionStyle.Stack }
-        val saveableStateHolder = rememberSaveableStateHolder()
-        val latestBackStack by rememberUpdatedState(navigationState.backStack)
-
-        @Composable
-        fun ContentScene(
-            targetFrame: ContentTransitionFrame,
-            persistentPadding: PaddingValues,
-            ownsChrome: Boolean,
-            retainsSaveableState: Boolean = true,
-        ) {
-            val targetSnapshot = targetFrame.scene
-            val targetEntry = targetSnapshot.currentEntry
-            val targetTab = targetEntry.route.toMainTabOrNull()
-            DisposableEffect(targetEntry.entryId) {
-                onDispose {
-                    val hasStablePresentationIdentity =
-                        targetEntry.route.toMainTabOrNull() != null
-                    if (
-                        !hasStablePresentationIdentity &&
-                        latestBackStack.none { it.entryId == targetEntry.entryId }
-                    ) {
-                        saveableStateHolder.removeState(targetEntry.entryId)
+                RetainedScaledHeight(
+                    progress = effectiveDockProgress,
+                    clearSemantics = !executionPolicy.allowsDockInput,
+                ) {
+                    Column {
+                        if (playbackState.currentTrack == null) {
+                            Spacer(modifier = Modifier.height(playerTopPadding))
+                        }
+                        BottomDock(
+                            activeMainTab = activeMainTab,
+                            searchEntryId = searchEntryId,
+                            librarySearch = libraryState.librarySearch,
+                            allowsSearchFocus = executionPolicy.allowsSearchFocus,
+                            authorityEpoch = executionPolicy.authorityEpoch,
+                            onHomeClick = dockAction {
+                                playerViewModel.selectMainTab(MainTab.Home)
+                            },
+                            onLibraryClick = dockAction {
+                                playerViewModel.selectMainTab(MainTab.Library)
+                            },
+                            onOpenSearch = dockAction {
+                                playerViewModel.openLibrarySearch()
+                            },
+                            onCloseSearch = dockAction(onContentBack),
+                            onSearchQueryChange = { query ->
+                                if (executionPolicy.allowsDockInput) {
+                                    playerViewModel.updateLibrarySearchQuery(query)
+                                }
+                            },
+                        )
+                        Spacer(
+                            Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars),
+                        )
+                    }
+                }
+                if (playbackState.currentTrack != null) {
+                    RetainedScaledHeight(progress = 1f - effectiveDockProgress) {
+                        Spacer(
+                            Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars),
+                        )
                     }
                 }
             }
+        }
+
+        @Composable
+        fun ContentScene(
+            targetSnapshot: ContentSceneSnapshot,
+            executionPolicy: SceneExecutionPolicy,
+            backSession: ContentBackSession?,
+            contentPadding: PaddingValues,
+        ) {
+            val targetEntry = targetSnapshot.currentEntry
+            val targetTab = targetEntry.route.toMainTabOrNull()
             ContentSceneHost(
-                scene = targetSnapshot,
-                committedScene = committedContentSnapshot,
-                backSession = contentBackSession,
-                chromeLayers = contentChromeLayers,
-                persistentPadding = persistentPadding,
-                ownsChrome = ownsChrome,
-                navigationChrome = { chrome, chromeHazeState ->
-                    NavigationChrome(
-                        presentation = chrome,
-                        interactive = false,
-                        chromeHazeState = chromeHazeState,
-                    )
-                },
+                executionPolicy = executionPolicy,
+                contentPadding = contentPadding,
             ) { entryContentPadding ->
                 if (targetTab != null) {
                     MainTabCarouselHost(
                         state = mainTabCarouselState,
-                        activeTab = navigationState.activeMainTab,
+                        activeTab = targetTab,
                         animateActiveTab = animateMainTabSelection,
-                        backSession = contentBackSession,
+                        backSession = backSession?.takeIf {
+                            it.motionStyle ==
+                                PredictiveBackMotionStyle.MainTabCarousel
+                        },
                         modifier = Modifier.fillMaxSize(),
                     ) { tab ->
                         when (tab) {
@@ -565,11 +533,10 @@ fun App(
                         }
                     }
                 } else {
-                    val detailContent: @Composable () -> Unit = {
-                        val entryDetailState =
-                            detailPresentationState.entry(targetEntry.entryId)
+                    val entryDetailState =
+                        detailPresentationState.entry(targetEntry.entryId)
 
-                        when (targetEntry.route) {
+                    when (targetEntry.route) {
                             AppRoute.Home,
                             AppRoute.Library -> Unit
 
@@ -706,115 +673,107 @@ fun App(
 
                             AppRoute.Player,
                             AppRoute.Queue -> Unit
-                        }
-                    }
-                    if (retainsSaveableState) {
-                        saveableStateHolder.SaveableStateProvider(targetEntry.entryId) {
-                            detailContent()
-                        }
-                    } else {
-                        detailContent()
                     }
                 }
             }
         }
 
+        val focusManager = LocalFocusManager.current
+        LaunchedEffect(
+            retainedContentState.ordinaryTransition,
+            effectiveForegroundPresentation,
+        ) {
+            val foregroundLeavingContent =
+                (
+                    effectiveForegroundPresentation as?
+                        ForegroundPresentation.Transitioning
+                    )
+                    ?.from == ForegroundOwner.Content
+            if (
+                retainedContentState.ordinaryTransition != null ||
+                foregroundLeavingContent
+            ) {
+                focusManager.clearFocus(force = true)
+            }
+        }
+
         Box(modifier = Modifier.fillMaxSize()) {
             Scaffold(
+                modifier = Modifier.fillMaxSize(),
+                containerColor = MaterialTheme.colorScheme.background,
                 bottomBar = {
-                    if (predictiveStackSession == null) {
-                        contentChromeLayers.persistent?.let { chrome ->
-                            NavigationChrome(
-                                presentation = chrome,
-                                interactive = contentBackSession == null,
-                                chromeHazeState = hazeState,
-                            )
-                        }
-                    }
+                    GlobalNavigationChrome(
+                        presentation = globalChromePresentation,
+                        executionPolicy = globalChromePolicy,
+                        chromeHazeState = globalHazeState,
+                        predictivePresenceProgress = predictiveDockProgress,
+                    )
                 },
-            ) { paddingValues ->
+            ) { globalContentPadding ->
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .hazeSource(hazeState)
+                        .hazeSource(globalHazeState)
                         .background(MaterialTheme.colorScheme.background),
                 ) {
-                    PredictiveStackHost(
-                        session = predictiveStackSession,
-                        presentationState = contentPresentationState,
-                        onCancellationSettled = { sessionId ->
-                            contentPresentationController
-                                .onPredictiveStackCancellationSettled(sessionId)
-                                ?.let { completion ->
-                                    logContentBackCancellation(completion)
-                                }
+                    RetainedContentStackHost(
+                        authoritativeScenes = committedContentScenes,
+                        navigationRevision = navigationSnapshot.revision,
+                        navigationTransaction = navigationSnapshot.lastTransaction,
+                        state = retainedContentState,
+                        foregroundPresentation = effectiveForegroundPresentation,
+                        presentationOwnerEpoch = presentationOwnerEpoch,
+                        modifier = Modifier.fillMaxSize(),
+                        onCommitBack = { session ->
+                            focusManager.clearFocus(force = true)
+                            val readyLogEvent = when (session.source) {
+                                ContentBackSource.Platform ->
+                                    "predictive_back_transition_ready"
+
+                                ContentBackSource.Ui -> "content_back_transition_ready"
+                            }
+                            AppDebugLog.log(
+                                "$readyLogEvent surface=content " +
+                                    "entryId=${session.originTopEntryId} " +
+                                    "origin=${session.origin.currentEntry.route} " +
+                                    "preview=${session.preview.currentEntry.route}",
+                            )
+                            val didPop = playerViewModel.commitBack(session.backPlan)
+                            val settledLogEvent = when (session.source) {
+                                ContentBackSource.Platform -> "predictive_back_settled"
+                                ContentBackSource.Ui -> "content_back_settled"
+                            }
+                            AppDebugLog.log(
+                                "$settledLogEvent surface=content " +
+                                    "result=${if (didPop) "committed" else "stale"} " +
+                                    "entryId=${session.originTopEntryId}",
+                            )
+                            didPop
                         },
-                        onCommitVisualSettled = { sessionId ->
-                            contentPresentationController
-                                .onPredictiveStackVisualSettled(sessionId)
-                        },
-                        onCommitHandoffSettled = { sessionId ->
-                            contentPresentationController
-                                .onPredictiveStackHandoffSettled(sessionId)
-                        },
-                        previewContent = { session ->
-                            // The backing host claims the saveable key during the invisible handoff.
-                            ContentScene(
-                                targetFrame = session.previewFrame,
-                                persistentPadding = paddingValues,
-                                ownsChrome = true,
-                                retainsSaveableState = false,
+                        onSceneEvicted = { token, ownerEpoch ->
+                            playerViewModel.acknowledgePresentationEviction(
+                                token = token,
+                                presentationOwnerEpoch = ownerEpoch,
                             )
                         },
-                        originContent = { ownsChrome ->
-                            contentTransition.DeferredAnimatedContent(
-                                transitionSpec = {
-                                    val session = contentBackSession
-                                    when {
-                                        session == null -> navigationContentTransform(
-                                            initial = initialState.scene,
-                                            target = targetState.scene,
-                                            context = targetState.motionContext,
-                                        )
-
-                                        session.motionStyle ==
-                                            PredictiveBackMotionStyle.MainTabCarousel ->
-                                            predictiveBackCancelContentTransform(
-                                                target = targetState.scene,
-                                                motionStyle =
-                                                    PredictiveBackMotionStyle.MainTabCarousel,
-                                            )
-
-                                        session.mode == ContentBackMode.TimeDriven ->
-                                            navigationContentTransform(
-                                                initial = initialState.scene,
-                                                target = targetState.scene,
-                                                context = targetState.motionContext,
-                                            )
-
-                                        else -> predictiveStackContentTransform(
-                                            target = targetState.scene,
-                                        )
-                                    }
-                                },
-                                contentKey = ::mainTabCarouselContentKey,
-                            ) { targetFrame ->
-                                ContentScene(
-                                    targetFrame = targetFrame,
-                                    persistentPadding = paddingValues,
-                                    ownsChrome = ownsChrome,
-                                )
-                            }
-                        },
-                    )
+                    ) { scene, policy, backSession ->
+                        ContentScene(
+                            targetSnapshot = scene,
+                            executionPolicy = policy,
+                            backSession = backSession,
+                            contentPadding = globalContentPadding,
+                        )
+                    }
                 }
             }
-            contentBackSession?.let { session ->
+            if (retainedContentState.isTransitionRunning) {
+                val transitionToken =
+                    contentBackSession?.sessionId ?: navigationSnapshot.revision
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .clearAndSetSemantics { }
-                        .pointerInput(session.sessionId) {
+                        .pointerInput(transitionToken) {
                             awaitPointerEventScope {
                                 while (true) {
                                     awaitPointerEvent().changes.forEach { change ->
@@ -832,6 +791,9 @@ fun App(
                 isPlayerVisible = navigationState.contains(AppRoute.Player) ||
                     navigationState.contains(AppRoute.Queue),
                 isQueueVisible = navigationState.currentDestination == AppRoute.Queue,
+                onForegroundPresentationChanged = { presentation ->
+                    foregroundPresentation = presentation
+                },
                 onPlanBack = playerViewModel::planBack,
                 onCommitBack = playerViewModel::commitBack,
                 onOpenQueueSheet = playerViewModel::openQueueSheet,
@@ -853,12 +815,52 @@ fun App(
     }
 }
 
+@Composable
+private fun RetainedScaledHeight(
+    progress: Float,
+    modifier: Modifier = Modifier,
+    clearSemantics: Boolean = false,
+    content: @Composable () -> Unit,
+) {
+    val clampedProgress = progress.coerceIn(0f, 1f)
+    Layout(
+        modifier = modifier
+            .clipToBounds()
+            .graphicsLayer {
+                alpha = clampedProgress
+            }
+            .then(
+                if (clearSemantics || clampedProgress == 0f) {
+                    Modifier.clearAndSetSemantics { }
+                } else {
+                    Modifier
+                },
+            ),
+        content = content,
+    ) { measurables, constraints ->
+        val placeables = measurables.map { measurable ->
+            measurable.measure(constraints.copy(minHeight = 0))
+        }
+        val fullHeight = placeables.maxOfOrNull { placeable -> placeable.height } ?: 0
+        val visibleHeight = (fullHeight * clampedProgress)
+            .roundToInt()
+            .coerceIn(0, constraints.maxHeight)
+        layout(constraints.maxWidth, visibleHeight) {
+            placeables.forEach { placeable ->
+                placeable.place(0, 0)
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 private fun BottomDock(
     activeMainTab: MainTab,
-    isSearchActive: Boolean,
+    searchEntryId: Long?,
     librarySearch: org.milkdev.dreamplayer.library.LibrarySearchState,
+    allowsSearchFocus: Boolean,
+    authorityEpoch: Long,
     onHomeClick: () -> Unit,
     onLibraryClick: () -> Unit,
     onOpenSearch: () -> Unit,
@@ -869,7 +871,13 @@ private fun BottomDock(
     SharedTransitionLayout(
         modifier = modifier
             .fillMaxWidth()
-            .imePadding()
+            .then(
+                if (searchEntryId != null) {
+                    Modifier.imePadding()
+                } else {
+                    Modifier
+                },
+            )
             .padding(horizontal = 16.dp)
             .padding(bottom = AppTheme.spacing.medium)
     ) {
@@ -877,18 +885,20 @@ private fun BottomDock(
         val searchIconState = rememberSharedContentState(key = "bottom_dock_search_icon")
 
         AnimatedContent(
-            targetState = isSearchActive,
+            targetState = searchEntryId,
             transitionSpec = {
                 fadeIn(animationSpec = tween(durationMillis = 220, delayMillis = 40)) togetherWith
                         fadeOut(animationSpec = tween(durationMillis = 160))
             },
-            contentKey = { it },
-        ) { searchActive ->
-            if (searchActive) {
+            contentKey = { entryId -> entryId ?: NavigationDockContentKey },
+        ) { activeSearchEntryId ->
+            if (activeSearchEntryId != null) {
                 this@SharedTransitionLayout.SearchDock(
                     query = librarySearch.query,
                     onQueryChange = onSearchQueryChange,
                     onCloseClick = onCloseSearch,
+                    allowsFocusAndPopups = allowsSearchFocus,
+                    authorityEpoch = authorityEpoch,
                     containerModifier = Modifier.sharedBounds(
                         sharedContentState = searchBoundsState,
                         animatedVisibilityScope = this@AnimatedContent,
@@ -928,6 +938,8 @@ private val DockBoundsTransform = BoundsTransform { _, _ ->
     tween(durationMillis = 420)
 }
 
+private const val NavigationDockContentKey = "navigation"
+
 @Composable
 fun PlayerBar(
     currentTrack: LibraryTrack?,
@@ -946,12 +958,11 @@ fun PlayerBar(
     val albumArtShape = barRadius.nestedShape(padding = albumArtPadding)
 
     val buttonPadding = spacing.small
-    // val playPauseShape = barRadius.nestedShape(padding = buttonPadding)
 
     Surface(
         onClick = onClick,
         shape = barShape,
-        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.92f),
+        color = MaterialTheme.colorScheme.secondaryContainer,
         tonalElevation = 6.dp,
         modifier = modifier.fillMaxWidth()
     ) {

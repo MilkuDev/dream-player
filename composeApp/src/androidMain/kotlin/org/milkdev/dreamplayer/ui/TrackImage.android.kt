@@ -18,6 +18,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.first
 import org.jetbrains.compose.resources.DrawableResource
 import org.jetbrains.compose.resources.painterResource
+import org.milkdev.dreamplayer.app.LocalSceneExecutionPolicy
 import androidx.core.net.toUri
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ensureActive
@@ -54,6 +55,9 @@ actual fun TrackImage(
     maxDecodeSizePx: Int,
     loadUncached: Boolean,
 ) {
+    val executionPolicy = LocalSceneExecutionPolicy.current
+    val effectiveLoadUncached =
+        loadUncached && executionPolicy.allowsUncachedArtwork
     val context = LocalContext.current
     val cacheDecodeSizePx = remember(maxDecodeSizePx) {
         maxDecodeSizePx.normalizedArtworkDecodeSize()
@@ -65,7 +69,7 @@ actual fun TrackImage(
         cacheKey?.let(::getCachedBitmap)?.asImageBitmap()
     }
 
-    val loadUncachedState = rememberUpdatedState(loadUncached)
+    val loadUncachedState = rememberUpdatedState(effectiveLoadUncached)
 
     val imageBitmap by produceState<ImageBitmap?>(cachedImageBitmap, cacheKey) {
 

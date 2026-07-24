@@ -16,16 +16,21 @@ import kotlin.time.Duration.Companion.milliseconds
 @Composable
 internal fun rememberLazyArtworkLoadingEnabled(
     listState: LazyListState,
+    enabled: Boolean = true,
     idleDelayMillis: Long = 0L,
 ): Boolean {
-    var canLoadArtwork by remember { mutableStateOf(true) }
+    var canLoadArtwork by remember { mutableStateOf(enabled) }
 
-    LaunchedEffect(listState, idleDelayMillis) {
+    LaunchedEffect(listState, enabled, idleDelayMillis) {
+        if (!enabled) {
+            canLoadArtwork = false
+            return@LaunchedEffect
+        }
+        canLoadArtwork = !listState.isScrollInProgress
         snapshotFlow { listState.isScrollInProgress }
             .collectLatest { isScrolling ->
-                if (isScrolling) {
-                    canLoadArtwork = true
-                } else {
+                canLoadArtwork = false
+                if (!isScrolling) {
                     delay(idleDelayMillis.milliseconds)
                     canLoadArtwork = true
                 }
@@ -38,11 +43,17 @@ internal fun rememberLazyArtworkLoadingEnabled(
 @Composable
 internal fun rememberLazyArtworkLoadingEnabled(
     gridState: LazyGridState,
+    enabled: Boolean = true,
     idleDelayMillis: Long = 0L,
 ): Boolean {
-    var canLoadArtwork by remember { mutableStateOf(true) }
+    var canLoadArtwork by remember { mutableStateOf(enabled) }
 
-    LaunchedEffect(gridState, idleDelayMillis) {
+    LaunchedEffect(gridState, enabled, idleDelayMillis) {
+        if (!enabled) {
+            canLoadArtwork = false
+            return@LaunchedEffect
+        }
+        canLoadArtwork = !gridState.isScrollInProgress
         snapshotFlow { gridState.isScrollInProgress }
             .collectLatest { isScrolling ->
                 if (isScrolling) {

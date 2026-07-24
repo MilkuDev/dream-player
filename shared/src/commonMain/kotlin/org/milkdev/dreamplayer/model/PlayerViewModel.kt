@@ -87,6 +87,11 @@ import kotlin.time.Clock
 
 private const val PageSize = 60
 
+private data class PendingPresentationEviction(
+    val token: PresentationEvictionToken,
+    val route: AppRoute,
+)
+
 class PlayerViewModel {
     private val storeScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
@@ -117,6 +122,10 @@ class PlayerViewModel {
     private var detailContentJob: Job? = null
     private var searchPageLoadJob: Job? = null
     private var searchRequestGeneration: Long = 0L
+    private val pendingPresentationEvictions =
+        mutableMapOf<Long, PendingPresentationEviction>()
+    private var nextPresentationOwnerEpoch = 1L
+    private var activePresentationOwnerEpoch: Long? = null
     private var checkedDailyPlaylistEpochDay: Long? = null
     private var trackPageCursor: LibraryPageCursor? = null
     private var albumPageCursor: LibraryPageCursor? = null
@@ -647,9 +656,84 @@ class PlayerViewModel {
         return commitNavigationPlan(plan) != null
     }
 
-    fun retainDetailPresentations(retainedEntryIds: Set<Long>) {
-        _detailPresentationState.update { currentState ->
-            currentState.retainEntries(retainedEntryIds)
+    fun acquirePresentationOwner(): Long {
+        if (activePresentationOwnerEpoch != null) {
+            cleanupPendingEvictionsWithoutRenderer()
+        }
+        val epoch = nextPresentationOwnerEpoch++
+        activePresentationOwnerEpoch = epoch
+        return epoch
+    }
+
+    fun acknowledgePresentationEviction(
+        token: PresentationEvictionToken,
+        presentationOwnerEpoch: Long,
+    ): Boolean {
+        val pending = pendingPresentationEvictions[token.entryId] ?: return false
+        if (
+            !canAcknowledgePresentationEviction(
+                token = token,
+                pendingToken = pending.token,
+                currentEntryIds = currentNavigationState.backStack
+                    .mapTo(mutableSetOf()) { entry -> entry.entryId },
+                activePresentationOwnerEpoch = activePresentationOwnerEpoch,
+                acknowledgementOwnerEpoch = presentationOwnerEpoch,
+            )
+        ) {
+            return false
+        }
+
+        pendingPresentationEvictions.remove(token.entryId)
+        cleanupEvictedPresentation(pending)
+        return true
+    }
+
+    fun releasePresentationOwner(presentationOwnerEpoch: Long) {
+        if (activePresentationOwnerEpoch != presentationOwnerEpoch) return
+        activePresentationOwnerEpoch = null
+        cleanupPendingEvictionsWithoutRenderer()
+    }
+
+    private fun cleanupPendingEvictionsWithoutRenderer() {
+        pendingPresentationEvictions.values
+            .filter { pending ->
+                currentNavigationState.backStack.none {
+                    it.entryId == pending.token.entryId
+                }
+            }
+            .toList()
+            .forEach { pending ->
+                pendingPresentationEvictions.remove(pending.token.entryId)
+                cleanupEvictedPresentation(pending)
+            }
+    }
+
+    private fun cleanupEvictedPresentation(
+        pending: PendingPresentationEviction,
+    ) {
+        detailEntryStore.remove(pending.token.entryId)
+        _detailPresentationState.update { state ->
+            state.removeEntry(pending.token.entryId)
+        }
+        if (
+            pending.route == AppRoute.Search &&
+            !currentNavigationState.contains(AppRoute.Search)
+        ) {
+            searchPageLoadJob?.cancel()
+            searchPageLoadJob = null
+            searchRequestGeneration += 1L
+            searchPageCursor = null
+            _libraryState.update { currentState ->
+                currentState.copy(
+                    librarySearch = currentState.librarySearch.copy(
+                        isActive = false,
+                        query = "",
+                    ),
+                    searchTrackListItems = emptyList(),
+                    hasMoreSearchTracks = false,
+                    isSearchPageLoading = false,
+                )
+            }
         }
     }
 
@@ -764,14 +848,14 @@ class PlayerViewModel {
         }
         val requestGeneration = searchRequestGeneration
         val requestedCursor = searchPageCursor
+        _libraryState.update {
+            it.copy(
+                isSearchPageLoading = true,
+                searchTrackListItems = if (reset) emptyList() else it.searchTrackListItems,
+                hasMoreSearchTracks = if (reset) true else it.hasMoreSearchTracks,
+            )
+        }
         searchPageLoadJob = storeScope.launch {
-            _libraryState.update {
-                it.copy(
-                    isSearchPageLoading = true,
-                    searchTrackListItems = if (reset) emptyList() else it.searchTrackListItems,
-                    hasMoreSearchTracks = if (reset) true else it.hasMoreSearchTracks,
-                )
-            }
             val searchState = _libraryState.value
             val page = MusicLibrarySource.searchTrackPage(
                 query = searchState.librarySearch.query,
@@ -1858,6 +1942,28 @@ class PlayerViewModel {
             }
         }
 
+        val retainedEntryIds = nextNavigationState.backStack
+            .mapTo(mutableSetOf()) { entry -> entry.entryId }
+        previousNavigationState.backStack
+            .asSequence()
+            .filter { entry -> entry.entryId !in retainedEntryIds }
+            .filter { entry ->
+                entry.route != AppRoute.Home &&
+                    entry.route != AppRoute.Library &&
+                    entry.route != AppRoute.Player &&
+                    entry.route != AppRoute.Queue
+            }
+            .forEach { entry ->
+                pendingPresentationEvictions[entry.entryId] =
+                    PendingPresentationEviction(
+                        token = PresentationEvictionToken(
+                            entryId = entry.entryId,
+                            removedAtRevision = commit.snapshot.revision,
+                        ),
+                        route = entry.route,
+                    )
+            }
+
         _navigationSnapshot.value = commit.snapshot
 
         if (
@@ -1872,16 +1978,11 @@ class PlayerViewModel {
                 currentState.copy(
                     librarySearch = currentState.librarySearch.copy(
                         isActive = false,
-                        query = "",
                     ),
-                    searchTrackListItems = emptyList(),
-                    hasMoreSearchTracks = false,
                     isSearchPageLoading = false,
                 )
             }
         }
-
-        detailEntryStore.retainEntries(nextNavigationState.backStack)
 
         if (contentChanged && nextDetailDescriptor != null) {
             startDetailObservation(
