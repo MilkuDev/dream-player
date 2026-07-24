@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+import kotlin.time.Duration.Companion.milliseconds
 
 class PlaybackProgressWorker(
     private val scope: CoroutineScope,
@@ -27,7 +28,7 @@ class PlaybackProgressWorker(
                 if (tracker.shouldCheckpoint(trackId, positionMs, state.isPlaying)) {
                     onCheckpoint(checkNotNull(trackId), positionMs)
                 }
-                delay(pollIntervalMs)
+                delay(pollIntervalMs.milliseconds)
             }
         }
     }

@@ -11,7 +11,15 @@ class AppNavigationState private constructor(
 
     init {
         require(backStack.isNotEmpty()) { "Navigation stack must not be empty" }
-        require(backStack.first() == HomeEntry) { "Home must be the first navigation entry" }
+        val rootTab = requireNotNull(backStack.first().route.toMainTabOrNull()) {
+            "Navigation stack must start with a main tab"
+        }
+        require(backStack.first() == rootEntry(rootTab)) {
+            "Navigation stack must use the stable entry for its main tab"
+        }
+        require(backStack.drop(1).none { it.route.toMainTabOrNull() != null }) {
+            "Only the first navigation entry may be a main tab"
+        }
         require(backStack.map { it.entryId }.distinct().size == backStack.size) {
             "Navigation entry IDs must be unique within the active stack"
         }
@@ -33,39 +41,28 @@ class AppNavigationState private constructor(
         get() = backStack.asReversed()
             .first { !it.route.isPlaybackOverlay }
 
-    val activeMainDestination: MainDestination
-        get() = backStack.asReversed()
-            .firstNotNullOfOrNull { it.route.toMainDestinationOrNull() }
-            ?: MainDestination.Home
+    val activeMainTab: MainTab
+        get() = checkNotNull(backStack.first().route.toMainTabOrNull())
 
     val canNavigateBack: Boolean
-        get() = backStack.size > 1
+        get() = backStack.size > 1 || activeMainTab != MainTab.Home
 
     fun contains(route: AppRoute): Boolean {
         return backStack.any { it.route == route }
     }
 
-    fun selectMainPage(page: MainPage): AppNavigationState {
-        val nextStack = when (page) {
-            MainPage.Home -> listOf(HomeEntry)
-            MainPage.Library -> listOf(HomeEntry, LibraryEntry)
-        }
-        return withStack(nextStack)
+    fun selectMainTab(tab: MainTab): AppNavigationState {
+        return withStack(listOf(rootEntry(tab)))
     }
 
     fun openSearch(): AppNavigationState {
         val existingSearchIndex = backStack.indexOfLast { it.route == AppRoute.Search }
-        if (existingSearchIndex >= 0 && activeMainDestination == MainDestination.Search) {
+        if (existingSearchIndex >= 0) {
             return withStack(backStack.take(existingSearchIndex + 1))
         }
 
-        val anchor = when (activeMainDestination) {
-            MainDestination.Library -> listOf(HomeEntry, LibraryEntry)
-            MainDestination.Home,
-            MainDestination.Search -> listOf(HomeEntry)
-        }
         return withPushedRoute(
-            baseStack = anchor,
+            baseStack = listOf(backStack.first()),
             route = AppRoute.Search,
         )
     }
@@ -118,16 +115,19 @@ class AppNavigationState private constructor(
         }
     }
 
-    fun pop(expectedTopEntryId: Long? = null): AppNavigationState? {
+    fun navigateBack(expectedTopEntryId: Long? = null): AppNavigationState? {
         if (expectedTopEntryId != null && currentEntry.entryId != expectedTopEntryId) {
             return null
         }
-        if (!canNavigateBack) return null
-        return withStack(backStack.dropLast(1))
+        return when {
+            backStack.size > 1 -> withStack(backStack.dropLast(1))
+            activeMainTab != MainTab.Home -> selectMainTab(MainTab.Home)
+            else -> null
+        }
     }
 
     fun previewBack(): AppNavigationState? {
-        return pop()
+        return navigateBack()
     }
 
     fun removePlaybackOverlays(): AppNavigationState {
@@ -159,22 +159,23 @@ class AppNavigationState private constructor(
     }
 
     private companion object {
-        const val HomeEntryId = 0L
-        const val LibraryEntryId = 1L
-        const val FirstDynamicEntryId = 2L
+        const val FirstDynamicEntryId = 1_024L
 
-        val HomeEntry = NavigationEntry(
-            entryId = HomeEntryId,
-            route = AppRoute.Home,
-        )
-        val LibraryEntry = NavigationEntry(
-            entryId = LibraryEntryId,
-            route = AppRoute.Library,
-        )
+        val HomeEntry = rootEntry(MainTab.Home)
 
         fun nextDynamicEntryId(current: Long): Long {
             check(current < Long.MAX_VALUE) { "Navigation entry ID space is exhausted" }
             return current + 1L
+        }
+
+        fun rootEntry(tab: MainTab): NavigationEntry {
+            return NavigationEntry(
+                entryId = tab.stableEntryId,
+                route = when (tab) {
+                    MainTab.Home -> AppRoute.Home
+                    MainTab.Library -> AppRoute.Library
+                },
+            )
         }
 
         fun hasValidPlaybackSuffix(stack: List<NavigationEntry>): Boolean {

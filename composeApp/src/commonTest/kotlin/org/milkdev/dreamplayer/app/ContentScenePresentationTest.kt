@@ -3,8 +3,7 @@ package org.milkdev.dreamplayer.app
 import org.milkdev.dreamplayer.navigation.AppNavigationSnapshot
 import org.milkdev.dreamplayer.navigation.AppNavigationState
 import org.milkdev.dreamplayer.navigation.AppRoute
-import org.milkdev.dreamplayer.navigation.MainDestination
-import org.milkdev.dreamplayer.navigation.MainPage
+import org.milkdev.dreamplayer.navigation.MainTab
 import org.milkdev.dreamplayer.navigation.NavigationEntry
 import org.milkdev.dreamplayer.navigation.planBack
 import kotlin.test.Test
@@ -18,7 +17,7 @@ class ContentScenePresentationTest {
 
         val layers = resolveContentChromeLayers(home, backSession = null)
 
-        assertEquals(MainDestination.Home, layers.persistent?.activeMainDestination)
+        assertEquals(MainTab.Home, layers.persistent?.activeMainTab)
         assertNull(layers.destination)
     }
 
@@ -26,7 +25,7 @@ class ContentScenePresentationTest {
     fun hiddenOriginRevealsDestinationChromeBelowPredictiveForeground() {
         val backSession = session(
             AppNavigationState()
-                .selectMainPage(MainPage.Library)
+                .selectMainTab(MainTab.Library)
                 .push(AppRoute.Settings),
         )
 
@@ -37,14 +36,14 @@ class ContentScenePresentationTest {
 
         assertNull(layers.persistent)
         assertEquals(backSession.preview.currentEntry.entryId, layers.destination?.entryId)
-        assertEquals(MainDestination.Library, layers.destination?.chrome?.activeMainDestination)
+        assertEquals(MainTab.Library, layers.destination?.chrome?.activeMainTab)
     }
 
     @Test
     fun visibleOriginKeepsOnePersistentChromeUntilCommit() {
         val backSession = session(
             AppNavigationState()
-                .selectMainPage(MainPage.Library)
+                .selectMainTab(MainTab.Library)
                 .push(AppRoute.LibraryCollection(
                     type = org.milkdev.dreamplayer.library.LibraryCollectionType.GENRE,
                     collectionId = 9L,
@@ -56,7 +55,7 @@ class ContentScenePresentationTest {
             backSession = backSession,
         )
 
-        assertEquals(MainDestination.Library, layers.persistent?.activeMainDestination)
+        assertEquals(MainTab.Library, layers.persistent?.activeMainTab)
         assertNull(layers.destination)
     }
 
@@ -100,14 +99,10 @@ class ContentScenePresentationTest {
         val entry = NavigationEntry(entryId, route)
         val stack = when (route) {
             AppRoute.Home -> listOf(entry)
-            AppRoute.Library -> listOf(
-                NavigationEntry(0L, AppRoute.Home),
-                entry,
-            )
+            AppRoute.Library -> listOf(entry)
 
             is AppRoute.Playlist,
             is AppRoute.LibraryCollection -> listOf(
-                NavigationEntry(0L, AppRoute.Home),
                 NavigationEntry(1L, AppRoute.Library),
                 entry,
             )

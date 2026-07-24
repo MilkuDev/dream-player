@@ -4,7 +4,6 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.BoundsTransform
 import androidx.compose.animation.DeferredAnimatedContent
 import androidx.compose.animation.ExperimentalSharedTransitionApi
-import androidx.compose.animation.MutableContentTransform
 import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.core.ExperimentalDeferredTransitionApi
 import androidx.compose.animation.core.Spring
@@ -41,7 +40,6 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.chrisbanes.haze.hazeEffect
@@ -61,10 +59,9 @@ import org.milkdev.dreamplayer.model.LibraryCollectionDetailUiState
 import org.milkdev.dreamplayer.model.PlayerViewModel
 import org.milkdev.dreamplayer.model.PlaylistDetailUiState
 import org.milkdev.dreamplayer.navigation.AppRoute
-import org.milkdev.dreamplayer.navigation.MainDestination
-import org.milkdev.dreamplayer.navigation.MainPage
+import org.milkdev.dreamplayer.navigation.MainTab
+import org.milkdev.dreamplayer.navigation.toMainTabOrNull
 import org.milkdev.dreamplayer.ui.*
-import kotlin.math.roundToInt
 
 private val playerViewModelInstance = PlayerViewModel()
 
@@ -97,6 +94,12 @@ fun App(
     )
     val contentPresentationState = contentPresentationController.state
     val contentBackSession = contentPresentationState.backSession
+    val mainTabCarouselState = remember {
+        MainTabCarouselState(navigationState.activeMainTab)
+    }
+    val animateMainTabSelection = isDirectRootTabSwitch(
+        navigationSnapshot.lastTransaction,
+    )
     LaunchedEffect(committedContentSnapshot) {
         contentPresentationController.onCommittedSnapshotChanged(
             snapshot = committedContentSnapshot,
@@ -121,12 +124,74 @@ fun App(
         }
     }
 
-    val cancellingSessionId = (
+    fun logContentBackCancellation(
+        completion: ContentTransitionCompletion.Cancelled,
+    ) {
+        AppDebugLog.log(
+            "predictive_back_settled surface=content result=cancelled " +
+                "entryId=${completion.session.originTopEntryId}",
+        )
+    }
+
+    fun commitContentBack(
+        completion: ContentTransitionCompletion.CommitReady,
+    ) {
+        val readyLogEvent = when (completion.session.source) {
+            ContentBackSource.Platform -> "predictive_back_transition_ready"
+            ContentBackSource.Ui -> "content_back_transition_ready"
+        }
+        AppDebugLog.log(
+            "$readyLogEvent surface=content " +
+                "entryId=${completion.session.originTopEntryId} " +
+                "origin=${completion.session.origin.currentEntry.route} " +
+                "preview=${completion.session.preview.currentEntry.route} " +
+                "mode=${completion.session.mode.name.lowercase()} " +
+                "events=${completion.session.progressEventCount} " +
+                "maxProgress=${completion.session.maxProgress}",
+        )
+        val didPop = playerViewModel.commitBack(completion.session.backPlan)
+        contentPresentationController.onCommitPopCompleted(
+            sessionId = completion.session.sessionId,
+            didPop = didPop,
+            recoveryTarget = contentSceneSnapshot(
+                playerViewModel.navigationSnapshot.value.state.backStack,
+            ),
+        )
+        val logEvent = when (completion.session.source) {
+            ContentBackSource.Platform -> "predictive_back_settled"
+            ContentBackSource.Ui -> "content_back_settled"
+        }
+        AppDebugLog.log(
+            "$logEvent surface=content " +
+                "result=${if (didPop) "committed" else "stale"} " +
+                "entryId=${completion.session.originTopEntryId}",
+        )
+    }
+
+    val cancellingDeferredSessionId = (
         contentPresentationState as? ContentNavigationPresentationState.Cancelling
-        )?.session?.sessionId
-    LaunchedEffect(cancellingSessionId) {
-        cancellingSessionId?.let { sessionId ->
+        )?.session
+        ?.takeUnless {
+            it.mode == ContentBackMode.Predictive &&
+                it.motionStyle == PredictiveBackMotionStyle.Stack
+        }
+        ?.sessionId
+    LaunchedEffect(cancellingDeferredSessionId) {
+        cancellingDeferredSessionId?.let { sessionId ->
             contentPresentationController.settleCancellation(sessionId)
+                ?.let { completion -> logContentBackCancellation(completion) }
+        }
+    }
+
+    val committingMainTabCarouselSessionId = (
+        contentPresentationState as? ContentNavigationPresentationState.Committing
+        )?.session
+        ?.takeIf { it.motionStyle == PredictiveBackMotionStyle.MainTabCarousel }
+        ?.sessionId
+    LaunchedEffect(committingMainTabCarouselSessionId) {
+        committingMainTabCarouselSessionId?.let { sessionId ->
+            contentPresentationController.settleMainTabCarouselCommit(sessionId)
+                ?.let { completion -> commitContentBack(completion) }
         }
     }
 
@@ -148,43 +213,11 @@ fun App(
                 isRunning = contentTransition.isRunning,
             )
         ) {
-            is ContentTransitionCompletion.Cancelled -> AppDebugLog.log(
-                "predictive_back_settled surface=content result=cancelled " +
-                    "entryId=${completion.session.originTopEntryId}",
-            )
+            is ContentTransitionCompletion.Cancelled ->
+                logContentBackCancellation(completion)
 
-            is ContentTransitionCompletion.CommitReady -> {
-                val readyLogEvent = when (completion.session.source) {
-                    ContentBackSource.Platform -> "predictive_back_transition_ready"
-                    ContentBackSource.Ui -> "content_back_transition_ready"
-                }
-                AppDebugLog.log(
-                    "$readyLogEvent surface=content " +
-                        "entryId=${completion.session.originTopEntryId} " +
-                        "origin=${completion.session.origin.currentEntry.route} " +
-                        "preview=${completion.session.preview.currentEntry.route} " +
-                        "mode=${completion.session.mode.name.lowercase()} " +
-                        "events=${completion.session.progressEventCount} " +
-                        "maxProgress=${completion.session.maxProgress}",
-                )
-                val didPop = playerViewModel.commitBack(completion.session.backPlan)
-                contentPresentationController.onCommitPopCompleted(
-                    sessionId = completion.session.sessionId,
-                    didPop = didPop,
-                    recoveryTarget = contentSceneSnapshot(
-                        playerViewModel.navigationSnapshot.value.state.backStack,
-                    ),
-                )
-                val logEvent = when (completion.session.source) {
-                    ContentBackSource.Platform -> "predictive_back_settled"
-                    ContentBackSource.Ui -> "content_back_settled"
-                }
-                AppDebugLog.log(
-                    "$logEvent surface=content " +
-                        "result=${if (didPop) "committed" else "stale"} " +
-                        "entryId=${completion.session.originTopEntryId}",
-                )
-            }
+            is ContentTransitionCompletion.CommitReady ->
+                commitContentBack(completion)
 
             null -> Unit
         }
@@ -372,7 +405,7 @@ fun App(
         ) {
             val activeTopRadius = when {
                 playbackState.currentTrack != null -> playerBarRadius
-                presentation.activeMainDestination == MainDestination.Search -> searchBarRadius
+                presentation.isSearchActive -> searchBarRadius
                 else -> defaultDockRadius
             }
             val animatedBlurContainerRadius by animateDpAsState(
@@ -440,13 +473,14 @@ fun App(
                 Spacer(modifier = Modifier.height(spacing.medium))
 
                 BottomDock(
-                    activeMainDestination = presentation.activeMainDestination,
+                    activeMainTab = presentation.activeMainTab,
+                    isSearchActive = presentation.isSearchActive,
                     librarySearch = libraryState.librarySearch,
                     onHomeClick = enabledAction {
-                        playerViewModel.selectMainPage(MainPage.Home)
+                        playerViewModel.selectMainTab(MainTab.Home)
                     },
                     onLibraryClick = enabledAction {
-                        playerViewModel.selectMainPage(MainPage.Library)
+                        playerViewModel.selectMainTab(MainTab.Library)
                     },
                     onOpenSearch = enabledAction { playerViewModel.openLibrarySearch() },
                     onCloseSearch = enabledAction(onContentBack),
@@ -458,130 +492,87 @@ fun App(
             }
         }
 
-        Box(modifier = Modifier.fillMaxSize()) {
-            Scaffold(
-                bottomBar = {
-                    contentChromeLayers.persistent?.let { chrome ->
-                        NavigationChrome(
-                            presentation = chrome,
-                            interactive = contentBackSession == null,
-                            chromeHazeState = hazeState,
-                        )
-                    }
-                },
-            ) { paddingValues ->
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .hazeSource(hazeState)
-                    .background(MaterialTheme.colorScheme.background)
-            ) {
-                val saveableStateHolder = rememberSaveableStateHolder()
-                val latestBackStack by rememberUpdatedState(navigationState.backStack)
-                val predictiveVeilColor = MaterialTheme.colorScheme.scrim
-                contentTransition.DeferredAnimatedContent(
-                    transitionSpec = {
-                        val session = contentBackSession
-                        when {
-                            session == null -> navigationContentTransform(
-                                initial = initialState.scene,
-                                target = targetState.scene,
-                                context = targetState.motionContext,
-                            )
-                            contentPresentationState is ContentNavigationPresentationState.Cancelling &&
-                                contentTransition.pendingTargetState == null ->
-                                predictiveBackCancelContentTransform(targetState.scene)
-                            session.mode == ContentBackMode.TimeDriven ->
-                                navigationContentTransform(
-                                    initial = initialState.scene,
-                                    target = targetState.scene,
-                                    context = targetState.motionContext,
-                                )
-                            else -> predictiveBackContentTransform(
-                                swipeEdge = session.swipeEdge,
-                                target = targetState.scene,
-                            )
-                        }
-                    },
-                    contentKey = { it.scene.currentEntry.entryId },
-                    mutableTransformSpec = {
-                        val session = contentPresentationController.backSession
-                        if (session?.mode != ContentBackMode.Predictive) {
-                            return@DeferredAnimatedContent null
-                        }
-                        MutableContentTransform(targetVeilMatchParentSize = true) {
-                            initialContentTransform { fullSize ->
-                                val session = contentPresentationController.backSession
-                                val progress = session?.progress?.coerceIn(0f, 1f) ?: 0f
-                                val direction =
-                                    if (session?.swipeEdge == BackSwipeEdge.Right) -1 else 1
-                                scale = 1f - (0.08f * progress)
-                                offset = IntOffset(
-                                    x = (
-                                        direction * fullSize.width * 0.05f * progress
-                                        ).roundToInt(),
-                                    y = 0,
-                                )
-                            }
-                            targetContentTransform {
-                                val progress = contentPresentationController.backSession
-                                    ?.progress
-                                    ?.coerceIn(0f, 1f)
-                                    ?: 0f
-                                scale = 1f
-                                veil = predictiveVeilColor.copy(alpha = 0.08f * (1f - progress))
-                            }
-                        }
-                    },
-                ) { targetFrame ->
-                    val targetSnapshot = targetFrame.scene
-                    val targetEntry = targetSnapshot.currentEntry
-                    DisposableEffect(targetEntry.entryId) {
-                        onDispose {
-                            val hasStablePresentationIdentity =
-                                targetEntry.route == AppRoute.Home || targetEntry.route == AppRoute.Library
-                            if (
-                                !hasStablePresentationIdentity &&
-                                latestBackStack.none { it.entryId == targetEntry.entryId }
-                            ) {
-                                saveableStateHolder.removeState(targetEntry.entryId)
-                            }
-                        }
-                    }
-                    ContentSceneHost(
-                        scene = targetSnapshot,
-                        committedScene = committedContentSnapshot,
-                        backSession = contentBackSession,
-                        chromeLayers = contentChromeLayers,
-                        persistentPadding = paddingValues,
-                        navigationChrome = { chrome, chromeHazeState ->
-                            NavigationChrome(
-                                presentation = chrome,
-                                interactive = false,
-                                chromeHazeState = chromeHazeState,
-                            )
-                        },
-                    ) { entryContentPadding ->
-                        saveableStateHolder.SaveableStateProvider(targetEntry.entryId) {
-                            val entryDetailState =
-                                detailPresentationState.entry(targetEntry.entryId)
+        val predictiveStackSession = contentBackSession
+            ?.takeIf { it.mode == ContentBackMode.Predictive }
+            ?.takeIf { it.motionStyle == PredictiveBackMotionStyle.Stack }
+        val saveableStateHolder = rememberSaveableStateHolder()
+        val latestBackStack by rememberUpdatedState(navigationState.backStack)
 
-                            when (targetEntry.route) {
-                            AppRoute.Home -> HomeScreen(
+        @Composable
+        fun ContentScene(
+            targetFrame: ContentTransitionFrame,
+            persistentPadding: PaddingValues,
+            ownsChrome: Boolean,
+            retainsSaveableState: Boolean = true,
+        ) {
+            val targetSnapshot = targetFrame.scene
+            val targetEntry = targetSnapshot.currentEntry
+            val targetTab = targetEntry.route.toMainTabOrNull()
+            DisposableEffect(targetEntry.entryId) {
+                onDispose {
+                    val hasStablePresentationIdentity =
+                        targetEntry.route.toMainTabOrNull() != null
+                    if (
+                        !hasStablePresentationIdentity &&
+                        latestBackStack.none { it.entryId == targetEntry.entryId }
+                    ) {
+                        saveableStateHolder.removeState(targetEntry.entryId)
+                    }
+                }
+            }
+            ContentSceneHost(
+                scene = targetSnapshot,
+                committedScene = committedContentSnapshot,
+                backSession = contentBackSession,
+                chromeLayers = contentChromeLayers,
+                persistentPadding = persistentPadding,
+                ownsChrome = ownsChrome,
+                navigationChrome = { chrome, chromeHazeState ->
+                    NavigationChrome(
+                        presentation = chrome,
+                        interactive = false,
+                        chromeHazeState = chromeHazeState,
+                    )
+                },
+            ) { entryContentPadding ->
+                if (targetTab != null) {
+                    MainTabCarouselHost(
+                        state = mainTabCarouselState,
+                        activeTab = navigationState.activeMainTab,
+                        animateActiveTab = animateMainTabSelection,
+                        backSession = contentBackSession,
+                        modifier = Modifier.fillMaxSize(),
+                    ) { tab ->
+                        when (tab) {
+                            MainTab.Home -> HomeScreen(
                                 libraryState = libraryState,
-                                onShuffleDailyPlaylistClick = playerViewModel::shuffleDailyPlaylist,
-                                onOpenDailyPlaylistClick = playerViewModel::openDailyPlaylist,
+                                onShuffleDailyPlaylistClick =
+                                    playerViewModel::shuffleDailyPlaylist,
+                                onOpenDailyPlaylistClick =
+                                    playerViewModel::openDailyPlaylist,
                                 contentPadding = entryContentPadding,
                                 onSettingsClick = playerViewModel::openSettings,
-                                onTrackClick = playerViewModel::playFromVisibleTracks
+                                onTrackClick = playerViewModel::playFromVisibleTracks,
                             )
-                            AppRoute.Library -> LibraryScreen(
+
+                            MainTab.Library -> LibraryScreen(
                                 libraryState = libraryState,
                                 currentTrack = playbackState.currentTrack,
                                 onIntent = playerViewModel::onLibraryIntent,
                                 onSettingsClick = playerViewModel::openSettings,
                                 contentPadding = entryContentPadding,
                             )
+                        }
+                    }
+                } else {
+                    val detailContent: @Composable () -> Unit = {
+                        val entryDetailState =
+                            detailPresentationState.entry(targetEntry.entryId)
+
+                        when (targetEntry.route) {
+                            AppRoute.Home,
+                            AppRoute.Library -> Unit
+
                             is AppRoute.Playlist -> {
                                 if (entryDetailState is PlaylistDetailUiState) {
                                     PlaylistDetailsScreen(
@@ -596,11 +587,14 @@ fun App(
                                             )
                                         },
                                         onSaveTracks = playerViewModel::savePlaylistTracks,
-                                        onLoadNextPickerTracks = { playerViewModel.loadPlaylistPickerPage() },
+                                        onLoadNextPickerTracks = {
+                                            playerViewModel.loadPlaylistPickerPage()
+                                        },
                                         contentPadding = entryContentPadding,
                                     )
                                 }
                             }
+
                             is AppRoute.LibraryCollection -> {
                                 if (entryDetailState is LibraryCollectionDetailUiState) {
                                     LibraryCollectionDetailsScreen(
@@ -618,60 +612,203 @@ fun App(
                                     )
                                 }
                             }
+
                             AppRoute.Settings -> SettingsScreen(
                                 settingsState = settingsState,
                                 onBackClick = onContentBack,
                                 onBlurToggle = { playerViewModel.setBlurEnabled(it) },
                                 onNightModeToggle = { playerViewModel.setForceNightMode(it) },
-                                onDailyPlaylistModeChange = { playerViewModel.setDailyPlaylistGenerationMode(it) },
-                                onAiPlaylistProviderChange = { playerViewModel.setAiPlaylistProvider(it) },
-                                onAiPlaylistModelChange = { playerViewModel.setAiPlaylistModel(it) },
-                                onAiPlaylistPromptPresetChange = { playerViewModel.setAiPlaylistPromptPreset(it) },
-                                onAiPlaylistCustomSystemPromptChange = { playerViewModel.setAiPlaylistCustomSystemPrompt(it) },
-                                onAiPlaylistApiKeySave = { playerViewModel.saveAiPlaylistApiKey(it) },
-                                onAiPlaylistApiKeyClear = { playerViewModel.clearAiPlaylistApiKey() },
+                                onDailyPlaylistModeChange = {
+                                    playerViewModel.setDailyPlaylistGenerationMode(it)
+                                },
+                                onAiPlaylistProviderChange = {
+                                    playerViewModel.setAiPlaylistProvider(it)
+                                },
+                                onAiPlaylistModelChange = {
+                                    playerViewModel.setAiPlaylistModel(it)
+                                },
+                                onAiPlaylistPromptPresetChange = {
+                                    playerViewModel.setAiPlaylistPromptPreset(it)
+                                },
+                                onAiPlaylistCustomSystemPromptChange = {
+                                    playerViewModel.setAiPlaylistCustomSystemPrompt(it)
+                                },
+                                onAiPlaylistApiKeySave = {
+                                    playerViewModel.saveAiPlaylistApiKey(it)
+                                },
+                                onAiPlaylistApiKeyClear = {
+                                    playerViewModel.clearAiPlaylistApiKey()
+                                },
                                 onOpenAiDebugSettings = playerViewModel::openAiDebugSettings,
-                                onLastFmApiKeySave = { playerViewModel.saveLastFmApiKey(it) },
-                                onLastFmApiKeyClear = { playerViewModel.clearLastFmApiKey() },
-                                onLastFmApiTest = { playerViewModel.testLastFmApi() },
-                                onLastFmMetadataSync = { playerViewModel.startLastFmMetadataSync() },
-                                onMusicBrainzCoverSync = { playerViewModel.startMusicBrainzCoverSync() },
-                                contentPadding = entryContentPadding
+                                onLastFmApiKeySave = {
+                                    playerViewModel.saveLastFmApiKey(it)
+                                },
+                                onLastFmApiKeyClear = {
+                                    playerViewModel.clearLastFmApiKey()
+                                },
+                                onLastFmApiTest = {
+                                    playerViewModel.testLastFmApi()
+                                },
+                                onLastFmMetadataSync = {
+                                    playerViewModel.startLastFmMetadataSync()
+                                },
+                                onMusicBrainzCoverSync = {
+                                    playerViewModel.startMusicBrainzCoverSync()
+                                },
+                                contentPadding = entryContentPadding,
                             )
+
                             AppRoute.AiDebugSettings -> AiDebugSettingsScreen(
                                 settingsState = settingsState,
                                 librarySummary = libraryState.librarySummary,
                                 onBackClick = onContentBack,
-                                onModeChange = { playerViewModel.setDailyPlaylistGenerationMode(it) },
-                                onProviderChange = { playerViewModel.setAiPlaylistProvider(it) },
-                                onModelChange = { playerViewModel.setAiPlaylistModel(it) },
-                                onPromptPresetChange = { playerViewModel.setAiPlaylistPromptPreset(it) },
-                                onCustomPromptChange = { playerViewModel.setAiPlaylistCustomSystemPrompt(it) },
+                                onModeChange = {
+                                    playerViewModel.setDailyPlaylistGenerationMode(it)
+                                },
+                                onProviderChange = {
+                                    playerViewModel.setAiPlaylistProvider(it)
+                                },
+                                onModelChange = {
+                                    playerViewModel.setAiPlaylistModel(it)
+                                },
+                                onPromptPresetChange = {
+                                    playerViewModel.setAiPlaylistPromptPreset(it)
+                                },
+                                onCustomPromptChange = {
+                                    playerViewModel.setAiPlaylistCustomSystemPrompt(it)
+                                },
                                 onApiKeySave = { playerViewModel.saveAiPlaylistApiKey(it) },
                                 onApiKeyClear = { playerViewModel.clearAiPlaylistApiKey() },
-                                onAllApiKeysClear = { playerViewModel.clearAllAiPlaylistApiKeys() },
+                                onAllApiKeysClear = {
+                                    playerViewModel.clearAllAiPlaylistApiKeys()
+                                },
                                 onApiTest = { playerViewModel.testAiPlaylistApi() },
-                                onResponseTest = { playerViewModel.testAiPlaylistModelResponse() },
-                                onForceGenerateDailyPlaylist = { playerViewModel.forceGenerateDailyPlaylist() },
+                                onResponseTest = {
+                                    playerViewModel.testAiPlaylistModelResponse()
+                                },
+                                onForceGenerateDailyPlaylist = {
+                                    playerViewModel.forceGenerateDailyPlaylist()
+                                },
                                 onPromptSend = { playerViewModel.sendAiPrompt(it) },
-                                contentPadding = entryContentPadding
+                                contentPadding = entryContentPadding,
                             )
+
                             AppRoute.Search -> LibrarySearchScreen(
                                 libraryState = libraryState,
                                 currentTrackId = playbackState.currentTrack?.id,
                                 onTrackClick = playerViewModel::playFromVisibleTracks,
                                 onBackClick = onContentBack,
-                                onLoadNextSearch = { playerViewModel.loadNextSearchPage() },
-                                contentPadding = entryContentPadding
+                                onLoadNextSearch = {
+                                    playerViewModel.loadNextSearchPage()
+                                },
+                                contentPadding = entryContentPadding,
                             )
-                                AppRoute.Player,
-                                AppRoute.Queue -> Unit
-                            }
+
+                            AppRoute.Player,
+                            AppRoute.Queue -> Unit
                         }
+                    }
+                    if (retainsSaveableState) {
+                        saveableStateHolder.SaveableStateProvider(targetEntry.entryId) {
+                            detailContent()
+                        }
+                    } else {
+                        detailContent()
                     }
                 }
             }
         }
+
+        Box(modifier = Modifier.fillMaxSize()) {
+            Scaffold(
+                bottomBar = {
+                    if (predictiveStackSession == null) {
+                        contentChromeLayers.persistent?.let { chrome ->
+                            NavigationChrome(
+                                presentation = chrome,
+                                interactive = contentBackSession == null,
+                                chromeHazeState = hazeState,
+                            )
+                        }
+                    }
+                },
+            ) { paddingValues ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .hazeSource(hazeState)
+                        .background(MaterialTheme.colorScheme.background),
+                ) {
+                    PredictiveStackHost(
+                        session = predictiveStackSession,
+                        presentationState = contentPresentationState,
+                        onCancellationSettled = { sessionId ->
+                            contentPresentationController
+                                .onPredictiveStackCancellationSettled(sessionId)
+                                ?.let { completion ->
+                                    logContentBackCancellation(completion)
+                                }
+                        },
+                        onCommitVisualSettled = { sessionId ->
+                            contentPresentationController
+                                .onPredictiveStackVisualSettled(sessionId)
+                        },
+                        onCommitHandoffSettled = { sessionId ->
+                            contentPresentationController
+                                .onPredictiveStackHandoffSettled(sessionId)
+                        },
+                        previewContent = { session ->
+                            // The backing host claims the saveable key during the invisible handoff.
+                            ContentScene(
+                                targetFrame = session.previewFrame,
+                                persistentPadding = paddingValues,
+                                ownsChrome = true,
+                                retainsSaveableState = false,
+                            )
+                        },
+                        originContent = { ownsChrome ->
+                            contentTransition.DeferredAnimatedContent(
+                                transitionSpec = {
+                                    val session = contentBackSession
+                                    when {
+                                        session == null -> navigationContentTransform(
+                                            initial = initialState.scene,
+                                            target = targetState.scene,
+                                            context = targetState.motionContext,
+                                        )
+
+                                        session.motionStyle ==
+                                            PredictiveBackMotionStyle.MainTabCarousel ->
+                                            predictiveBackCancelContentTransform(
+                                                target = targetState.scene,
+                                                motionStyle =
+                                                    PredictiveBackMotionStyle.MainTabCarousel,
+                                            )
+
+                                        session.mode == ContentBackMode.TimeDriven ->
+                                            navigationContentTransform(
+                                                initial = initialState.scene,
+                                                target = targetState.scene,
+                                                context = targetState.motionContext,
+                                            )
+
+                                        else -> predictiveStackContentTransform(
+                                            target = targetState.scene,
+                                        )
+                                    }
+                                },
+                                contentKey = ::mainTabCarouselContentKey,
+                            ) { targetFrame ->
+                                ContentScene(
+                                    targetFrame = targetFrame,
+                                    persistentPadding = paddingValues,
+                                    ownsChrome = ownsChrome,
+                                )
+                            }
+                        },
+                    )
+                }
+            }
             contentBackSession?.let { session ->
                 Box(
                     modifier = Modifier
@@ -719,7 +856,8 @@ fun App(
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 private fun BottomDock(
-    activeMainDestination: MainDestination,
+    activeMainTab: MainTab,
+    isSearchActive: Boolean,
     librarySearch: org.milkdev.dreamplayer.library.LibrarySearchState,
     onHomeClick: () -> Unit,
     onLibraryClick: () -> Unit,
@@ -739,14 +877,14 @@ private fun BottomDock(
         val searchIconState = rememberSharedContentState(key = "bottom_dock_search_icon")
 
         AnimatedContent(
-            targetState = activeMainDestination,
+            targetState = isSearchActive,
             transitionSpec = {
                 fadeIn(animationSpec = tween(durationMillis = 220, delayMillis = 40)) togetherWith
                         fadeOut(animationSpec = tween(durationMillis = 160))
             },
-            contentKey = { it == MainDestination.Search },
-        ) { destination ->
-            if (destination == MainDestination.Search) {
+            contentKey = { it },
+        ) { searchActive ->
+            if (searchActive) {
                 this@SharedTransitionLayout.SearchDock(
                     query = librarySearch.query,
                     onQueryChange = onSearchQueryChange,
@@ -765,7 +903,7 @@ private fun BottomDock(
                 )
             } else {
                 NavigationDock(
-                    activeMainDestination = destination,
+                    activeMainTab = activeMainTab,
                     onHomeClick = onHomeClick,
                     onLibraryClick = onLibraryClick,
                     onSearchClick = onOpenSearch,

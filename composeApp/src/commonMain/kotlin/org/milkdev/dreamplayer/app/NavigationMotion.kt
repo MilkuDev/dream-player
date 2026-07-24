@@ -15,6 +15,8 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import org.milkdev.dreamplayer.navigation.NavigationOperation
 import org.milkdev.dreamplayer.navigation.NavigationTransaction
+import org.milkdev.dreamplayer.navigation.toMainTabOrNull
+import kotlin.math.roundToInt
 
 internal enum class BackSwipeEdge {
     Left,
@@ -25,14 +27,27 @@ internal enum class BackSwipeEdge {
 internal data class PlatformBackEvent(
     val progress: Float,
     val swipeEdge: BackSwipeEdge,
+    val frameTimeMillis: Long = 0L,
 )
 
 internal enum class NavigationMotionKind {
     None,
     Forward,
     Backward,
+    MainForward,
+    MainBackward,
     FadeThrough,
 }
+
+internal enum class PredictiveBackMotionStyle {
+    Stack,
+    MainTabCarousel,
+}
+
+internal data class PredictiveCarouselOffsets(
+    val originX: Int,
+    val previewX: Int,
+)
 
 internal data class NavigationMotionContext(
     val transitionId: Long,
@@ -71,7 +86,16 @@ private fun resolveNavigationMotion(
         NavigationOperation.Push -> NavigationMotionKind.Forward
         NavigationOperation.Pop -> NavigationMotionKind.Backward
 
-        NavigationOperation.MainSwitch,
+        NavigationOperation.MainSwitch -> {
+            val initialTab = initial.currentEntry.route.toMainTabOrNull()
+            val targetTab = target.currentEntry.route.toMainTabOrNull()
+            when {
+                initialTab == null || targetTab == null -> NavigationMotionKind.FadeThrough
+                targetTab.position > initialTab.position -> NavigationMotionKind.MainForward
+                else -> NavigationMotionKind.MainBackward
+            }
+        }
+
         NavigationOperation.SearchOpen,
         NavigationOperation.SearchClose -> NavigationMotionKind.FadeThrough
 
@@ -118,6 +142,26 @@ internal fun navigationContentTransform(
                 ))
         }
 
+        NavigationMotionKind.MainForward -> {
+            slideInHorizontally(
+                animationSpec = tween(MainCarouselDurationMillis, easing = MotionEnterEasing),
+                initialOffsetX = { width -> width },
+            ) togetherWith slideOutHorizontally(
+                animationSpec = tween(MainCarouselDurationMillis, easing = MotionEnterEasing),
+                targetOffsetX = { width -> -width },
+            )
+        }
+
+        NavigationMotionKind.MainBackward -> {
+            slideInHorizontally(
+                animationSpec = tween(MainCarouselDurationMillis, easing = MotionEnterEasing),
+                initialOffsetX = { width -> -width },
+            ) togetherWith slideOutHorizontally(
+                animationSpec = tween(MainCarouselDurationMillis, easing = MotionEnterEasing),
+                targetOffsetX = { width -> width },
+            )
+        }
+
         NavigationMotionKind.FadeThrough -> {
             (fadeIn(tween(220, delayMillis = 80, easing = MotionEnterEasing)) +
                 scaleIn(
@@ -130,7 +174,10 @@ internal fun navigationContentTransform(
         targetContentEnter = transform.targetContentEnter,
         initialContentExit = transform.initialContentExit,
         targetContentZIndex = target.contentLayer,
-        sizeTransform = SizeTransform(clip = false),
+        sizeTransform = SizeTransform(
+            clip = motionKind == NavigationMotionKind.MainForward ||
+                motionKind == NavigationMotionKind.MainBackward,
+        ),
     )
 }
 
@@ -144,27 +191,53 @@ internal fun NavigationTransaction.toMotionContext(): NavigationMotionContext? {
     )
 }
 
-internal fun predictiveBackContentTransform(
+internal fun resolvePredictiveBackMotionStyle(
+    origin: ContentSceneSnapshot,
+    preview: ContentSceneSnapshot,
+    operation: NavigationOperation,
+): PredictiveBackMotionStyle {
+    val isMainTabSwitch =
+        operation == NavigationOperation.MainSwitch &&
+            origin.currentEntry.route.toMainTabOrNull() != null &&
+            preview.currentEntry.route.toMainTabOrNull() != null
+    return if (isMainTabSwitch) {
+        PredictiveBackMotionStyle.MainTabCarousel
+    } else {
+        PredictiveBackMotionStyle.Stack
+    }
+}
+
+internal fun predictiveCarouselOffsets(
+    progress: Float,
     swipeEdge: BackSwipeEdge,
-    target: ContentSceneSnapshot,
-): ContentTransform {
-    val direction = if (swipeEdge == BackSwipeEdge.Right) -1 else 1
-    val exit = slideOutHorizontally(
-        animationSpec = tween(220, easing = MotionExitEasing),
-        targetOffsetX = { width -> direction * width / 5 },
-    ) + scaleOut(
-        targetScale = 0.92f,
-        animationSpec = tween(220, easing = MotionExitEasing),
+    fullWidth: Int,
+    origin: ContentSceneSnapshot,
+    preview: ContentSceneSnapshot,
+): PredictiveCarouselOffsets {
+    val coercedProgress = progress.coerceIn(0f, 1f)
+    val direction = predictiveCarouselDirection(
+        swipeEdge = swipeEdge,
+        origin = origin,
+        preview = preview,
     )
-    return ContentTransform(
-        targetContentEnter = EnterTransition.None,
-        initialContentExit = exit,
-        targetContentZIndex = target.contentLayer,
-        sizeTransform = SizeTransform(clip = false),
+    return PredictiveCarouselOffsets(
+        originX = (direction * fullWidth * coercedProgress).roundToInt(),
+        previewX = (-direction * fullWidth * (1f - coercedProgress)).roundToInt(),
     )
 }
 
-internal fun predictiveBackCancelContentTransform(
+internal fun mainTabCarouselSettleDurationMillis(
+    progress: Float,
+): Int {
+    val remainingFraction = 1f - progress.coerceIn(0f, 1f)
+    return (
+        MainCarouselMinimumSettleDurationMillis +
+            (MainCarouselDurationMillis - MainCarouselMinimumSettleDurationMillis) *
+            remainingFraction
+        ).roundToInt()
+}
+
+internal fun predictiveStackContentTransform(
     target: ContentSceneSnapshot,
 ): ContentTransform {
     return ContentTransform(
@@ -175,5 +248,45 @@ internal fun predictiveBackCancelContentTransform(
     )
 }
 
-private val MotionEnterEasing = CubicBezierEasing(0.05f, 0.7f, 0.1f, 1f)
+internal fun predictiveBackCancelContentTransform(
+    target: ContentSceneSnapshot,
+    motionStyle: PredictiveBackMotionStyle = PredictiveBackMotionStyle.Stack,
+): ContentTransform {
+    return ContentTransform(
+        targetContentEnter = EnterTransition.None,
+        initialContentExit = ExitTransition.None,
+        targetContentZIndex = target.contentLayer,
+        sizeTransform = SizeTransform(
+            clip = motionStyle == PredictiveBackMotionStyle.MainTabCarousel,
+        ),
+    )
+}
+
+private fun predictiveCarouselDirection(
+    swipeEdge: BackSwipeEdge,
+    origin: ContentSceneSnapshot,
+    preview: ContentSceneSnapshot,
+): Int {
+    return when (swipeEdge) {
+        BackSwipeEdge.Left -> 1
+        BackSwipeEdge.Right -> -1
+        BackSwipeEdge.None -> {
+            val originPosition = origin.currentEntry.route.toMainTabOrNull()?.position
+            val previewPosition = preview.currentEntry.route.toMainTabOrNull()?.position
+            if (
+                originPosition != null &&
+                previewPosition != null &&
+                previewPosition > originPosition
+            ) {
+                -1
+            } else {
+                1
+            }
+        }
+    }
+}
+
+internal const val MainCarouselDurationMillis = 300
+private const val MainCarouselMinimumSettleDurationMillis = 220
+internal val MotionEnterEasing = CubicBezierEasing(0.05f, 0.7f, 0.1f, 1f)
 private val MotionExitEasing = CubicBezierEasing(0.3f, 0f, 0.8f, 0.15f)

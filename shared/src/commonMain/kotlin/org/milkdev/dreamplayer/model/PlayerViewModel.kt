@@ -59,7 +59,7 @@ import org.milkdev.dreamplayer.library.dailyPlaylistRepository
 import org.milkdev.dreamplayer.navigation.AppNavigationSnapshot
 import org.milkdev.dreamplayer.navigation.AppNavigator
 import org.milkdev.dreamplayer.navigation.AppRoute
-import org.milkdev.dreamplayer.navigation.MainPage
+import org.milkdev.dreamplayer.navigation.MainTab
 import org.milkdev.dreamplayer.navigation.NavigationCause
 import org.milkdev.dreamplayer.navigation.NavigationIntent
 import org.milkdev.dreamplayer.navigation.NavigationPlan
@@ -623,8 +623,8 @@ class PlayerViewModel {
         }
     }
 
-    fun selectMainPage(page: MainPage) {
-        commitNavigationIntent(NavigationIntent.SelectMain(page))
+    fun selectMainTab(tab: MainTab) {
+        commitNavigationIntent(NavigationIntent.SelectMainTab(tab))
     }
 
     fun openSettings() {
@@ -638,7 +638,7 @@ class PlayerViewModel {
     fun planBack(expectedTopEntryId: Long? = null): NavigationPlan? {
         return AppNavigator.plan(
             currentNavigationSnapshot,
-            NavigationIntent.Pop(expectedTopEntryId),
+            NavigationIntent.Back(expectedTopEntryId),
         )
     }
 

@@ -1,5 +1,6 @@
 package org.milkdev.dreamplayer.ui
 
+import android.os.SystemClock
 import androidx.activity.BackEventCompat
 import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.runtime.Composable
@@ -40,5 +41,6 @@ private fun BackEventCompat.toPlatformBackEvent(): PlatformBackEvent {
             BackEventCompat.EDGE_RIGHT -> BackSwipeEdge.Right
             else -> BackSwipeEdge.None
         },
+        frameTimeMillis = frameTimeMillis.takeIf { it > 0L } ?: SystemClock.uptimeMillis(),
     )
 }

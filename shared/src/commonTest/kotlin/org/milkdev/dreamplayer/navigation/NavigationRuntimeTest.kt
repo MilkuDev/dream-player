@@ -63,7 +63,7 @@ class NavigationRuntimeTest {
         assertNull(
             AppNavigator.plan(
                 snapshot,
-                NavigationIntent.Pop(expectedTopEntryId = 999L),
+                NavigationIntent.Back(expectedTopEntryId = 999L),
             ),
         )
     }
@@ -75,7 +75,7 @@ class NavigationRuntimeTest {
             NavigationIntent.Push(AppRoute.Settings),
         )
         val backPlan = assertNotNull(
-            AppNavigator.plan(settings, NavigationIntent.Pop()),
+            AppNavigator.plan(settings, NavigationIntent.Back()),
         )
 
         assertEquals(AppRoute.Home, backPlan.targetState.currentDestination)
@@ -87,7 +87,7 @@ class NavigationRuntimeTest {
     fun operationsDistinguishMainSearchAndOverlayChanges() {
         val home = AppNavigationSnapshot()
         val libraryPlan = assertNotNull(
-            AppNavigator.plan(home, NavigationIntent.SelectMain(MainPage.Library)),
+            AppNavigator.plan(home, NavigationIntent.SelectMainTab(MainTab.Library)),
         )
         assertEquals(NavigationOperation.MainSwitch, libraryPlan.operation)
 
@@ -96,7 +96,7 @@ class NavigationRuntimeTest {
         assertEquals(NavigationOperation.SearchOpen, searchPlan.operation)
 
         val search = assertNotNull(AppNavigator.commit(library, searchPlan)).snapshot
-        val closeSearchPlan = assertNotNull(AppNavigator.plan(search, NavigationIntent.Pop()))
+        val closeSearchPlan = assertNotNull(AppNavigator.plan(search, NavigationIntent.Back()))
         assertEquals(NavigationOperation.SearchClose, closeSearchPlan.operation)
 
         val playerPlan = assertNotNull(
@@ -104,13 +104,29 @@ class NavigationRuntimeTest {
         )
         assertEquals(NavigationOperation.OverlayOpen, playerPlan.operation)
         val player = assertNotNull(AppNavigator.commit(library, playerPlan)).snapshot
-        val closePlayerPlan = assertNotNull(AppNavigator.plan(player, NavigationIntent.Pop()))
+        val closePlayerPlan = assertNotNull(AppNavigator.plan(player, NavigationIntent.Back()))
         assertEquals(NavigationOperation.OverlayClose, closePlayerPlan.operation)
         assertFalse(
             assertNotNull(AppNavigator.commit(player, closePlayerPlan))
                 .transaction
                 .affectsContent,
         )
+    }
+
+    @Test
+    fun backFromSecondaryTabPlansMainSwitchToHome() {
+        val home = AppNavigationSnapshot()
+        val library = committedSnapshot(
+            home,
+            NavigationIntent.SelectMainTab(MainTab.Library),
+        )
+
+        val backPlan = assertNotNull(AppNavigator.plan(library, NavigationIntent.Back()))
+
+        assertEquals(MainTab.Home, backPlan.targetState.activeMainTab)
+        assertEquals(listOf(AppRoute.Home), backPlan.targetState.backStack.map { it.route })
+        assertEquals(NavigationOperation.MainSwitch, backPlan.operation)
+        assertEquals(NavigationCause.Back, backPlan.cause)
     }
 
     private fun committedSnapshot(

@@ -49,13 +49,13 @@ fun AppNavigationSnapshot.planBack(
 ): NavigationPlan? {
     return AppNavigator.plan(
         this,
-        NavigationIntent.Pop(expectedTopEntryId),
+        NavigationIntent.Back(expectedTopEntryId),
     )
 }
 
 internal sealed interface NavigationIntent {
-    data class SelectMain(
-        val page: MainPage,
+    data class SelectMainTab(
+        val tab: MainTab,
     ) : NavigationIntent
 
     data class Push(
@@ -64,7 +64,7 @@ internal sealed interface NavigationIntent {
 
     data object OpenSearch : NavigationIntent
 
-    data class Pop(
+    data class Back(
         val expectedTopEntryId: Long? = null,
     ) : NavigationIntent
 
@@ -83,10 +83,10 @@ internal object AppNavigator {
     ): NavigationPlan? {
         val currentState = snapshot.state
         val targetState = when (intent) {
-            is NavigationIntent.SelectMain -> currentState.selectMainPage(intent.page)
+            is NavigationIntent.SelectMainTab -> currentState.selectMainTab(intent.tab)
             is NavigationIntent.Push -> currentState.push(intent.route)
             NavigationIntent.OpenSearch -> currentState.openSearch()
-            is NavigationIntent.Pop -> currentState.pop(intent.expectedTopEntryId)
+            is NavigationIntent.Back -> currentState.navigateBack(intent.expectedTopEntryId)
             NavigationIntent.RemovePlaybackOverlays -> currentState.removePlaybackOverlays()
         } ?: return null
         if (targetState === currentState) return null
@@ -137,9 +137,9 @@ internal object AppNavigator {
 
 private fun NavigationIntent.cause(): NavigationCause {
     return when (this) {
-        is NavigationIntent.Pop -> NavigationCause.Back
+        is NavigationIntent.Back -> NavigationCause.Back
         NavigationIntent.RemovePlaybackOverlays -> NavigationCause.SystemCorrection
-        is NavigationIntent.SelectMain,
+        is NavigationIntent.SelectMainTab,
         is NavigationIntent.Push,
         NavigationIntent.OpenSearch -> NavigationCause.Direct
     }
@@ -149,7 +149,7 @@ private fun NavigationIntent.operation(
     currentState: AppNavigationState,
 ): NavigationOperation {
     return when (this) {
-        is NavigationIntent.SelectMain -> NavigationOperation.MainSwitch
+        is NavigationIntent.SelectMainTab -> NavigationOperation.MainSwitch
         is NavigationIntent.Push -> if (route.isPlaybackOverlay) {
             NavigationOperation.OverlayOpen
         } else {
@@ -157,11 +157,18 @@ private fun NavigationIntent.operation(
         }
 
         NavigationIntent.OpenSearch -> NavigationOperation.SearchOpen
-        is NavigationIntent.Pop -> when (currentState.currentDestination) {
-            AppRoute.Player,
-            AppRoute.Queue -> NavigationOperation.OverlayClose
+        is NavigationIntent.Back -> when {
+            currentState.currentDestination == AppRoute.Player ||
+                currentState.currentDestination == AppRoute.Queue ->
+                NavigationOperation.OverlayClose
 
-            AppRoute.Search -> NavigationOperation.SearchClose
+            currentState.currentDestination == AppRoute.Search ->
+                NavigationOperation.SearchClose
+
+            currentState.backStack.size == 1 &&
+                currentState.activeMainTab != MainTab.Home ->
+                NavigationOperation.MainSwitch
+
             else -> NavigationOperation.Pop
         }
 

@@ -23,25 +23,21 @@ sealed interface AppRoute {
     data object Queue : AppRoute
 }
 
-enum class MainDestination {
-    Home,
-    Library,
-    Search,
-}
-
-enum class MainPage {
-    Home,
-    Library,
+enum class MainTab(
+    val position: Int,
+    internal val stableEntryId: Long,
+) {
+    Home(position = 0, stableEntryId = 0L),
+    Library(position = 1, stableEntryId = 1L),
 }
 
 internal val AppRoute.isPlaybackOverlay: Boolean
     get() = this == AppRoute.Player || this == AppRoute.Queue
 
-internal fun AppRoute.toMainDestinationOrNull(): MainDestination? {
+fun AppRoute.toMainTabOrNull(): MainTab? {
     return when (this) {
-        AppRoute.Home -> MainDestination.Home
-        AppRoute.Library -> MainDestination.Library
-        AppRoute.Search -> MainDestination.Search
+        AppRoute.Home -> MainTab.Home
+        AppRoute.Library -> MainTab.Library
         else -> null
     }
 }

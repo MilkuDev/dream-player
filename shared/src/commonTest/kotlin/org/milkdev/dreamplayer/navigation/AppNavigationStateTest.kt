@@ -19,71 +19,73 @@ class AppNavigationStateTest {
         assertRoutes(state, AppRoute.Home)
         assertEquals(AppRoute.Home, state.currentDestination)
         assertEquals(AppRoute.Home, state.currentContentEntry.route)
-        assertEquals(MainDestination.Home, state.activeMainDestination)
+        assertEquals(MainTab.Home, state.activeMainTab)
         assertFalse(state.canNavigateBack)
-        assertNull(state.pop())
+        assertNull(state.navigateBack())
     }
 
     @Test
-    fun selectingLibraryBuildsHomeLibraryStack() {
-        val state = AppNavigationState().selectMainPage(MainPage.Library)
+    fun selectingLibraryBuildsIndependentLibraryRoot() {
+        val state = AppNavigationState().selectMainTab(MainTab.Library)
 
-        assertRoutes(state, AppRoute.Home, AppRoute.Library)
-        assertEquals(MainDestination.Library, state.activeMainDestination)
+        assertRoutes(state, AppRoute.Library)
+        assertEquals(MainTab.Library, state.activeMainTab)
         assertTrue(state.canNavigateBack)
     }
 
     @Test
     fun backFromLibraryReturnsHome() {
         val state = AppNavigationState()
-            .selectMainPage(MainPage.Library)
-            .pop()
+            .selectMainTab(MainTab.Library)
+            .navigateBack()
 
         assertNotNull(state)
         assertRoutes(state, AppRoute.Home)
     }
 
     @Test
-    fun selectingMainPageDropsDetailsAndOverlays() {
+    fun selectingMainTabDropsDetailsAndOverlays() {
         val state = AppNavigationState()
-            .selectMainPage(MainPage.Library)
+            .selectMainTab(MainTab.Library)
             .push(Genre5)
             .push(Album42)
             .push(AppRoute.Player)
             .push(AppRoute.Queue)
 
-        val library = state.selectMainPage(MainPage.Library)
-        val home = state.selectMainPage(MainPage.Home)
+        val library = state.selectMainTab(MainTab.Library)
+        val home = state.selectMainTab(MainTab.Home)
 
-        assertRoutes(library, AppRoute.Home, AppRoute.Library)
+        assertRoutes(library, AppRoute.Library)
         assertRoutes(home, AppRoute.Home)
     }
 
     @Test
-    fun homeAlwaysRemainsFirstEntry() {
+    fun everyStackStartsWithItsActiveMainTab() {
         val states = listOf(
             AppNavigationState(),
-            AppNavigationState().selectMainPage(MainPage.Library),
+            AppNavigationState().selectMainTab(MainTab.Library),
             AppNavigationState().openSearch(),
             AppNavigationState().push(Playlist10).push(AppRoute.Player),
         )
 
         states.forEach { state ->
-            assertEquals(AppRoute.Home, state.backStack.first().route)
-            assertEquals(0L, state.backStack.first().entryId)
+            assertEquals(
+                state.activeMainTab,
+                state.backStack.first().route.toMainTabOrNull(),
+            )
         }
     }
 
     @Test
-    fun mainPageEntriesKeepStableIdentity() {
+    fun mainTabEntriesKeepStableIdentity() {
         val initial = AppNavigationState()
         val firstLibraryId = initial
-            .selectMainPage(MainPage.Library)
+            .selectMainTab(MainTab.Library)
             .backStack.last().entryId
         val secondLibraryId = initial
-            .selectMainPage(MainPage.Library)
-            .selectMainPage(MainPage.Home)
-            .selectMainPage(MainPage.Library)
+            .selectMainTab(MainTab.Library)
+            .selectMainTab(MainTab.Home)
+            .selectMainTab(MainTab.Library)
             .backStack.last().entryId
 
         assertEquals(0L, initial.backStack.first().entryId)
@@ -123,7 +125,7 @@ class AppNavigationStateTest {
     fun popRestoresExistingEntryIdentity() {
         val artistState = AppNavigationState().push(Artist7)
         val artistEntry = artistState.currentEntry
-        val restored = artistState.push(Album42).pop()
+        val restored = artistState.push(Album42).navigateBack()
 
         assertNotNull(restored)
         assertEquals(artistEntry, restored.currentEntry)
@@ -134,19 +136,19 @@ class AppNavigationStateTest {
         val search = AppNavigationState().openSearch()
 
         assertRoutes(search, AppRoute.Home, AppRoute.Search)
-        assertEquals(MainDestination.Search, search.activeMainDestination)
-        assertRoutes(search.pop(), AppRoute.Home)
+        assertEquals(MainTab.Home, search.activeMainTab)
+        assertRoutes(search.navigateBack(), AppRoute.Home)
     }
 
     @Test
     fun searchFromLibraryReturnsToLibrary() {
         val search = AppNavigationState()
-            .selectMainPage(MainPage.Library)
+            .selectMainTab(MainTab.Library)
             .openSearch()
 
-        assertRoutes(search, AppRoute.Home, AppRoute.Library, AppRoute.Search)
-        assertEquals(MainDestination.Search, search.activeMainDestination)
-        assertRoutes(search.pop(), AppRoute.Home, AppRoute.Library)
+        assertRoutes(search, AppRoute.Library, AppRoute.Search)
+        assertEquals(MainTab.Library, search.activeMainTab)
+        assertRoutes(search.navigateBack(), AppRoute.Library)
     }
 
     @Test
@@ -161,12 +163,12 @@ class AppNavigationStateTest {
     @Test
     fun searchFromLibraryDetailsDropsDetailSuffix() {
         val search = AppNavigationState()
-            .selectMainPage(MainPage.Library)
+            .selectMainTab(MainTab.Library)
             .push(Genre5)
             .push(Album42)
             .openSearch()
 
-        assertRoutes(search, AppRoute.Home, AppRoute.Library, AppRoute.Search)
+        assertRoutes(search, AppRoute.Library, AppRoute.Search)
     }
 
     @Test
@@ -187,14 +189,13 @@ class AppNavigationStateTest {
             .openSearch()
             .push(Artist7)
         val librarySearchDetail = AppNavigationState()
-            .selectMainPage(MainPage.Library)
+            .selectMainTab(MainTab.Library)
             .openSearch()
             .push(Playlist10)
 
         assertRoutes(homeSearchDetail.closeSearch(), AppRoute.Home)
         assertRoutes(
             librarySearchDetail.closeSearch(),
-            AppRoute.Home,
             AppRoute.Library,
         )
         val initial = AppNavigationState()
@@ -213,77 +214,75 @@ class AppNavigationStateTest {
     @Test
     fun detailHistoryPreservesEveryEntry() {
         val state = AppNavigationState()
-            .selectMainPage(MainPage.Library)
+            .selectMainTab(MainTab.Library)
             .push(Genre5)
             .push(Album42)
             .push(Artist7)
 
         assertRoutes(
             state,
-            AppRoute.Home,
             AppRoute.Library,
             Genre5,
             Album42,
             Artist7,
         )
-        assertEquals(MainDestination.Library, state.activeMainDestination)
+        assertEquals(MainTab.Library, state.activeMainTab)
     }
 
     @Test
     fun backFromAlbumRestoresGenreWithoutSkippingIt() {
         val album = AppNavigationState()
-            .selectMainPage(MainPage.Library)
+            .selectMainTab(MainTab.Library)
             .push(Genre5)
             .push(Album42)
-        val genreEntry = album.backStack[2]
+        val genreEntry = album.backStack[1]
 
-        val genre = album.pop()
+        val genre = album.navigateBack()
 
         assertNotNull(genre)
-        assertRoutes(genre, AppRoute.Home, AppRoute.Library, Genre5)
+        assertRoutes(genre, AppRoute.Library, Genre5)
         assertEquals(genreEntry, genre.currentEntry)
     }
 
     @Test
     fun guardedBackRejectsAStaleAnimatedCommit() {
         val genre = AppNavigationState()
-            .selectMainPage(MainPage.Library)
+            .selectMainTab(MainTab.Library)
             .push(Genre5)
         val staleGenreEntryId = genre.currentEntry.entryId
         val album = genre.push(Album42)
 
-        assertNull(album.pop(expectedTopEntryId = staleGenreEntryId))
+        assertNull(album.navigateBack(expectedTopEntryId = staleGenreEntryId))
         assertRoutes(
-            album.pop(expectedTopEntryId = album.currentEntry.entryId),
-            AppRoute.Home,
+            album.navigateBack(expectedTopEntryId = album.currentEntry.entryId),
             AppRoute.Library,
             Genre5,
         )
     }
 
     @Test
-    fun detailInheritsSearchAsActiveMainDestination() {
+    fun detailAboveSearchKeepsItsActiveMainTab() {
         val state = AppNavigationState()
-            .selectMainPage(MainPage.Library)
+            .selectMainTab(MainTab.Library)
             .openSearch()
             .push(Artist7)
             .push(Playlist10)
 
-        assertEquals(MainDestination.Search, state.activeMainDestination)
+        assertEquals(MainTab.Library, state.activeMainTab)
         assertEquals(Playlist10, state.currentContentEntry.route)
     }
 
     @Test
-    fun settingsPreservesItsMainPageOrigin() {
+    fun settingsPreservesItsMainTabOrigin() {
         val homeSettings = AppNavigationState().push(AppRoute.Settings)
         val librarySettings = AppNavigationState()
-            .selectMainPage(MainPage.Library)
+            .selectMainTab(MainTab.Library)
             .push(AppRoute.Settings)
 
         assertRoutes(homeSettings, AppRoute.Home, AppRoute.Settings)
-        assertEquals(MainDestination.Home, homeSettings.activeMainDestination)
-        assertRoutes(librarySettings, AppRoute.Home, AppRoute.Library, AppRoute.Settings)
-        assertEquals(MainDestination.Library, librarySettings.activeMainDestination)
+        assertEquals(MainTab.Home, homeSettings.activeMainTab)
+        assertRoutes(librarySettings, AppRoute.Library, AppRoute.Settings)
+        assertEquals(MainTab.Library, librarySettings.activeMainTab)
     }
 
     @Test
@@ -312,21 +311,21 @@ class AppNavigationStateTest {
     @Test
     fun playerAndQueueCloseSequentially() {
         val queue = AppNavigationState()
-            .selectMainPage(MainPage.Library)
+            .selectMainTab(MainTab.Library)
             .push(AppRoute.Player)
             .push(AppRoute.Queue)
 
-        val player = queue.pop()
-        val library = player?.pop()
+        val player = queue.navigateBack()
+        val library = player?.navigateBack()
 
-        assertRoutes(player, AppRoute.Home, AppRoute.Library, AppRoute.Player)
-        assertRoutes(library, AppRoute.Home, AppRoute.Library)
+        assertRoutes(player, AppRoute.Library, AppRoute.Player)
+        assertRoutes(library, AppRoute.Library)
     }
 
     @Test
-    fun overlaysDoNotChangeContentOrMainDestination() {
+    fun overlaysDoNotChangeContentOrMainTab() {
         val detail = AppNavigationState()
-            .selectMainPage(MainPage.Library)
+            .selectMainTab(MainTab.Library)
             .push(Album42)
         val contentEntry = detail.currentContentEntry
         val queue = detail
@@ -334,7 +333,7 @@ class AppNavigationStateTest {
             .push(AppRoute.Queue)
 
         assertEquals(contentEntry, queue.currentContentEntry)
-        assertEquals(MainDestination.Library, queue.activeMainDestination)
+        assertEquals(MainTab.Library, queue.activeMainTab)
     }
 
     @Test
@@ -357,25 +356,25 @@ class AppNavigationStateTest {
     @Test
     fun removingPlaybackOverlaysPreservesContentHistory() {
         val state = AppNavigationState()
-            .selectMainPage(MainPage.Library)
+            .selectMainTab(MainTab.Library)
             .push(Album42)
             .push(AppRoute.Player)
             .push(AppRoute.Queue)
 
         val content = state.removePlaybackOverlays()
 
-        assertRoutes(content, AppRoute.Home, AppRoute.Library, Album42)
+        assertRoutes(content, AppRoute.Library, Album42)
         assertSame(content, content.removePlaybackOverlays())
     }
 
     @Test
-    fun previewBackMatchesPopWithoutMutatingSource() {
+    fun previewBackMatchesNavigationWithoutMutatingSource() {
         val state = AppNavigationState()
-            .selectMainPage(MainPage.Library)
+            .selectMainTab(MainTab.Library)
             .push(Album42)
         val sourceEntries = state.backStack.toList()
         val preview = state.previewBack()
-        val committed = state.pop()
+        val committed = state.navigateBack()
 
         assertNotNull(preview)
         assertNotNull(committed)
@@ -387,7 +386,7 @@ class AppNavigationStateTest {
     fun previewBackDoesNotConsumeEntryId() {
         val state = AppNavigationState().push(Artist7)
         val preview = state.previewBack()
-        val committed = state.pop()
+        val committed = state.navigateBack()
 
         assertNotNull(preview)
         assertNotNull(committed)

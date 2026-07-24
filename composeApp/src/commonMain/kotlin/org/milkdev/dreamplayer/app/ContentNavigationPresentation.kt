@@ -5,13 +5,16 @@ import androidx.compose.animation.core.DeferredTransitionState
 import androidx.compose.animation.core.ExperimentalDeferredTransitionApi
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import org.milkdev.dreamplayer.navigation.NavigationCause
+import org.milkdev.dreamplayer.navigation.NavigationOperation
 import org.milkdev.dreamplayer.navigation.NavigationPlan
 import org.milkdev.dreamplayer.navigation.NavigationTransaction
+import org.milkdev.dreamplayer.navigation.toMainTabOrNull
 
 /** A scene paired with the transaction-scoped motion that presents it. */
 internal data class ContentTransitionFrame(
@@ -36,10 +39,13 @@ internal data class ContentBackSession(
     val previewFrame: ContentTransitionFrame,
     val mode: ContentBackMode = ContentBackMode.Predictive,
     val source: ContentBackSource = ContentBackSource.Platform,
+    val motionStyle: PredictiveBackMotionStyle = PredictiveBackMotionStyle.Stack,
     val progress: Float = 0f,
     val progressEventCount: Int = 0,
     val maxProgress: Float = 0f,
     val swipeEdge: BackSwipeEdge = BackSwipeEdge.None,
+    val progressVelocity: Float = 0f,
+    val lastProgressFrameTimeMillis: Long = 0L,
 ) {
     val origin: ContentSceneSnapshot
         get() = originFrame.scene
@@ -71,7 +77,9 @@ internal sealed interface ContentNavigationPresentationState {
 
     data class Committing(
         val session: ContentBackSession,
+        val visualSettled: Boolean = false,
         val popRequested: Boolean = false,
+        val popCompleted: Boolean = false,
     ) : ContentNavigationPresentationState
 }
 
@@ -102,6 +110,7 @@ internal sealed interface ContentNavigationPresentationEvent {
         val sessionId: Long,
         val progress: Float,
         val swipeEdge: BackSwipeEdge,
+        val frameTimeMillis: Long = 0L,
     ) : ContentNavigationPresentationEvent
 
     data class BackCancelled(
@@ -114,6 +123,11 @@ internal sealed interface ContentNavigationPresentationEvent {
     ) : ContentNavigationPresentationEvent
 
     data class CancelProgressed(
+        val sessionId: Long,
+        val progress: Float,
+    ) : ContentNavigationPresentationEvent
+
+    data class CommitProgressed(
         val sessionId: Long,
         val progress: Float,
     ) : ContentNavigationPresentationEvent
@@ -180,15 +194,25 @@ internal fun reduceContentNavigationPresentation(
         is ContentNavigationPresentationEvent.BackProgressed -> {
             val tracking = state as? ContentNavigationPresentationState.Tracking
             if (tracking?.session?.sessionId == event.sessionId) {
+                val progress = event.progress.coerceIn(0f, 1f)
+                val progressVelocity = predictiveBackProgressVelocity(
+                    previousProgress = tracking.session.progress,
+                    previousFrameTimeMillis = tracking.session.lastProgressFrameTimeMillis,
+                    progress = progress,
+                    frameTimeMillis = event.frameTimeMillis,
+                ) ?: tracking.session.progressVelocity
                 tracking.copy(
                     session = tracking.session.copy(
-                        progress = event.progress.coerceIn(0f, 1f),
+                        progress = progress,
                         progressEventCount = tracking.session.progressEventCount + 1,
                         maxProgress = maxOf(
                             tracking.session.maxProgress,
-                            event.progress.coerceIn(0f, 1f),
+                            progress,
                         ),
                         swipeEdge = event.swipeEdge,
+                        progressVelocity = progressVelocity,
+                        lastProgressFrameTimeMillis = event.frameTimeMillis.takeIf { it > 0L }
+                            ?: tracking.session.lastProgressFrameTimeMillis,
                     ),
                 )
             } else {
@@ -235,6 +259,22 @@ internal fun reduceContentNavigationPresentation(
             }
         }
 
+        is ContentNavigationPresentationEvent.CommitProgressed -> {
+            val committing = state as? ContentNavigationPresentationState.Committing
+            if (
+                committing?.session?.sessionId == event.sessionId &&
+                !committing.popRequested
+            ) {
+                committing.copy(
+                    session = committing.session.copy(
+                        progress = event.progress.coerceIn(0f, 1f),
+                    ),
+                )
+            } else {
+                state
+            }
+        }
+
         is ContentNavigationPresentationEvent.RouteInvalidated ->
             ContentNavigationPresentationState.Animating(event.target)
 
@@ -256,7 +296,11 @@ internal fun reduceContentNavigationPresentation(
             }
 
             is ContentNavigationPresentationState.Committing -> {
-                if (state.session.preview == event.snapshot) {
+                val predictiveStackCanComplete =
+                    state.session.mode != ContentBackMode.Predictive ||
+                        state.session.motionStyle != PredictiveBackMotionStyle.Stack ||
+                        state.visualSettled
+                if (state.session.preview == event.snapshot && predictiveStackCanComplete) {
                     state.copy(popRequested = true)
                 } else {
                     state
@@ -275,12 +319,39 @@ internal fun reduceContentNavigationPresentation(
             ) {
                 state
             } else if (event.didPop) {
-                ContentNavigationPresentationState.Idle
+                if (
+                    committing.session.mode == ContentBackMode.Predictive &&
+                    committing.session.motionStyle == PredictiveBackMotionStyle.Stack
+                ) {
+                    committing.copy(popCompleted = true)
+                } else {
+                    ContentNavigationPresentationState.Idle
+                }
             } else {
                 ContentNavigationPresentationState.Animating(event.recoveryTarget)
             }
         }
     }
+}
+
+internal fun predictiveBackProgressVelocity(
+    previousProgress: Float,
+    previousFrameTimeMillis: Long,
+    progress: Float,
+    frameTimeMillis: Long,
+): Float? {
+    val elapsedMillis = frameTimeMillis - previousFrameTimeMillis
+    if (
+        previousFrameTimeMillis <= 0L ||
+        frameTimeMillis <= 0L ||
+        elapsedMillis !in 1L..PredictiveBackMaximumVelocitySampleMillis
+    ) {
+        return null
+    }
+    return (
+        (progress.coerceIn(0f, 1f) - previousProgress.coerceIn(0f, 1f)) *
+            MillisPerSecond / elapsedMillis
+        ).coerceIn(-PredictiveBackMaximumProgressVelocity, PredictiveBackMaximumProgressVelocity)
 }
 
 internal sealed interface ContentBackCommitResult {
@@ -350,16 +421,26 @@ internal class ContentNavigationPresentationController(
             )
             return
         }
-        val targetFrame = newTransitionFrame(
-            scene = snapshot,
-            motionContext = transaction?.toMotionContext(),
-        )
-
         state = reduceContentNavigationPresentation(
             state,
             ContentNavigationPresentationEvent.AnimationStarted(snapshot),
         )
-        transitionState.animateTo(targetFrame)
+        if (
+            transaction?.operation == NavigationOperation.MainSwitch &&
+            transaction.fromContentEntry.route.toMainTabOrNull() != null &&
+            transaction.toContentEntry.route.toMainTabOrNull() != null
+        ) {
+            state = reduceContentNavigationPresentation(
+                state,
+                ContentNavigationPresentationEvent.TransitionSettled(snapshot),
+            )
+        } else {
+            val targetFrame = newTransitionFrame(
+                scene = snapshot,
+                motionContext = transaction?.toMotionContext(),
+            )
+            transitionState.animateTo(targetFrame)
+        }
     }
 
     fun startPredictiveBack(
@@ -374,13 +455,26 @@ internal class ContentNavigationPresentationController(
         ) {
             return null
         }
-        if (
-            transitionState.targetState.scene != origin ||
-            transitionState.pendingTargetState != null
-        ) {
+        val motionStyle = resolvePredictiveBackMotionStyle(
+            origin = origin,
+            preview = preview,
+            operation = backPlan.operation,
+        )
+        val transitionRepresentsOrigin =
+            transitionState.targetState.scene == origin ||
+                (
+                    motionStyle == PredictiveBackMotionStyle.MainTabCarousel &&
+                        transitionState.targetState.scene.currentEntry.route
+                            .toMainTabOrNull() != null
+                    )
+        if (!transitionRepresentsOrigin || transitionState.pendingTargetState != null) {
             return null
         }
-        val originFrame = transitionState.targetState
+        val originFrame = if (motionStyle == PredictiveBackMotionStyle.MainTabCarousel) {
+            newTransitionFrame(scene = origin)
+        } else {
+            transitionState.targetState
+        }
         val previewFrame = newTransitionFrame(
             scene = preview,
             motionContext = backPlan.toMotionContext(origin, preview),
@@ -390,6 +484,7 @@ internal class ContentNavigationPresentationController(
             backPlan = backPlan,
             originFrame = originFrame,
             previewFrame = previewFrame,
+            motionStyle = motionStyle,
         )
         val updatedState = reduceContentNavigationPresentation(
             state,
@@ -403,7 +498,6 @@ internal class ContentNavigationPresentationController(
         }
 
         state = updatedState
-        transitionState.defer(previewFrame)
         return session
     }
 
@@ -412,12 +506,24 @@ internal class ContentNavigationPresentationController(
         origin: ContentSceneSnapshot,
         preview: ContentSceneSnapshot,
     ): ContentBackSession? {
+        val motionStyle = resolvePredictiveBackMotionStyle(
+            origin = origin,
+            preview = preview,
+            operation = backPlan.operation,
+        )
+        val transitionRepresentsOrigin =
+            transitionState.targetState.scene == origin ||
+                (
+                    motionStyle == PredictiveBackMotionStyle.MainTabCarousel &&
+                        transitionState.targetState.scene.currentEntry.route
+                            .toMainTabOrNull() != null
+                    )
         if (
             state !is ContentNavigationPresentationState.Idle ||
             backPlan.cause != NavigationCause.Back ||
             backPlan.expectedTopEntryId != origin.currentEntry.entryId ||
             backPlan.targetState.currentContentEntry.entryId != preview.currentEntry.entryId ||
-            transitionState.targetState.scene != origin ||
+            !transitionRepresentsOrigin ||
             transitionState.pendingTargetState != null
         ) {
             return null
@@ -426,13 +532,18 @@ internal class ContentNavigationPresentationController(
         val session = ContentBackSession(
             sessionId = nextSessionId++,
             backPlan = backPlan,
-            originFrame = transitionState.targetState,
+            originFrame = if (motionStyle == PredictiveBackMotionStyle.MainTabCarousel) {
+                newTransitionFrame(scene = origin)
+            } else {
+                transitionState.targetState
+            },
             previewFrame = newTransitionFrame(
                 scene = preview,
                 motionContext = backPlan.toMotionContext(origin, preview),
             ),
             mode = ContentBackMode.TimeDriven,
             source = ContentBackSource.Ui,
+            motionStyle = motionStyle,
         )
         val updatedState = reduceContentNavigationPresentation(
             state,
@@ -446,7 +557,9 @@ internal class ContentNavigationPresentationController(
         }
 
         state = updatedState
-        transitionState.animateTo(session.previewFrame)
+        if (session.motionStyle != PredictiveBackMotionStyle.MainTabCarousel) {
+            transitionState.animateTo(session.previewFrame)
+        }
         return session
     }
 
@@ -469,6 +582,7 @@ internal class ContentNavigationPresentationController(
                 sessionId = tracking.session.sessionId,
                 progress = event.progress,
                 swipeEdge = event.swipeEdge,
+                frameTimeMillis = event.frameTimeMillis,
             ),
         )
     }
@@ -499,20 +613,149 @@ internal class ContentNavigationPresentationController(
         )
         val committing = state as? ContentNavigationPresentationState.Committing
             ?: return ContentBackCommitResult.Ignored
-        transitionState.animateTo(committing.session.previewFrame)
+        if (
+            committing.session.motionStyle == PredictiveBackMotionStyle.Stack &&
+            committing.session.mode == ContentBackMode.TimeDriven
+        ) {
+            transitionState.animateTo(committing.session.previewFrame)
+        }
         return ContentBackCommitResult.Animated(committing.session)
     }
 
-    suspend fun settleCancellation(sessionId: Long) {
-        val cancelling = state as? ContentNavigationPresentationState.Cancelling ?: return
-        if (cancelling.session.sessionId != sessionId) return
+    fun onPredictiveStackVisualSettled(
+        sessionId: Long,
+    ): Boolean {
+        val committing = state as? ContentNavigationPresentationState.Committing ?: return false
+        if (
+            committing.session.sessionId != sessionId ||
+            committing.session.mode != ContentBackMode.Predictive ||
+            committing.session.motionStyle != PredictiveBackMotionStyle.Stack ||
+            committing.visualSettled ||
+            committing.popRequested
+        ) {
+            return false
+        }
+
+        state = committing.copy(visualSettled = true)
+        transitionState.animateTo(committing.session.previewFrame)
+        return true
+    }
+
+    fun onPredictiveStackCancellationSettled(
+        sessionId: Long,
+    ): ContentTransitionCompletion.Cancelled? {
+        val cancelling = state as? ContentNavigationPresentationState.Cancelling ?: return null
+        if (
+            cancelling.session.sessionId != sessionId ||
+            cancelling.session.mode != ContentBackMode.Predictive ||
+            cancelling.session.motionStyle != PredictiveBackMotionStyle.Stack
+        ) {
+            return null
+        }
+        state = reduceContentNavigationPresentation(
+            state,
+            ContentNavigationPresentationEvent.TransitionSettled(cancelling.session.origin),
+        )
+        return ContentTransitionCompletion.Cancelled(cancelling.session)
+    }
+
+    fun onPredictiveStackHandoffSettled(
+        sessionId: Long,
+    ): Boolean {
+        val committing = state as? ContentNavigationPresentationState.Committing ?: return false
+        if (
+            committing.session.sessionId != sessionId ||
+            committing.session.mode != ContentBackMode.Predictive ||
+            committing.session.motionStyle != PredictiveBackMotionStyle.Stack ||
+            !committing.visualSettled ||
+            !committing.popRequested ||
+            !committing.popCompleted
+        ) {
+            return false
+        }
+        state = ContentNavigationPresentationState.Idle
+        return true
+    }
+
+    suspend fun settleMainTabCarouselCommit(
+        sessionId: Long,
+    ): ContentTransitionCompletion.CommitReady? {
+        val committing =
+            state as? ContentNavigationPresentationState.Committing ?: return null
+        if (
+            committing.session.sessionId != sessionId ||
+            committing.session.motionStyle != PredictiveBackMotionStyle.MainTabCarousel ||
+            committing.popRequested
+        ) {
+            return null
+        }
+
+        val initialProgress = committing.session.progress.coerceIn(0f, 1f)
+        val commitProgress = Animatable(initialProgress)
+        commitProgress.animateTo(
+            targetValue = 1f,
+            animationSpec = tween(
+                durationMillis = mainTabCarouselSettleDurationMillis(initialProgress),
+                easing = MotionEnterEasing,
+            ),
+        ) {
+            state = reduceContentNavigationPresentation(
+                state,
+                ContentNavigationPresentationEvent.CommitProgressed(
+                    sessionId = sessionId,
+                    progress = value,
+                ),
+            )
+        }
+
+        return onMainTabCarouselSettled(sessionId)
+    }
+
+    fun onMainTabCarouselSettled(
+        sessionId: Long,
+    ): ContentTransitionCompletion.CommitReady? {
+        val current = state as? ContentNavigationPresentationState.Committing
+        if (
+            current?.session?.sessionId == sessionId &&
+            current.session.motionStyle == PredictiveBackMotionStyle.MainTabCarousel &&
+            !current.popRequested
+        ) {
+            state = reduceContentNavigationPresentation(
+                state,
+                ContentNavigationPresentationEvent.TransitionSettled(
+                    current.session.preview,
+                ),
+            )
+            return ContentTransitionCompletion.CommitReady(current.session)
+        }
+        return null
+    }
+
+    suspend fun settleCancellation(
+        sessionId: Long,
+    ): ContentTransitionCompletion.Cancelled? {
+        val cancelling =
+            state as? ContentNavigationPresentationState.Cancelling ?: return null
+        if (cancelling.session.sessionId != sessionId) return null
+        if (
+            cancelling.session.mode == ContentBackMode.Predictive &&
+            cancelling.session.motionStyle == PredictiveBackMotionStyle.Stack
+        ) {
+            return null
+        }
 
         val cancelProgress = Animatable(cancelling.session.progress.coerceIn(0f, 1f))
         cancelProgress.animateTo(
             targetValue = 0f,
             animationSpec = spring(
                 dampingRatio = Spring.DampingRatioNoBouncy,
-                stiffness = Spring.StiffnessMediumLow,
+                stiffness = if (
+                    cancelling.session.motionStyle == PredictiveBackMotionStyle.Stack
+                ) {
+                    Spring.StiffnessMedium
+                } else {
+                    Spring.StiffnessMediumLow
+                },
             ),
         ) {
             state = reduceContentNavigationPresentation(
@@ -526,8 +769,18 @@ internal class ContentNavigationPresentationController(
 
         val current = state as? ContentNavigationPresentationState.Cancelling
         if (current?.session?.sessionId == sessionId) {
+            if (current.session.motionStyle == PredictiveBackMotionStyle.MainTabCarousel) {
+                state = reduceContentNavigationPresentation(
+                    state,
+                    ContentNavigationPresentationEvent.TransitionSettled(
+                        current.session.origin,
+                    ),
+                )
+                return ContentTransitionCompletion.Cancelled(current.session)
+            }
             transitionState.animateTo(current.session.originFrame)
         }
+        return null
     }
 
     fun invalidateIfOriginChanged(
@@ -535,6 +788,8 @@ internal class ContentNavigationPresentationController(
         currentRevision: Long,
         committedSnapshot: ContentSceneSnapshot,
     ): ContentBackSession? {
+        val committing = state as? ContentNavigationPresentationState.Committing
+        if (committing?.popCompleted == true) return null
         val session = state.backSession ?: return null
         if (
             session.originTopEntryId == currentTopEntryId &&
@@ -547,7 +802,15 @@ internal class ContentNavigationPresentationController(
             state,
             ContentNavigationPresentationEvent.RouteInvalidated(committedSnapshot),
         )
-        transitionState.animateTo(newTransitionFrame(scene = committedSnapshot))
+        val recoveryFrame = newTransitionFrame(scene = committedSnapshot)
+        if (session.motionStyle == PredictiveBackMotionStyle.MainTabCarousel) {
+            state = reduceContentNavigationPresentation(
+                state,
+                ContentNavigationPresentationEvent.TransitionSettled(committedSnapshot),
+            )
+        } else {
+            transitionState.animateTo(recoveryFrame)
+        }
         return session
     }
 
@@ -557,6 +820,12 @@ internal class ContentNavigationPresentationController(
         pendingTargetState: ContentTransitionFrame?,
         isRunning: Boolean,
     ): ContentTransitionCompletion? {
+        // Main-tab back is settled exclusively by MainTabCarouselHost. The outer
+        // DeferredAnimatedContent intentionally stays on an arbitrary stable root
+        // frame, which can already equal the preview and must not complete the back.
+        if (state.backSession?.motionStyle == PredictiveBackMotionStyle.MainTabCarousel) {
+            return null
+        }
         if (pendingTargetState != null || isRunning || currentState != targetState) return null
 
         val previousState = state
@@ -600,7 +869,14 @@ internal class ContentNavigationPresentationController(
             val recoveryFrame = committing.session.originFrame
                 .takeIf { it.scene == recoveryTarget }
                 ?: newTransitionFrame(scene = recoveryTarget)
-            transitionState.animateTo(recoveryFrame)
+            if (committing.session.motionStyle == PredictiveBackMotionStyle.MainTabCarousel) {
+                state = reduceContentNavigationPresentation(
+                    state,
+                    ContentNavigationPresentationEvent.TransitionSettled(recoveryTarget),
+                )
+            } else {
+                transitionState.animateTo(recoveryFrame)
+            }
         }
     }
 
@@ -614,6 +890,10 @@ internal class ContentNavigationPresentationController(
         )
     }
 }
+
+private const val MillisPerSecond = 1_000f
+private const val PredictiveBackMaximumVelocitySampleMillis = 100L
+private const val PredictiveBackMaximumProgressVelocity = 20f
 
 private fun NavigationPlan.toMotionContext(
     origin: ContentSceneSnapshot,

@@ -4,15 +4,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.clearAndSetSemantics
-import androidx.compose.ui.unit.dp
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
@@ -24,6 +21,8 @@ internal fun ContentSceneHost(
     backSession: ContentBackSession?,
     chromeLayers: ContentChromeLayers,
     persistentPadding: PaddingValues,
+    ownsChrome: Boolean = false,
+    modifier: Modifier = Modifier,
     navigationChrome: @Composable (NavigationChromePresentation, HazeState) -> Unit,
     content: @Composable (PaddingValues) -> Unit,
 ) {
@@ -36,26 +35,17 @@ internal fun ContentSceneHost(
     } else {
         retainedPadding
     }
-    val destinationChrome = chromeLayers.destination
-        ?.takeIf { it.entryId == scene.currentEntry.entryId }
-        ?.chrome
+    val destinationChrome = if (ownsChrome) {
+        scene.chrome.takeIf { it.isVisible }
+    } else {
+        chromeLayers.destination
+            ?.takeIf { it.entryId == scene.currentEntry.entryId }
+            ?.chrome
+    }
     val destinationHazeState = rememberHazeState()
-    val isPredictiveOrigin = backSession
-        ?.takeIf { it.mode == ContentBackMode.Predictive }
-        ?.origin
-        ?.currentEntry
-        ?.entryId == scene.currentEntry.entryId
-
     Box(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxSize()
-            .then(
-                if (isPredictiveOrigin) {
-                    Modifier.clip(RoundedCornerShape(28.dp))
-                } else {
-                    Modifier
-                },
-            )
             .background(MaterialTheme.colorScheme.background)
             .then(
                 if (backSession != null) {

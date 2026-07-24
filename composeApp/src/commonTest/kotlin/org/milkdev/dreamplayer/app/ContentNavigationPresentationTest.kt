@@ -5,12 +5,13 @@ import org.milkdev.dreamplayer.library.LibraryCollectionType
 import org.milkdev.dreamplayer.navigation.AppNavigationSnapshot
 import org.milkdev.dreamplayer.navigation.AppNavigationState
 import org.milkdev.dreamplayer.navigation.AppRoute
-import org.milkdev.dreamplayer.navigation.MainPage
+import org.milkdev.dreamplayer.navigation.MainTab
 import org.milkdev.dreamplayer.navigation.NavigationCause
 import org.milkdev.dreamplayer.navigation.NavigationEntry
 import org.milkdev.dreamplayer.navigation.NavigationOperation
 import org.milkdev.dreamplayer.navigation.NavigationTransaction
 import org.milkdev.dreamplayer.navigation.planBack
+import org.milkdev.dreamplayer.navigation.toMainTabOrNull
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -171,6 +172,77 @@ class ContentNavigationPresentationTest {
     }
 
     @Test
+    fun trackingCarriesProgressVelocityIntoTheSettleSession() {
+        val session = session()
+        val first = assertIs<ContentNavigationPresentationState.Tracking>(
+            reduceContentNavigationPresentation(
+                ContentNavigationPresentationState.Tracking(session),
+                ContentNavigationPresentationEvent.BackProgressed(
+                    sessionId = session.sessionId,
+                    progress = 0.2f,
+                    swipeEdge = BackSwipeEdge.Left,
+                    frameTimeMillis = 1_000L,
+                ),
+            ),
+        )
+        val second = assertIs<ContentNavigationPresentationState.Tracking>(
+            reduceContentNavigationPresentation(
+                first,
+                ContentNavigationPresentationEvent.BackProgressed(
+                    sessionId = session.sessionId,
+                    progress = 0.36f,
+                    swipeEdge = BackSwipeEdge.Left,
+                    frameTimeMillis = 1_016L,
+                ),
+            ),
+        )
+
+        assertEquals(10f, second.session.progressVelocity, absoluteTolerance = 0.0001f)
+        assertEquals(1_016L, second.session.lastProgressFrameTimeMillis)
+        val committing = assertIs<ContentNavigationPresentationState.Committing>(
+            reduceContentNavigationPresentation(
+                second,
+                ContentNavigationPresentationEvent.BackCommitted(
+                    sessionId = session.sessionId,
+                    hadProgress = true,
+                ),
+            ),
+        )
+        assertEquals(second.session.progressVelocity, committing.session.progressVelocity)
+    }
+
+    @Test
+    fun progressVelocityRejectsMissingOrStaleFrameTimesAndClampsSpikes() {
+        assertEquals(
+            null,
+            predictiveBackProgressVelocity(
+                previousProgress = 0.2f,
+                previousFrameTimeMillis = 0L,
+                progress = 0.3f,
+                frameTimeMillis = 16L,
+            ),
+        )
+        assertEquals(
+            null,
+            predictiveBackProgressVelocity(
+                previousProgress = 0.2f,
+                previousFrameTimeMillis = 1_000L,
+                progress = 0.3f,
+                frameTimeMillis = 1_200L,
+            ),
+        )
+        assertEquals(
+            20f,
+            predictiveBackProgressVelocity(
+                previousProgress = 0f,
+                previousFrameTimeMillis = 1_000L,
+                progress = 1f,
+                frameTimeMillis = 1_001L,
+            ),
+        )
+    }
+
+    @Test
     fun trackingBranchesToCancelPredictiveOrTimeDrivenCommit() {
         val session = session(progress = 0.6f)
         val tracking = ContentNavigationPresentationState.Tracking(session)
@@ -238,10 +310,220 @@ class ContentNavigationPresentationTest {
     }
 
     @Test
+    fun mainTabTimeDrivenBackWaitsForCarouselBeforeChangingOuterHost() {
+        val navigationState = AppNavigationState()
+            .selectMainTab(MainTab.Library)
+        val navigationSnapshot = AppNavigationSnapshot(
+            state = navigationState,
+            revision = 21L,
+        )
+        val backPlan = checkNotNull(navigationSnapshot.planBack())
+        val origin = contentSceneSnapshot(navigationState.backStack)
+        val preview = contentSceneSnapshot(backPlan.targetState.backStack)
+        val controller = ContentNavigationPresentationController(origin)
+
+        val session = checkNotNull(
+            controller.startTimeDrivenBack(
+                backPlan = backPlan,
+                origin = origin,
+                preview = preview,
+            ),
+        )
+
+        assertEquals(PredictiveBackMotionStyle.MainTabCarousel, session.motionStyle)
+        assertEquals(origin, controller.transitionState.targetState.scene)
+        assertEquals(null, controller.transitionState.pendingTargetState)
+        assertEquals(0f, controller.backSession?.progress)
+    }
+
+    @Test
+    fun directMainTabSwitchKeepsOuterHostOnStableTabSurface() {
+        val homeState = AppNavigationState()
+        val libraryState = homeState.selectMainTab(MainTab.Library)
+        val home = contentSceneSnapshot(homeState.backStack)
+        val library = contentSceneSnapshot(libraryState.backStack)
+        val controller = ContentNavigationPresentationController(home)
+        val transaction = NavigationTransaction(
+            id = 1L,
+            operation = NavigationOperation.MainSwitch,
+            cause = NavigationCause.Direct,
+            fromEntry = homeState.currentEntry,
+            toEntry = libraryState.currentEntry,
+            fromContentEntry = homeState.currentContentEntry,
+            toContentEntry = libraryState.currentContentEntry,
+        )
+
+        controller.onCommittedSnapshotChanged(
+            snapshot = library,
+            transaction = transaction,
+        )
+
+        assertEquals(home, controller.transitionState.currentState.scene)
+        assertEquals(home, controller.transitionState.targetState.scene)
+        assertEquals(null, controller.transitionState.pendingTargetState)
+        assertIs<ContentNavigationPresentationState.Idle>(controller.state)
+    }
+
+    @Test
+    fun mainTabPredictiveCommitLeavesOuterHostUntouchedUntilCarouselSettles() {
+        val navigationState = AppNavigationState()
+            .selectMainTab(MainTab.Library)
+        val navigationSnapshot = AppNavigationSnapshot(
+            state = navigationState,
+            revision = 22L,
+        )
+        val backPlan = checkNotNull(navigationSnapshot.planBack())
+        val origin = contentSceneSnapshot(navigationState.backStack)
+        val preview = contentSceneSnapshot(backPlan.targetState.backStack)
+        val controller = ContentNavigationPresentationController(origin)
+        val session = checkNotNull(
+            controller.startPredictiveBack(
+                backPlan = backPlan,
+                origin = origin,
+                preview = preview,
+            ),
+        )
+        controller.progressPredictiveBack(
+            event = PlatformBackEvent(0.5f, BackSwipeEdge.Right),
+            currentTopEntryId = navigationState.currentEntry.entryId,
+            currentRevision = navigationSnapshot.revision,
+        )
+
+        controller.commitPredictiveBack(hadProgress = true)
+
+        assertEquals(PredictiveBackMotionStyle.MainTabCarousel, session.motionStyle)
+        assertEquals(origin, controller.transitionState.targetState.scene)
+        assertEquals(origin, controller.transitionState.currentState.scene)
+        assertEquals(null, controller.transitionState.pendingTargetState)
+        assertEquals(0.5f, controller.backSession?.progress)
+    }
+
+    @Test
+    fun platformBackWithoutProgressKeepsTheOrdinaryTimeDrivenTransition() {
+        val navigationState = AppNavigationState()
+            .push(AppRoute.Settings)
+        val navigationSnapshot = AppNavigationSnapshot(
+            state = navigationState,
+            revision = 23L,
+        )
+        val backPlan = checkNotNull(navigationSnapshot.planBack())
+        val origin = contentSceneSnapshot(navigationState.backStack)
+        val preview = contentSceneSnapshot(backPlan.targetState.backStack)
+        val controller = ContentNavigationPresentationController(origin)
+        controller.startPredictiveBack(
+            backPlan = backPlan,
+            origin = origin,
+            preview = preview,
+        )
+
+        val commit = assertIs<ContentBackCommitResult.Animated>(
+            controller.commitPredictiveBack(hadProgress = false),
+        )
+
+        assertEquals(ContentBackMode.TimeDriven, commit.session.mode)
+        assertEquals(null, controller.transitionState.pendingTargetState)
+        assertEquals(preview, controller.transitionState.targetState.scene)
+    }
+
+    @Test
+    fun predictiveStackCancellationSettlesWithoutRetargetingTheBackingHost() {
+        val navigationState = AppNavigationState()
+            .push(AppRoute.Settings)
+        val navigationSnapshot = AppNavigationSnapshot(
+            state = navigationState,
+            revision = 24L,
+        )
+        val backPlan = checkNotNull(navigationSnapshot.planBack())
+        val origin = contentSceneSnapshot(navigationState.backStack)
+        val preview = contentSceneSnapshot(backPlan.targetState.backStack)
+        val controller = ContentNavigationPresentationController(origin)
+        val session = checkNotNull(
+            controller.startPredictiveBack(
+                backPlan = backPlan,
+                origin = origin,
+                preview = preview,
+            ),
+        )
+        controller.progressPredictiveBack(
+            event = PlatformBackEvent(
+                progress = 0.6f,
+                swipeEdge = BackSwipeEdge.Left,
+                frameTimeMillis = 1_000L,
+            ),
+            currentTopEntryId = navigationState.currentEntry.entryId,
+            currentRevision = navigationSnapshot.revision,
+        )
+
+        controller.cancelPredictiveBack()
+        val completion = assertNotNull(
+            controller.onPredictiveStackCancellationSettled(session.sessionId),
+        )
+
+        assertSame(session.backPlan, completion.session.backPlan)
+        assertIs<ContentNavigationPresentationState.Idle>(controller.state)
+        assertEquals(origin, controller.transitionState.currentState.scene)
+        assertEquals(origin, controller.transitionState.targetState.scene)
+        assertEquals(null, controller.transitionState.pendingTargetState)
+    }
+
+    @Test
+    fun stableOuterRootCannotPrematurelyCompleteMainTabCommit() {
+        val homeState = AppNavigationState()
+        val libraryState = homeState.selectMainTab(MainTab.Library)
+        val home = contentSceneSnapshot(homeState.backStack)
+        val library = contentSceneSnapshot(libraryState.backStack)
+        val controller = ContentNavigationPresentationController(home)
+        controller.onCommittedSnapshotChanged(
+            snapshot = library,
+            transaction = NavigationTransaction(
+                id = 1L,
+                operation = NavigationOperation.MainSwitch,
+                cause = NavigationCause.Direct,
+                fromEntry = homeState.currentEntry,
+                toEntry = libraryState.currentEntry,
+                fromContentEntry = homeState.currentContentEntry,
+                toContentEntry = libraryState.currentContentEntry,
+            ),
+        )
+        val navigationSnapshot = AppNavigationSnapshot(
+            state = libraryState,
+            revision = 1L,
+        )
+        val backPlan = checkNotNull(navigationSnapshot.planBack())
+        val session = checkNotNull(
+            controller.startPredictiveBack(
+                backPlan = backPlan,
+                origin = library,
+                preview = home,
+            ),
+        )
+        controller.progressPredictiveBack(
+            event = PlatformBackEvent(0.2f, BackSwipeEdge.Left),
+            currentTopEntryId = libraryState.currentEntry.entryId,
+            currentRevision = navigationSnapshot.revision,
+        )
+        controller.commitPredictiveBack(hadProgress = true)
+
+        val completion = controller.onTransitionObserved(
+            currentState = controller.transitionState.currentState,
+            targetState = controller.transitionState.targetState,
+            pendingTargetState = null,
+            isRunning = false,
+        )
+
+        assertEquals(null, completion)
+        val committing =
+            assertIs<ContentNavigationPresentationState.Committing>(controller.state)
+        assertEquals(session.sessionId, committing.session.sessionId)
+        assertEquals(0.2f, committing.session.progress)
+        assertEquals(false, committing.popRequested)
+    }
+
+    @Test
     fun consecutiveTimeDrivenBacksReachHomeAndLibraryWithDistinctMotionRuns() {
         val roots = listOf(
             AppNavigationState() to AppRoute.Home,
-            AppNavigationState().selectMainPage(MainPage.Library) to AppRoute.Library,
+            AppNavigationState().selectMainTab(MainTab.Library) to AppRoute.Library,
         )
 
         roots.forEach { (rootState, expectedRootRoute) ->
@@ -322,7 +604,7 @@ class ContentNavigationPresentationTest {
     fun consecutivePredictiveBacksReachHomeAndLibraryWithLiveProgress() {
         val roots = listOf(
             AppNavigationState() to AppRoute.Home,
-            AppNavigationState().selectMainPage(MainPage.Library) to AppRoute.Library,
+            AppNavigationState().selectMainTab(MainTab.Library) to AppRoute.Library,
         )
 
         roots.forEach { (rootState, expectedRootRoute) ->
@@ -352,7 +634,8 @@ class ContentNavigationPresentationTest {
                 assertEquals(ContentBackMode.Predictive, started.mode)
                 assertEquals(ContentBackSource.Platform, started.source)
                 assertTrue(started.origin.contentLayer > started.preview.contentLayer)
-                assertEquals(preview, controller.transitionState.pendingTargetState?.scene)
+                assertEquals(null, controller.transitionState.pendingTargetState)
+                assertEquals(origin, controller.transitionState.targetState.scene)
 
                 controller.progressPredictiveBack(
                     event = PlatformBackEvent(
@@ -369,7 +652,17 @@ class ContentNavigationPresentationTest {
                 assertEquals(1, commit.session.progressEventCount)
                 assertEquals(0.5f, commit.session.maxProgress)
                 assertEquals(null, controller.transitionState.pendingTargetState)
+                assertEquals(origin, controller.transitionState.targetState.scene)
+                assertTrue(
+                    controller.onPredictiveStackVisualSettled(commit.session.sessionId),
+                )
+                assertEquals(null, controller.transitionState.pendingTargetState)
                 assertEquals(preview, controller.transitionState.targetState.scene)
+                assertTrue(
+                    assertIs<ContentNavigationPresentationState.Committing>(
+                        controller.state,
+                    ).visualSettled,
+                )
                 transitionIds += checkNotNull(
                     controller.transitionState.targetState.motionContext,
                 ).transitionId
@@ -388,9 +681,27 @@ class ContentNavigationPresentationTest {
                     didPop = true,
                     recoveryTarget = preview,
                 )
+                assertTrue(
+                    assertIs<ContentNavigationPresentationState.Committing>(
+                        controller.state,
+                    ).popCompleted,
+                )
+                assertEquals(
+                    null,
+                    controller.invalidateIfOriginChanged(
+                        currentTopEntryId = backPlan.targetState.currentEntry.entryId,
+                        currentRevision = navigationSnapshot.revision + 1L,
+                        committedSnapshot = preview,
+                    ),
+                )
                 navigationSnapshot = AppNavigationSnapshot(
                     state = backPlan.targetState,
                     revision = navigationSnapshot.revision + 1L,
+                )
+                assertTrue(
+                    controller.onPredictiveStackHandoffSettled(
+                        completion.session.sessionId,
+                    ),
                 )
             }
 
@@ -403,21 +714,21 @@ class ContentNavigationPresentationTest {
     @Test
     fun restoredEntriesKeepTheirStackLayersAcrossFullPresentationHistory() {
         data class HistoryCase(
-            val mainPage: MainPage?,
+            val mainTab: MainTab?,
             val pushedRoutes: List<AppRoute>,
         )
 
         val cases = listOf(
             HistoryCase(
-                mainPage = null,
+                mainTab = null,
                 pushedRoutes = listOf(AppRoute.Settings, AppRoute.AiDebugSettings),
             ),
             HistoryCase(
-                mainPage = MainPage.Library,
+                mainTab = MainTab.Library,
                 pushedRoutes = listOf(AppRoute.Settings, AppRoute.AiDebugSettings),
             ),
             HistoryCase(
-                mainPage = MainPage.Library,
+                mainTab = MainTab.Library,
                 pushedRoutes = listOf(
                     AppRoute.LibraryCollection(
                         type = LibraryCollectionType.GENRE,
@@ -430,7 +741,7 @@ class ContentNavigationPresentationTest {
                 ),
             ),
             HistoryCase(
-                mainPage = MainPage.Library,
+                mainTab = MainTab.Library,
                 pushedRoutes = listOf(
                     AppRoute.LibraryCollection(
                         type = LibraryCollectionType.GENRE,
@@ -478,8 +789,11 @@ class ContentNavigationPresentationTest {
                     operation = operation,
                     cause = NavigationCause.Direct,
                 )
+                val targetScene = contentSceneSnapshot(
+                    navigationSnapshot.state.backStack,
+                )
                 controller.onCommittedSnapshotChanged(
-                    snapshot = contentSceneSnapshot(navigationSnapshot.state.backStack),
+                    snapshot = targetScene,
                     transaction = transaction,
                 )
                 val targetFrame = controller.transitionState.targetState
@@ -490,7 +804,15 @@ class ContentNavigationPresentationTest {
                     isRunning = false,
                 )
                 assertIs<ContentNavigationPresentationState.Idle>(controller.state)
-                return targetFrame
+                return if (
+                    operation == NavigationOperation.MainSwitch &&
+                    transaction.fromContentEntry.route.toMainTabOrNull() != null &&
+                    transaction.toContentEntry.route.toMainTabOrNull() != null
+                ) {
+                    ContentTransitionFrame(targetScene)
+                } else {
+                    targetFrame
+                }
             }
 
             fun predictiveBackAndSettle(): ContentBackSession {
@@ -515,14 +837,21 @@ class ContentNavigationPresentationTest {
                 assertIs<ContentBackCommitResult.Animated>(
                     controller.commitPredictiveBack(hadProgress = true),
                 )
-                val targetFrame = controller.transitionState.targetState
                 val completion = assertIs<ContentTransitionCompletion.CommitReady>(
-                    controller.onTransitionObserved(
-                        currentState = targetFrame,
-                        targetState = targetFrame,
-                        pendingTargetState = null,
-                        isRunning = false,
-                    ),
+                    if (session.motionStyle == PredictiveBackMotionStyle.MainTabCarousel) {
+                        controller.onMainTabCarouselSettled(session.sessionId)
+                    } else {
+                        assertTrue(
+                            controller.onPredictiveStackVisualSettled(session.sessionId),
+                        )
+                        val targetFrame = controller.transitionState.targetState
+                        controller.onTransitionObserved(
+                            currentState = targetFrame,
+                            targetState = targetFrame,
+                            pendingTargetState = null,
+                            isRunning = false,
+                        )
+                    },
                 )
                 publishNavigation(
                     targetState = backPlan.targetState,
@@ -534,14 +863,21 @@ class ContentNavigationPresentationTest {
                     didPop = true,
                     recoveryTarget = preview,
                 )
+                if (session.motionStyle == PredictiveBackMotionStyle.Stack) {
+                    assertTrue(
+                        controller.onPredictiveStackHandoffSettled(
+                            completion.session.sessionId,
+                        ),
+                    )
+                }
                 assertIs<ContentNavigationPresentationState.Idle>(controller.state)
                 return session
             }
 
             val forwardFrames = mutableListOf(controller.transitionState.currentState)
-            historyCase.mainPage?.let { page ->
+            historyCase.mainTab?.let { tab ->
                 forwardFrames += commitAndSettle(
-                    targetState = navigationSnapshot.state.selectMainPage(page),
+                    targetState = navigationSnapshot.state.selectMainTab(tab),
                     operation = NavigationOperation.MainSwitch,
                 )
             }
@@ -562,7 +898,15 @@ class ContentNavigationPresentationTest {
                     restoredFrame.scene.contentLayer,
                     session.previewFrame.scene.contentLayer,
                 )
-                assertTrue(session.origin.contentLayer > session.preview.contentLayer)
+                if (session.backPlan.operation == NavigationOperation.MainSwitch) {
+                    assertEquals(
+                        PredictiveBackMotionStyle.MainTabCarousel,
+                        session.motionStyle,
+                    )
+                    assertEquals(session.origin.contentLayer, session.preview.contentLayer)
+                } else {
+                    assertTrue(session.origin.contentLayer > session.preview.contentLayer)
+                }
             }
 
             assertEquals(
@@ -607,12 +951,60 @@ class ContentNavigationPresentationTest {
     }
 
     @Test
-    fun committingRequestsOneGuardedPopAndHandlesItsResult() {
+    fun committingCarouselAcceptsOnlyItsOwnSettleProgress() {
+        val session = session(progress = 0.4f).copy(
+            motionStyle = PredictiveBackMotionStyle.MainTabCarousel,
+        )
+        val committing = ContentNavigationPresentationState.Committing(session)
+
+        assertSame(
+            committing,
+            reduceContentNavigationPresentation(
+                committing,
+                ContentNavigationPresentationEvent.CommitProgressed(
+                    sessionId = session.sessionId + 1,
+                    progress = 0.8f,
+                ),
+            ),
+        )
+        val updated = reduceContentNavigationPresentation(
+            committing,
+            ContentNavigationPresentationEvent.CommitProgressed(
+                sessionId = session.sessionId,
+                progress = 1.5f,
+            ),
+        )
+        val updatedCommitting =
+            assertIs<ContentNavigationPresentationState.Committing>(updated)
+        assertEquals(1f, updatedCommitting.session.progress)
+
+        val popRequested = updatedCommitting.copy(popRequested = true)
+        assertSame(
+            popRequested,
+            reduceContentNavigationPresentation(
+                popRequested,
+                ContentNavigationPresentationEvent.CommitProgressed(
+                    sessionId = session.sessionId,
+                    progress = 0f,
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun predictiveStackRequestsOneGuardedPopOnlyAfterVisualHandoff() {
         val session = session(progress = 1f)
         val committing = ContentNavigationPresentationState.Committing(session)
 
-        val ready = reduceContentNavigationPresentation(
+        assertEquals(
             committing,
+            reduceContentNavigationPresentation(
+                committing,
+                ContentNavigationPresentationEvent.TransitionSettled(session.preview),
+            ),
+        )
+        val ready = reduceContentNavigationPresentation(
+            committing.copy(visualSettled = true),
             ContentNavigationPresentationEvent.TransitionSettled(session.preview),
         )
         val popRequested = assertIs<ContentNavigationPresentationState.Committing>(ready)
@@ -621,8 +1013,7 @@ class ContentNavigationPresentationTest {
             popRequested,
             ContentNavigationPresentationEvent.TransitionSettled(session.preview),
         ))
-        assertEquals(
-            ContentNavigationPresentationState.Idle,
+        val popCompleted = assertIs<ContentNavigationPresentationState.Committing>(
             reduceContentNavigationPresentation(
                 popRequested,
                 ContentNavigationPresentationEvent.CommitPopCompleted(
@@ -632,6 +1023,7 @@ class ContentNavigationPresentationTest {
                 ),
             ),
         )
+        assertEquals(true, popCompleted.popCompleted)
         assertEquals(
             ContentNavigationPresentationState.Animating(session.origin),
             reduceContentNavigationPresentation(

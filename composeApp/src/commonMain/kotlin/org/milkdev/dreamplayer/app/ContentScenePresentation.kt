@@ -1,12 +1,14 @@
 package org.milkdev.dreamplayer.app
 
 import org.milkdev.dreamplayer.navigation.AppRoute
-import org.milkdev.dreamplayer.navigation.MainDestination
+import org.milkdev.dreamplayer.navigation.MainTab
 import org.milkdev.dreamplayer.navigation.NavigationEntry
+import org.milkdev.dreamplayer.navigation.toMainTabOrNull
 
 internal data class NavigationChromePresentation(
     val isVisible: Boolean,
-    val activeMainDestination: MainDestination,
+    val activeMainTab: MainTab,
+    val isSearchActive: Boolean,
 )
 
 internal data class ContentSceneSnapshot(
@@ -79,14 +81,9 @@ private fun navigationChromePresentation(
     currentEntry: NavigationEntry,
     contentStack: List<NavigationEntry>,
 ): NavigationChromePresentation {
-    val activeMainDestination = contentStack.asReversed().firstNotNullOfOrNull { entry ->
-        when (entry.route) {
-            AppRoute.Home -> MainDestination.Home
-            AppRoute.Library -> MainDestination.Library
-            AppRoute.Search -> MainDestination.Search
-            else -> null
-        }
-    } ?: MainDestination.Home
+    val activeMainTab = contentStack.firstNotNullOfOrNull { entry ->
+        entry.route.toMainTabOrNull()
+    } ?: MainTab.Home
     return NavigationChromePresentation(
         isVisible = when (currentEntry.route) {
             AppRoute.Settings,
@@ -94,6 +91,7 @@ private fun navigationChromePresentation(
 
             else -> true
         },
-        activeMainDestination = activeMainDestination,
+        activeMainTab = activeMainTab,
+        isSearchActive = contentStack.any { it.route == AppRoute.Search },
     )
 }

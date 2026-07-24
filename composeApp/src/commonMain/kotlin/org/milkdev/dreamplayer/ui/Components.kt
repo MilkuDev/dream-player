@@ -93,13 +93,13 @@ import org.milkdev.dreamplayer.generated.resources.star
 import org.milkdev.dreamplayer.library.LibraryTrack
 import org.milkdev.dreamplayer.model.LibraryCategory
 import org.milkdev.dreamplayer.model.LibrarySortOrder
-import org.milkdev.dreamplayer.navigation.MainDestination
+import org.milkdev.dreamplayer.navigation.MainTab
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 
 @Composable
 fun NavigationDock(
-    activeMainDestination: MainDestination,
+    activeMainTab: MainTab,
     onHomeClick: () -> Unit,
     onLibraryClick: () -> Unit,
     onSearchClick: () -> Unit,
@@ -126,7 +126,7 @@ fun NavigationDock(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 DockButton(
-                    selected = activeMainDestination == MainDestination.Home,
+                    selected = activeMainTab == MainTab.Home,
                     icon = Res.drawable.star,
                     label = "Главная",
                     contentDescription = "Главная",
@@ -135,7 +135,7 @@ fun NavigationDock(
                 )
 
                 DockButton(
-                    selected = activeMainDestination == MainDestination.Library,
+                    selected = activeMainTab == MainTab.Library,
                     icon = Res.drawable.music_note,
                     label = "Библиотека",
                     contentDescription = "Библиотека",
