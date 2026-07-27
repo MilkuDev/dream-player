@@ -23,3 +23,6 @@ node_modules/
 /index/
 /.qwen/
 /androidApp/release/
+/docs/agent_artifact.md
+/docs/ai_chat.md
+/s/notes.txt
