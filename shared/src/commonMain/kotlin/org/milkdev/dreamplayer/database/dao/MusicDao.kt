@@ -1319,6 +1319,23 @@ interface MusicDao {
     @Query("UPDATE albums SET deletedAt = :timestamp WHERE lastSeenTimestamp < :threshold AND deletedAt IS NULL")
     suspend fun markOldAlbumsDeleted(threshold: Long, timestamp: Long)
 
+    @Query(
+        """
+        UPDATE albums
+        SET deletedAt = :timestamp
+        WHERE id IN (:albumIds)
+            AND deletedAt IS NULL
+            AND NOT EXISTS (
+                SELECT 1
+                FROM library_tracks t
+                WHERE t.albumId = albums.id
+                    AND t.isPresent = 1
+                    AND t.deletedAt IS NULL
+            )
+        """
+    )
+    suspend fun markAlbumsDeletedIfNoPresentTracks(albumIds: List<Long>, timestamp: Long)
+
     @Query("DELETE FROM albums WHERE deletedAt IS NOT NULL AND deletedAt < :threshold")
     suspend fun purgeDeletedAlbums(threshold: Long)
 

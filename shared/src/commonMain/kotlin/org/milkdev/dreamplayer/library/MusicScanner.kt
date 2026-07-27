@@ -27,6 +27,7 @@ data class RawTrackData(
     val title: String?,
     val artist: String?,
     val album: String?,
+    val albumArtist: String? = null,
     val durationMs: Long,
     val fileSize: Long,
     val lastModified: Long,

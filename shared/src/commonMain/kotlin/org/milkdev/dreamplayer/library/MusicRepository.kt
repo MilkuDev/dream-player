@@ -108,6 +108,7 @@ class MusicRepository(
             var changedTracks = 0
             var skippedTracks = 0
             var movedTracks = 0
+            val reassignedAlbumIds = mutableSetOf<Long>()
             val batches = rawTracks.chunked(BATCH_SIZE)
             batches.forEach { batch ->
                 val batchStats = processBatch(
@@ -120,10 +121,17 @@ class MusicRepository(
                 changedTracks += batchStats.changed
                 skippedTracks += batchStats.skipped
                 movedTracks += batchStats.moved
+                reassignedAlbumIds += batchStats.reassignedAlbumIds
             }
 
             val cleanupStart = TimeSource.Monotonic.markNow()
             val missingTracks = markMissingTracks(rawTracks, currentSyncTimestamp)
+            if (reassignedAlbumIds.isNotEmpty()) {
+                musicDao.markAlbumsDeletedIfNoPresentTracks(
+                    albumIds = reassignedAlbumIds.toList(),
+                    timestamp = currentSyncTimestamp,
+                )
+            }
             val threshold = currentSyncTimestamp - 30 * 24 * 60 * 60 * 1000L
             val tombstoneThreshold = currentSyncTimestamp - TOMBSTONE_RETENTION_MS
             musicDao.markOldAlbumsDeleted(threshold = threshold, timestamp = currentSyncTimestamp)
@@ -174,7 +182,9 @@ class MusicRepository(
 
     private suspend fun syncArtists(rawTracks: List<RawTrackData>): Map<String, Long> {
         val artistNames = rawTracks
-            .map { it.artist ?: UNKNOWN_ARTIST }
+            .flatMap { raw ->
+                listOf(raw.trackArtistName(), raw.albumArtistName())
+            }
             .distinct()
 
         if (artistNames.isNotEmpty()) {
@@ -191,7 +201,7 @@ class MusicRepository(
         timestamp: Long
     ): AlbumSyncResult {
         val tracksByAlbum = rawTracks.mapNotNull { raw ->
-            val artistName = raw.artist ?: UNKNOWN_ARTIST
+            val artistName = raw.albumArtistName()
             val artistId = artistMap[artistName] ?: return@mapNotNull null
             ((raw.album ?: UNKNOWN_ALBUM) to artistId) to raw
         }.groupBy(
@@ -425,9 +435,11 @@ class MusicRepository(
         var movedTracks = 0
         var skippedTracks = 0
         val changedRawTracks = mutableListOf<RawTrackData>()
+        val reassignedAlbumIds = mutableSetOf<Long>()
         val trackEntities = batch.mapNotNull { raw ->
-            val artistId = artistMap[raw.artist ?: UNKNOWN_ARTIST] ?: -1L
-            val albumId = albumMap[(raw.album ?: UNKNOWN_ALBUM) to artistId] ?: -1L
+            val artistId = artistMap[raw.trackArtistName()] ?: -1L
+            val albumArtistId = artistMap[raw.albumArtistName()] ?: -1L
+            val albumId = albumMap[(raw.album ?: UNKNOWN_ALBUM) to albumArtistId] ?: -1L
             val existingByMediaStoreId = raw.mediaStoreId?.let(existingTracksByMediaStoreId::get)
             val existingByPath = existingTracksByPath[raw.path]
             val existing = existingByMediaStoreId ?: existingByPath ?: movedTrackQueues
@@ -439,12 +451,15 @@ class MusicRepository(
                 return@mapNotNull null
             }
 
+            if (existing != null && existing.albumId != albumId) {
+                reassignedAlbumIds += existing.albumId
+            }
             changedRawTracks += raw
             TrackEntity(
                 id = existing?.id ?: 0L,
                 filePath = raw.path,
                 title = raw.title ?: UNKNOWN_TITLE,
-                artistName = raw.artist ?: UNKNOWN_ARTIST,
+                artistName = raw.trackArtistName(),
                 albumName = raw.album ?: UNKNOWN_ALBUM,
                 artistId = artistId,
                 albumId = albumId,
@@ -459,7 +474,7 @@ class MusicRepository(
                 isPresent = true,
                 lastSeenTimestamp = timestamp,
                 titleSortKey = (raw.title ?: UNKNOWN_TITLE).toSortKey(),
-                artistSortKey = (raw.artist ?: UNKNOWN_ARTIST).toSortKey()
+                artistSortKey = raw.trackArtistName().toSortKey()
             )
         }
 
@@ -472,6 +487,7 @@ class MusicRepository(
             changed = trackEntities.size,
             skipped = skippedTracks,
             moved = movedTracks,
+            reassignedAlbumIds = reassignedAlbumIds,
         )
     }
 
@@ -550,7 +566,7 @@ class MusicRepository(
             contentFingerprint == raw.contentFingerprint() &&
             availability == TrackAvailability.AVAILABLE.name &&
             title == (raw.title ?: UNKNOWN_TITLE) &&
-            artistName == (raw.artist ?: UNKNOWN_ARTIST) &&
+            artistName == raw.trackArtistName() &&
             albumName == (raw.album ?: UNKNOWN_ALBUM) &&
             artistId == resolvedArtistId &&
             albumId == resolvedAlbumId &&
@@ -619,6 +635,7 @@ class MusicRepository(
         val changed: Int,
         val skipped: Int,
         val moved: Int,
+        val reassignedAlbumIds: Set<Long>,
     )
     private data class TrackSignature(
         val title: String,
@@ -1045,7 +1062,20 @@ class MusicRepository(
     }
 
     private fun RawTrackData.contentFingerprint(): String {
-        return "${mediaStoreId.orEmptyKey()}:$path:$fileSize:$lastModified:$durationMs:${albumArtUri.orEmpty()}"
+        return "${mediaStoreId.orEmptyKey()}:$path:$fileSize:$lastModified:$durationMs:" +
+            "${albumArtUri.orEmpty()}:${albumArtistName()}"
+    }
+
+    private fun RawTrackData.trackArtistName(): String {
+        return artist.normalizedName() ?: UNKNOWN_ARTIST
+    }
+
+    private fun RawTrackData.albumArtistName(): String {
+        return albumArtist.normalizedName() ?: trackArtistName()
+    }
+
+    private fun String?.normalizedName(): String? {
+        return this?.trim()?.takeIf { it.isNotBlank() }
     }
 
     private fun RawTrackData.effectiveLocalArtworkState(): LocalArtworkState {

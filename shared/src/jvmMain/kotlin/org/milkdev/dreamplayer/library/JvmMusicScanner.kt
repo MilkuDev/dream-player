@@ -33,6 +33,7 @@ class JvmMusicScanner : MusicScanner {
                             title = metadata.title ?: singleFile.nameWithoutExtension,
                             artist = metadata.artist,
                             album = metadata.album,
+                            albumArtist = metadata.albumArtist,
                             durationMs = metadata.durationMs ?: 0L,
                             fileSize = singleFile.length(),
                             lastModified = singleFile.lastModified(),
@@ -64,12 +65,16 @@ private fun File.readMetadata(logger: Logger): TrackMetadata? {
     val audioFileFormat = readAudioFileFormat(logger) ?: return null
     val properties: Map<String, Any?> = audioFileFormat.properties()
     val flacMetadata = readFlacMetadata()
-    val albumArt = findAlbumArt(flacMetadata?.albumArt ?: embeddedMp3AlbumArt(logger))
+    val embeddedMp3Metadata = readEmbeddedMp3Metadata(logger)
+    val albumArt = findAlbumArt(flacMetadata?.albumArt ?: embeddedMp3Metadata?.albumArt)
 
     return TrackMetadata(
         title = properties.textValue("title"),
         artist = properties.textValue("author", "artist") ?: flacMetadata?.artist,
         album = properties.textValue("album") ?: flacMetadata?.album,
+        albumArtist = properties.textValue("albumartist", "album artist", "albumArtist", "band")
+            ?: flacMetadata?.albumArtist
+            ?: embeddedMp3Metadata?.albumArtist,
         durationMs = properties.durationMs() ?: audioFileFormat.durationMs(),
         albumArtUri = albumArt?.uri,
         albumArtSource = albumArt?.source ?: CoverSource.NONE,
@@ -95,7 +100,7 @@ private fun File.findAlbumArt(embeddedAlbumArt: EmbeddedAlbumArt?): AlbumArtRefe
     }
 }
 
-private fun File.embeddedMp3AlbumArt(logger: Logger): EmbeddedAlbumArt? {
+private fun File.readEmbeddedMp3Metadata(logger: Logger): EmbeddedMp3Metadata? {
     if (!extension.equals("mp3", ignoreCase = true)) return null
 
     return runCatching {
@@ -119,21 +124,24 @@ private fun File.embeddedMp3AlbumArt(logger: Logger): EmbeddedAlbumArt? {
             if (parsedTag.issues.isNotEmpty()) {
                 logger.log(
                     Level.FINE,
-                    "ID3 artwork parse issues: ${
+                    "ID3 metadata parse issues: ${
                         parsedTag.issues.joinToString(",") { issue -> issue.name.lowercase() }
                     }",
                 )
             }
-            parsedTag.preferredPicture()?.let { picture ->
-                EmbeddedAlbumArt(
-                    bytes = picture.bytes,
-                    mimeType = picture.mimeType,
-                    pictureType = picture.pictureType,
-                )
-            }
+            EmbeddedMp3Metadata(
+                albumArt = parsedTag.preferredPicture()?.let { picture ->
+                    EmbeddedAlbumArt(
+                        bytes = picture.bytes,
+                        mimeType = picture.mimeType,
+                        pictureType = picture.pictureType,
+                    )
+                },
+                albumArtist = parsedTag.values["tpe2"]?.firstOrNull(),
+            )
         }
     }.onFailure { error ->
-        logger.log(Level.FINE, "Unable to parse embedded MP3 artwork", error)
+        logger.log(Level.FINE, "Unable to parse embedded MP3 metadata", error)
     }.getOrNull()
 }
 
@@ -148,6 +156,7 @@ private fun File.readFlacMetadata(): FlacMetadata? {
 
             var artist: String? = null
             var album: String? = null
+            var albumArtist: String? = null
             var albumArt: EmbeddedAlbumArt? = null
             var hasMoreBlocks = true
 
@@ -165,6 +174,9 @@ private fun File.readFlacMetadata(): FlacMetadata? {
                             val comments = ByteArray(blockSize).also(file::readFully).parseFlacComments()
                             artist = artist ?: comments["artist"]
                             album = album ?: comments["album"]
+                            albumArtist = albumArtist ?: comments["albumartist"]
+                                ?: comments["album artist"]
+                                ?: comments["album_artist"]
                         }
                     }
 
@@ -181,7 +193,7 @@ private fun File.readFlacMetadata(): FlacMetadata? {
                 file.seek(blockEnd)
             }
 
-            FlacMetadata(artist, album, albumArt)
+            FlacMetadata(artist, album, albumArtist, albumArt)
         }
     }.getOrNull()
 }
@@ -346,6 +358,7 @@ private data class TrackMetadata(
     val title: String?,
     val artist: String?,
     val album: String?,
+    val albumArtist: String?,
     val durationMs: Long?,
     val albumArtUri: String?,
     val albumArtSource: CoverSource,
@@ -370,9 +383,15 @@ private class EmbeddedAlbumArt(
     val pictureType: Int
 )
 
+private data class EmbeddedMp3Metadata(
+    val albumArt: EmbeddedAlbumArt?,
+    val albumArtist: String?,
+)
+
 private data class FlacMetadata(
     val artist: String?,
     val album: String?,
+    val albumArtist: String?,
     val albumArt: EmbeddedAlbumArt?
 )
 
