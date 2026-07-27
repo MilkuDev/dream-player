@@ -1,14 +1,20 @@
 package org.milkdev.dreamplayer.library
 
+import android.content.ContentResolver
 import android.content.ContentUris
 import android.database.ContentObserver
+import android.graphics.Point
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
+import java.io.FileNotFoundException
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.withContext
 import org.milkdev.dreamplayer.app.applicationContext
 
 class MediaStoreScanner : MusicScanner {
@@ -26,6 +32,7 @@ class MediaStoreScanner : MusicScanner {
             MediaStore.Audio.Media.SIZE,
             MediaStore.Audio.Media.DATE_MODIFIED,
             MediaStore.Audio.Media.ALBUM_ID,
+            MediaStore.Audio.Media.VOLUME_NAME,
         )
 
         val selection = "${MediaStore.Audio.Media.IS_MUSIC} != 0"
@@ -51,17 +58,24 @@ class MediaStoreScanner : MusicScanner {
             val sizeColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.SIZE)
             val dateModifiedColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DATE_MODIFIED)
             val albumIdColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM_ID)
+            val volumeNameColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.VOLUME_NAME)
 
             while (cursor.moveToNext()) {
                 val id = cursor.getLong(idColumn)
                 val contentUri = ContentUris.withAppendedId(collection, id).toString()
 
                 val albumId = cursor.getLong(albumIdColumn)
-                @Suppress("UseKtx")
-                val albumArtUri = ContentUris.withAppendedId(
-                    android.net.Uri.parse("content://media/external/audio/albumart"),
-                    albumId
-                ).toString()
+                val volumeName = cursor.getString(volumeNameColumn)
+                    ?.takeIf { it.isNotBlank() }
+                    ?: MediaStore.VOLUME_EXTERNAL
+                val albumUri = if (albumId > 0L) {
+                    ContentUris.withAppendedId(
+                        MediaStore.Audio.Albums.getContentUri(volumeName),
+                        albumId
+                    ).toString()
+                } else {
+                    contentUri
+                }
 
                 emit(
                     RawTrackData(
@@ -73,13 +87,49 @@ class MediaStoreScanner : MusicScanner {
                         durationMs = cursor.getLong(durationColumn),
                         fileSize = cursor.getLong(sizeColumn),
                         lastModified = cursor.getLong(dateModifiedColumn),
-                        albumArtUri = albumArtUri,
-                        albumArtSource = CoverSource.LOCAL_CACHE,
+                        albumArtworkKey = albumUri,
+                        localArtworkState = LocalArtworkState.UNKNOWN,
                     )
                 )
             }
         }
     }
+
+    override suspend fun probeArtwork(candidate: ArtworkProbeCandidate): ArtworkProbeResult =
+        withContext(Dispatchers.IO) {
+            var sawUnknown = false
+            val albumUris = candidate.albumUris.distinct()
+            val sampleUris = candidate.sampleTrackUris.distinct().take(MAX_SAMPLE_TRACKS)
+
+            for (uri in albumUris) {
+                when (probeUri(uri)) {
+                    ProbeOutcome.PRESENT -> return@withContext ArtworkProbeResult(
+                        requestId = candidate.requestId,
+                        state = LocalArtworkState.PRESENT,
+                        artworkUri = uri,
+                    )
+                    ProbeOutcome.UNKNOWN -> sawUnknown = true
+                    ProbeOutcome.MISSING -> Unit
+                }
+            }
+
+            for (uri in sampleUris) {
+                when (probeUri(uri)) {
+                    ProbeOutcome.PRESENT -> return@withContext ArtworkProbeResult(
+                        requestId = candidate.requestId,
+                        state = LocalArtworkState.PRESENT,
+                        artworkUri = uri,
+                    )
+                    ProbeOutcome.UNKNOWN -> sawUnknown = true
+                    ProbeOutcome.MISSING -> Unit
+                }
+            }
+
+            ArtworkProbeResult(
+                requestId = candidate.requestId,
+                state = if (sawUnknown) LocalArtworkState.UNKNOWN else LocalArtworkState.MISSING,
+            )
+        }
 
     override fun observeChanges(): Flow<Unit> = callbackFlow {
         val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
@@ -97,5 +147,38 @@ class MediaStoreScanner : MusicScanner {
         awaitClose {
             applicationContext.contentResolver.unregisterContentObserver(observer)
         }
+    }
+
+    private fun probeUri(value: String): ProbeOutcome {
+        val uri = runCatching { android.net.Uri.parse(value) }.getOrNull()
+            ?: return ProbeOutcome.UNKNOWN
+        val options = Bundle().apply {
+            putParcelable(ContentResolver.EXTRA_SIZE, Point(PROBE_SIZE_PX, PROBE_SIZE_PX))
+        }
+
+        return try {
+            val exists = applicationContext.contentResolver
+                .openTypedAssetFileDescriptor(uri, "image/*", options)
+                ?.use { true }
+                ?: false
+            if (exists) ProbeOutcome.PRESENT else ProbeOutcome.MISSING
+        } catch (_: FileNotFoundException) {
+            ProbeOutcome.MISSING
+        } catch (_: SecurityException) {
+            ProbeOutcome.UNKNOWN
+        } catch (_: Exception) {
+            ProbeOutcome.UNKNOWN
+        }
+    }
+
+    private enum class ProbeOutcome {
+        PRESENT,
+        MISSING,
+        UNKNOWN,
+    }
+
+    private companion object {
+        const val PROBE_SIZE_PX = 96
+        const val MAX_SAMPLE_TRACKS = 3
     }
 }

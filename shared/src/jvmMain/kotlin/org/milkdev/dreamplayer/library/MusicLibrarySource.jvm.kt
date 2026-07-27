@@ -13,7 +13,7 @@ import org.milkdev.dreamplayer.database.appDatabase
 import org.milkdev.dreamplayer.model.AlbumSortOrder
 import org.milkdev.dreamplayer.model.TrackSortOrder
 import org.milkdev.dreamplayer.playback.ResolvedPlaybackItem
-import org.milkdev.dreamplayer.database.entities.TrackEntity
+import org.milkdev.dreamplayer.database.entities.TrackWithArtwork
 
 actual object MusicLibrarySource {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -132,14 +132,15 @@ actual object MusicLibrarySource {
     }
 }
 
-private fun TrackEntity.toLibraryTrack(): LibraryTrack {
+private fun TrackWithArtwork.toLibraryTrack(): LibraryTrack {
     return LibraryTrack(
-        id = id,
-        title = title,
-        artistName = artistName,
-        albumName = albumName,
-        durationMs = durationMs,
-        albumArtUri = albumArtUri,
-        isPresent = isPresent,
+        id = track.id,
+        title = track.title,
+        artistName = track.artistName,
+        albumName = track.albumName,
+        durationMs = track.durationMs,
+        albumArtUri = artworkUri,
+        isPresent = track.isPresent,
+        contentVersion = artworkRevision,
     )
 }

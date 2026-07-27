@@ -167,7 +167,8 @@ fun DailyPlaylistBanner(
             ) {
                 TrackImage(
                     uri = tracks.getOrNull(0)?.albumArtUri,
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier.fillMaxSize(),
+                    artworkRevision = tracks.getOrNull(0)?.contentVersion ?: 0L,
                 )
             }
             Box(modifier = Modifier
@@ -184,7 +185,8 @@ fun DailyPlaylistBanner(
             ) {
                 TrackImage(
                     uri = tracks.getOrNull(1)?.albumArtUri,
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier.fillMaxSize(),
+                    artworkRevision = tracks.getOrNull(1)?.contentVersion ?: 0L,
                 )
             }
             Box(modifier = Modifier
@@ -201,7 +203,8 @@ fun DailyPlaylistBanner(
             ) {
                 TrackImage(
                     uri = tracks.getOrNull(2)?.albumArtUri,
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier.fillMaxSize(),
+                    artworkRevision = tracks.getOrNull(2)?.contentVersion ?: 0L,
                 )
             }
             Box(

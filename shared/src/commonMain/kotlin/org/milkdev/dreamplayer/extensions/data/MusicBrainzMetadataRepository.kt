@@ -9,6 +9,7 @@ import io.ktor.client.request.parameter
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -41,7 +42,7 @@ class MusicBrainzMetadataRepository(
 
     private suspend fun lookupReleaseGroup(mbid: String): MusicBrainzMetadataLookup {
         val endpoint = MusicBrainzMetadataNetworkPolicy.releaseGroupLookupEndpoint(mbid)
-        return request(
+        return when (val response = request(
             endpoint = endpoint,
             traceParameters = listOf(
                 "fmt" to "json",
@@ -50,14 +51,21 @@ class MusicBrainzMetadataRepository(
         ) {
             parameter("fmt", "json")
             parameter("inc", "genres+tags")
-        }?.let { text ->
-            val releaseGroup = runCatching {
-                json.decodeFromString<MusicBrainzMetadataReleaseGroup>(text)
-            }.getOrElse {
-                return MusicBrainzMetadataLookup.RetryableFailure("MusicBrainz вернул неожиданный ответ")
+        }) {
+            is MusicBrainzRequestResult.Success -> {
+                val releaseGroup = runCatching {
+                    json.decodeFromString<MusicBrainzMetadataReleaseGroup>(response.body)
+                }.getOrElse {
+                    return MusicBrainzMetadataLookup.RetryableFailure("MusicBrainz вернул неожиданный ответ")
+                }
+                MusicBrainzMetadataLookup.Found(releaseGroup.toAlbumMetadata(confidence = 1f))
             }
-            MusicBrainzMetadataLookup.Found(releaseGroup.toAlbumMetadata(confidence = 1f))
-        } ?: MusicBrainzMetadataLookup.NoMatch
+            MusicBrainzRequestResult.NoMatch -> MusicBrainzMetadataLookup.NoMatch
+            is MusicBrainzRequestResult.RetryableFailure -> MusicBrainzMetadataLookup.RetryableFailure(
+                message = response.message,
+                isRateLimited = response.isRateLimited,
+            )
+        }
     }
 
     private suspend fun searchReleaseGroup(
@@ -68,7 +76,7 @@ class MusicBrainzMetadataRepository(
 
         val endpoint = MusicBrainzMetadataNetworkPolicy.ReleaseGroupSearchEndpoint
         val query = buildReleaseGroupQuery(artist = artist, album = album)
-        val text = request(
+        return when (val response = request(
             endpoint = endpoint,
             traceParameters = listOf(
                 "fmt" to "json",
@@ -79,98 +87,111 @@ class MusicBrainzMetadataRepository(
             parameter("fmt", "json")
             parameter("limit", "5")
             parameter("query", query)
-        } ?: return MusicBrainzMetadataLookup.NoMatch
-
-        val decoded = runCatching {
-            json.decodeFromString<MusicBrainzMetadataReleaseGroupSearchResponse>(text)
-        }.getOrElse {
-            return MusicBrainzMetadataLookup.RetryableFailure("MusicBrainz вернул неожиданный ответ")
+        }) {
+            is MusicBrainzRequestResult.Success -> {
+                val decoded = runCatching {
+                    json.decodeFromString<MusicBrainzMetadataReleaseGroupSearchResponse>(response.body)
+                }.getOrElse {
+                    return MusicBrainzMetadataLookup.RetryableFailure("MusicBrainz вернул неожиданный ответ")
+                }
+                val best = decoded.releaseGroups
+                    .filter { it.score >= MIN_MUSICBRAINZ_SCORE }
+                    .firstOrNull { it.matches(artist = artist, album = album) }
+                    ?: return MusicBrainzMetadataLookup.NoMatch
+                MusicBrainzMetadataLookup.Found(best.toAlbumMetadata(confidence = best.score / 100f))
+            }
+            MusicBrainzRequestResult.NoMatch -> MusicBrainzMetadataLookup.NoMatch
+            is MusicBrainzRequestResult.RetryableFailure -> MusicBrainzMetadataLookup.RetryableFailure(
+                message = response.message,
+                isRateLimited = response.isRateLimited,
+            )
         }
-
-        val best = decoded.releaseGroups
-            .filter { it.score >= MIN_MUSICBRAINZ_SCORE }
-            .firstOrNull { it.matches(artist = artist, album = album) }
-            ?: return MusicBrainzMetadataLookup.NoMatch
-
-        return MusicBrainzMetadataLookup.Found(best.toAlbumMetadata(confidence = best.score / 100f))
     }
 
     private suspend fun request(
         endpoint: SecureNetworkEndpoint,
         traceParameters: List<Pair<String, String>>,
         parameters: io.ktor.client.request.HttpRequestBuilder.() -> Unit,
-    ): String? {
+    ): MusicBrainzRequestResult {
         runCatching { SecureNetworkPolicy.requireAllowed(endpoint) }
             .getOrElse { error ->
                 NetworkTraceLog.failure(
                     serviceName = endpoint.serviceName,
                     message = error.message ?: "Запрос заблокирован политикой безопасности",
                 )
-                return null
+                return MusicBrainzRequestResult.RetryableFailure(
+                    error.message ?: "Запрос MusicBrainz заблокирован политикой безопасности",
+                )
             }
 
         limiter.awaitPermit()
-        NetworkTraceLog.request(
+        val requestTrace = NetworkTraceLog.request(
             serviceName = endpoint.serviceName,
             method = "GET",
             url = endpoint.url,
             parameters = traceParameters,
         )
 
-        return runCatching {
-            client.get(endpoint.url) {
+        return try {
+            val response = client.get(endpoint.url) {
                 header(HttpHeaders.UserAgent, USER_AGENT)
                 parameters()
             }
-        }.fold(
-            onSuccess = { response ->
-                when (response.status) {
-                    HttpStatusCode.OK -> {
-                        val text = response.bodyAsText()
-                        NetworkTraceLog.textResponse(
-                            serviceName = endpoint.serviceName,
-                            statusCode = response.status.value,
-                            body = text,
-                            contentType = response.headers[HttpHeaders.ContentType],
-                        )
-                        text
-                    }
-                    HttpStatusCode.NotFound -> {
-                        NetworkTraceLog.metadataResponse(
-                            serviceName = endpoint.serviceName,
-                            statusCode = response.status.value,
-                            contentType = response.headers[HttpHeaders.ContentType],
-                        )
-                        null
-                    }
-                    HttpStatusCode.TooManyRequests,
-                    HttpStatusCode.ServiceUnavailable -> {
-                        NetworkTraceLog.metadataResponse(
-                            serviceName = endpoint.serviceName,
-                            statusCode = response.status.value,
-                            contentType = response.headers[HttpHeaders.ContentType],
-                        )
-                        limiter.cooldown(RATE_LIMIT_COOLDOWN_MS)
-                        null
-                    }
-                    else -> {
-                        NetworkTraceLog.metadataResponse(
-                            serviceName = endpoint.serviceName,
-                            statusCode = response.status.value,
-                            contentType = response.headers[HttpHeaders.ContentType],
-                        )
-                        null
-                    }
+            when (response.status) {
+                HttpStatusCode.OK -> {
+                    val text = response.bodyAsText()
+                    NetworkTraceLog.textResponse(
+                        trace = requestTrace,
+                        statusCode = response.status.value,
+                        body = text,
+                        contentType = response.headers[HttpHeaders.ContentType],
+                    )
+                    MusicBrainzRequestResult.Success(text)
                 }
-            },
-            onFailure = { error ->
-                NetworkTraceLog.failure(
-                    serviceName = endpoint.serviceName,
-                    message = error.message ?: "Ошибка сети или TLS",
-                )
-                null
-            },
-        )
+                HttpStatusCode.NotFound -> {
+                    NetworkTraceLog.metadataResponse(
+                        trace = requestTrace,
+                        statusCode = response.status.value,
+                        contentType = response.headers[HttpHeaders.ContentType],
+                    )
+                    MusicBrainzRequestResult.NoMatch
+                }
+                HttpStatusCode.TooManyRequests,
+                HttpStatusCode.ServiceUnavailable -> {
+                    NetworkTraceLog.metadataResponse(
+                        trace = requestTrace,
+                        statusCode = response.status.value,
+                        contentType = response.headers[HttpHeaders.ContentType],
+                    )
+                    limiter.cooldown(RATE_LIMIT_COOLDOWN_MS)
+                    MusicBrainzRequestResult.RetryableFailure(
+                        message = "MusicBrainz ограничил частоту запросов",
+                        isRateLimited = true,
+                    )
+                }
+                else -> {
+                    NetworkTraceLog.metadataResponse(
+                        trace = requestTrace,
+                        statusCode = response.status.value,
+                        contentType = response.headers[HttpHeaders.ContentType],
+                    )
+                    MusicBrainzRequestResult.RetryableFailure(
+                        "MusicBrainz ответил HTTP ${response.status.value}",
+                    )
+                }
+            }
+        } catch (error: CancellationException) {
+            NetworkTraceLog.cancelled(requestTrace)
+            throw error
+        } catch (error: Throwable) {
+            NetworkTraceLog.failure(
+                trace = requestTrace,
+                message = error.message ?: "Ошибка сети или TLS",
+            )
+            MusicBrainzRequestResult.RetryableFailure(
+                "Ошибка сети или TLS при обращении к MusicBrainz",
+            )
+        }
     }
 
     private fun MusicBrainzMetadataReleaseGroup.toAlbumMetadata(confidence: Float): MusicBrainzAlbumMetadata {
@@ -259,7 +280,19 @@ object MusicBrainzMetadataNetworkPolicy {
 sealed interface MusicBrainzMetadataLookup {
     data class Found(val metadata: MusicBrainzAlbumMetadata) : MusicBrainzMetadataLookup
     object NoMatch : MusicBrainzMetadataLookup
-    data class RetryableFailure(val message: String) : MusicBrainzMetadataLookup
+    data class RetryableFailure(
+        val message: String,
+        val isRateLimited: Boolean = false,
+    ) : MusicBrainzMetadataLookup
+}
+
+private sealed interface MusicBrainzRequestResult {
+    data class Success(val body: String) : MusicBrainzRequestResult
+    object NoMatch : MusicBrainzRequestResult
+    data class RetryableFailure(
+        val message: String,
+        val isRateLimited: Boolean = false,
+    ) : MusicBrainzRequestResult
 }
 
 data class MusicBrainzAlbumMetadata(

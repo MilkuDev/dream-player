@@ -8,7 +8,7 @@ import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 import org.milkdev.dreamplayer.database.entities.PlaylistEntity
 import org.milkdev.dreamplayer.database.entities.PlaylistTrackCrossRef
-import org.milkdev.dreamplayer.database.entities.TrackEntity
+import org.milkdev.dreamplayer.database.entities.TrackWithArtwork
 
 @Dao
 interface PlaylistDao {
@@ -47,16 +47,24 @@ interface PlaylistDao {
     ): PlaylistEntity?
 
     @Query("""
-        SELECT library_tracks.* FROM library_tracks
+        SELECT t.*,
+            COALESCE(NULLIF(t.albumArtUri, ''), NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri,
+            MAX(
+                t.lastModified,
+                COALESCE(a.localArtworkCheckedAt, 0),
+                COALESCE(a.coverUpdatedAt, 0)
+            ) AS artworkRevision
+        FROM library_tracks t
         INNER JOIN playlist_track_cross_ref
-        ON library_tracks.id = playlist_track_cross_ref.trackId
+        ON t.id = playlist_track_cross_ref.trackId
+        LEFT JOIN albums a ON a.id = t.albumId
         WHERE playlist_track_cross_ref.playlistId = :playlistId
-        AND library_tracks.isPresent = 1
+        AND t.isPresent = 1
         ORDER BY playlist_track_cross_ref.position ASC
     """)
     fun getTracksForPlaylist(
         playlistId: Long
-    ): Flow<List<TrackEntity>>
+    ): Flow<List<TrackWithArtwork>>
 
     @Query("""
         SELECT trackId

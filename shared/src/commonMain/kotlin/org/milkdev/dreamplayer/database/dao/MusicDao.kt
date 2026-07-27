@@ -12,14 +12,18 @@ import kotlinx.coroutines.flow.Flow
 import org.milkdev.dreamplayer.database.entities.AlbumGenreCrossRef
 import org.milkdev.dreamplayer.database.entities.AlbumEntity
 import org.milkdev.dreamplayer.database.entities.AlbumMetadataStateEntity
+import org.milkdev.dreamplayer.database.entities.AlbumReleaseEntity
 import org.milkdev.dreamplayer.database.entities.ArtistEntity
 import org.milkdev.dreamplayer.database.entities.GenreEntity
+import org.milkdev.dreamplayer.database.entities.MetadataEntityType
+import org.milkdev.dreamplayer.database.entities.MetadataProvider
 import org.milkdev.dreamplayer.database.entities.MetadataResolutionEntity
 import org.milkdev.dreamplayer.database.entities.PlaybackHistoryEntity
 import org.milkdev.dreamplayer.database.entities.SyncAuditEntity
 import org.milkdev.dreamplayer.database.entities.TrackGenreCrossRef
 import org.milkdev.dreamplayer.database.entities.TrackEntity
 import org.milkdev.dreamplayer.database.entities.TrackMetadataStateEntity
+import org.milkdev.dreamplayer.database.entities.TrackWithArtwork
 import org.milkdev.dreamplayer.library.AlbumListItem
 import org.milkdev.dreamplayer.library.ArtistListItem
 import org.milkdev.dreamplayer.library.GenreListItem
@@ -35,7 +39,8 @@ interface MusicDao {
     @Query("""
     SELECT t.id, t.title, t.artistName, t.albumName AS albumTitle, t.durationMs,
            a.year, a.genre,
-           COALESCE(NULLIF(t.albumArtUri, ''), NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri
+           COALESCE(NULLIF(t.albumArtUri, ''), NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri,
+           MAX(t.lastModified, COALESCE(a.localArtworkCheckedAt, 0), COALESCE(a.coverUpdatedAt, 0)) AS artworkRevision
     FROM playback_history h
     INNER JOIN library_tracks t ON h.trackId = t.id
     LEFT JOIN albums a ON t.albumId = a.id
@@ -94,8 +99,23 @@ interface MusicDao {
     @Query("SELECT id, title, artistId FROM albums")
     suspend fun getAlbumIdMap(): List<AlbumIdResult>
 
+    @Query("SELECT * FROM albums WHERE id = :albumId LIMIT 1")
+    suspend fun getAlbumById(albumId: Long): AlbumEntity?
+
+    @Query("SELECT * FROM albums WHERE id IN (:albumIds)")
+    suspend fun getAlbumsByIds(albumIds: List<Long>): List<AlbumEntity>
+
+    @Query("SELECT * FROM artists WHERE id = :artistId LIMIT 1")
+    suspend fun getArtistById(artistId: Long): ArtistEntity?
+
     @Query("SELECT name FROM artists WHERE id = :artistId")
     suspend fun getArtistName(artistId: Long): String?
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertAlbumRelease(release: AlbumReleaseEntity)
+
+    @Query("SELECT * FROM album_releases WHERE albumId = :albumId ORDER BY id ASC")
+    suspend fun getAlbumReleases(albumId: Long): List<AlbumReleaseEntity>
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertGenres(genres: List<GenreEntity>)
@@ -123,6 +143,49 @@ interface MusicDao {
 
     @Insert
     suspend fun insertMetadataResolution(resolution: MetadataResolutionEntity)
+
+    @Query(
+        """
+        UPDATE metadata_resolution
+        SET confidence = MAX(confidence, :confidence),
+            identityTrust = MAX(identityTrust, :identityTrust),
+            yearTrust = MAX(yearTrust, :yearTrust),
+            resolvedAt = MAX(resolvedAt, :resolvedAt)
+        WHERE entityType = :entityType
+        AND entityId = :entityId
+        AND provider = :provider
+        AND (
+            sourceId = :sourceId
+            OR (sourceId IS NULL AND :sourceId IS NULL)
+        )
+        """
+    )
+    suspend fun updateMetadataResolutionIfPresent(
+        entityType: String,
+        entityId: Long,
+        provider: String,
+        sourceId: String?,
+        confidence: Float,
+        identityTrust: Int,
+        yearTrust: Int,
+        resolvedAt: Long,
+    ): Int
+
+    @Query("SELECT * FROM track_metadata_state WHERE trackId = :trackId LIMIT 1")
+    suspend fun getTrackMetadataState(trackId: Long): TrackMetadataStateEntity?
+
+    @Query(
+        """
+        SELECT *
+        FROM metadata_resolution
+        WHERE entityType = :entityType AND entityId = :entityId
+        ORDER BY id ASC
+        """
+    )
+    suspend fun getMetadataResolutions(
+        entityType: String,
+        entityId: Long,
+    ): List<MetadataResolutionEntity>
 
     @Query(
         """
@@ -187,6 +250,175 @@ interface MusicDao {
         )
     }
 
+    @Transaction
+    suspend fun applyEmbeddedMetadata(
+        trackId: Long,
+        expectedFilePath: String,
+        expectedContentFingerprint: String,
+        expectedGeneration: Long,
+        recordingMbid: String?,
+        releaseMbid: String?,
+        releaseGroupMbid: String?,
+        artistMbids: List<String>,
+        albumArtistMbids: List<String>,
+        year: Int?,
+        genres: List<GenreEntity>,
+        embeddedMbidStatus: String,
+        embeddedFingerprint: String?,
+        timestamp: Long,
+        identityTrust: Int,
+        yearTrust: Int,
+        genreTrust: Int,
+    ): Boolean {
+        val track = getTracksByIds(listOf(trackId)).singleOrNull() ?: return false
+        if (
+            !track.isPresent ||
+            track.deletedAt != null ||
+            track.filePath != expectedFilePath ||
+            track.contentFingerprint != expectedContentFingerprint ||
+            track.lastSeenTimestamp != expectedGeneration
+        ) {
+            return false
+        }
+
+        val normalizedRecordingMbid = recordingMbid.normalizeMbid()
+        val normalizedReleaseMbid = releaseMbid.normalizeMbid()
+        val normalizedReleaseGroupMbid = releaseGroupMbid.normalizeMbid()
+        val uniqueArtistMbids = artistMbids.mapNotNull { it.normalizeMbid() }.distinct()
+        val uniqueAlbumArtistMbids = albumArtistMbids.mapNotNull { it.normalizeMbid() }.distinct()
+
+        updateTrackEmbeddedIdentity(
+            trackId = track.id,
+            recordingMbid = normalizedRecordingMbid,
+            identityTrust = identityTrust,
+        )
+        updateAlbumEmbeddedIdentityAndYear(
+            albumId = track.albumId,
+            releaseGroupMbid = normalizedReleaseGroupMbid,
+            year = year,
+            identityTrust = identityTrust,
+            yearTrust = yearTrust,
+        )
+
+        normalizedReleaseMbid?.let { mbid ->
+            insertAlbumRelease(
+                AlbumReleaseEntity(
+                    albumId = track.albumId,
+                    releaseMbid = mbid,
+                    date = year?.toString(),
+                )
+            )
+            updateAlbumReleaseDateIfMissing(mbid, year?.toString())
+        }
+
+        uniqueArtistMbids.singleOrNull()?.let { artistMbid ->
+            updateArtistEmbeddedIdentity(track.artistId, artistMbid)
+        }
+
+        upsertTrackEmbeddedMetadataState(
+            trackId = track.id,
+            embeddedMbidStatus = embeddedMbidStatus,
+            embeddedFingerprint = embeddedFingerprint,
+            generation = expectedGeneration,
+            timestamp = timestamp,
+        )
+        if (genres.isNotEmpty()) {
+            replaceTrackGenres(
+                trackId = track.id,
+                genres = genres,
+                sourceTrust = genreTrust,
+            )
+        }
+
+        normalizedRecordingMbid?.let { mbid ->
+            insertEmbeddedResolutionIfMissing(
+                entityType = MetadataEntityType.TRACK,
+                entityId = track.id,
+                sourceId = mbid,
+                timestamp = timestamp,
+                identityTrust = identityTrust,
+            )
+        }
+        if (normalizedReleaseGroupMbid != null || year != null) {
+            insertEmbeddedResolutionIfMissing(
+                entityType = MetadataEntityType.ALBUM,
+                entityId = track.albumId,
+                sourceId = normalizedReleaseGroupMbid,
+                timestamp = timestamp,
+                identityTrust = identityTrust.takeIf { normalizedReleaseGroupMbid != null } ?: 0,
+                yearTrust = yearTrust.takeIf { year != null } ?: 0,
+            )
+        }
+        normalizedReleaseMbid?.let { mbid ->
+            insertEmbeddedResolutionIfMissing(
+                entityType = MetadataEntityType.ALBUM_RELEASE,
+                entityId = track.albumId,
+                sourceId = mbid,
+                timestamp = timestamp,
+                identityTrust = identityTrust,
+            )
+        }
+        uniqueArtistMbids.forEach { mbid ->
+            insertEmbeddedResolutionIfMissing(
+                entityType = MetadataEntityType.ARTIST,
+                entityId = track.artistId,
+                sourceId = mbid,
+                timestamp = timestamp,
+                identityTrust = identityTrust,
+            )
+        }
+        uniqueAlbumArtistMbids.forEach { mbid ->
+            insertEmbeddedResolutionIfMissing(
+                entityType = MetadataEntityType.ALBUM_ARTIST,
+                entityId = track.albumId,
+                sourceId = mbid,
+                timestamp = timestamp,
+                identityTrust = identityTrust,
+            )
+        }
+        return true
+    }
+
+    suspend fun insertEmbeddedResolutionIfMissing(
+        entityType: MetadataEntityType,
+        entityId: Long,
+        sourceId: String?,
+        timestamp: Long,
+        identityTrust: Int,
+        yearTrust: Int = 0,
+    ) {
+        val type = entityType.name
+        val provider = MetadataProvider.EMBEDDED.name
+        val updated = updateMetadataResolutionIfPresent(
+            entityType = type,
+            entityId = entityId,
+            provider = provider,
+            sourceId = sourceId,
+            confidence = 1f,
+            identityTrust = identityTrust,
+            yearTrust = yearTrust,
+            resolvedAt = timestamp,
+        )
+        if (updated > 0) return
+
+        insertMetadataResolution(
+            MetadataResolutionEntity(
+                entityType = type,
+                entityId = entityId,
+                provider = provider,
+                sourceId = sourceId,
+                confidence = 1f,
+                identityTrust = identityTrust,
+                yearTrust = yearTrust,
+                resolvedAt = timestamp,
+            )
+        )
+    }
+
+    private fun String?.normalizeMbid(): String? {
+        return this?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
+    }
+
     @Query(
         """
         SELECT
@@ -207,25 +439,47 @@ interface MusicDao {
             (
                 SELECT COUNT(*)
                 FROM albums
-                WHERE metadataState NOT IN ('DONE', 'NO_MATCH')
+                WHERE metadataVersion < :currentMetadataVersion
+                OR metadataState NOT IN ('DONE', 'NO_MATCH')
+                OR localArtworkState = 'UNKNOWN'
                 OR (
-                    (albumArtUri IS NULL OR albumArtUri = '')
+                    localArtworkState = 'MISSING'
                     AND (coverUri IS NULL OR coverUri = '')
-                    AND coverLookupState NOT IN ('DONE', 'NO_MATCH')
+                    AND (
+                        coverLookupVersion < :currentCoverLookupVersion
+                        OR coverLookupState NOT IN ('DONE', 'NO_MATCH')
+                    )
                 )
             ) AS pendingMetadataCount
         """
     )
-    suspend fun getLibrarySummary(): LibrarySummary
+    suspend fun getLibrarySummary(
+        currentMetadataVersion: Int,
+        currentCoverLookupVersion: Int,
+    ): LibrarySummary
 
     @Query(
         """
         SELECT COUNT(*)
         FROM albums
-        WHERE metadataState NOT IN ('DONE', 'NO_MATCH')
+        WHERE metadataVersion < :currentVersion
+        OR metadataState NOT IN ('DONE', 'NO_MATCH')
         """
     )
-    suspend fun getPendingMetadataCount(): Int
+    suspend fun getPendingMetadataCount(currentVersion: Int): Int
+
+    @Query(
+        """
+        SELECT COUNT(*)
+        FROM albums a
+        WHERE a.localArtworkState = 'UNKNOWN'
+        AND EXISTS (
+            SELECT 1 FROM library_tracks t
+            WHERE t.albumId = a.id AND t.isPresent = 1
+        )
+        """
+    )
+    suspend fun getPendingLocalArtworkVerificationCount(): Int
 
     @Query(
         """
@@ -235,22 +489,23 @@ interface MusicDao {
             SELECT 1 FROM library_tracks t
             WHERE t.albumId = a.id AND t.isPresent = 1
         )
-        AND (a.albumArtUri IS NULL OR a.albumArtUri = '')
+        AND a.localArtworkState = 'MISSING'
         AND (a.coverUri IS NULL OR a.coverUri = '')
         AND (
-            a.coverLookupVersion < :currentVersion OR
-            a.coverLookupState IN ('NOT_SYNCED', 'FAILED', 'PENDING')
-        )
-        AND a.coverLookupState NOT IN ('DONE', 'NO_MATCH')
-        AND (
-            a.coverLookupState != 'FAILED' OR
-            a.coverLookupAttemptAt IS NULL OR
-            a.coverLookupAttemptAt < :retryTimestamp
-        )
-        AND (
-            a.coverLookupState != 'PENDING' OR
-            a.coverLookupAttemptAt IS NULL OR
-            a.coverLookupAttemptAt < :pendingTimeoutTimestamp
+            a.coverLookupVersion < :currentVersion
+            OR (
+                a.coverLookupState IN ('NOT_SYNCED', 'FAILED', 'PENDING')
+                AND (
+                    a.coverLookupState != 'FAILED' OR
+                    a.coverLookupAttemptAt IS NULL OR
+                    a.coverLookupAttemptAt < :retryTimestamp
+                )
+                AND (
+                    a.coverLookupState != 'PENDING' OR
+                    a.coverLookupAttemptAt IS NULL OR
+                    a.coverLookupAttemptAt < :pendingTimeoutTimestamp
+                )
+            )
         )
         """
     )
@@ -263,7 +518,8 @@ interface MusicDao {
     @Query(
         """
         SELECT a.id, a.title, ar.name AS artistName, a.year, a.genre,
-            COALESCE(NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri
+            COALESCE(NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri,
+            MAX(COALESCE(a.localArtworkCheckedAt, 0), COALESCE(a.coverUpdatedAt, 0)) AS artworkRevision
         FROM albums a
         INNER JOIN artists ar ON ar.id = a.artistId
         WHERE EXISTS (
@@ -288,7 +544,8 @@ interface MusicDao {
     @Query(
         """
         SELECT a.id, a.title, ar.name AS artistName, a.year, a.genre,
-            COALESCE(NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri
+            COALESCE(NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri,
+            MAX(COALESCE(a.localArtworkCheckedAt, 0), COALESCE(a.coverUpdatedAt, 0)) AS artworkRevision
         FROM albums a
         INNER JOIN artists ar ON ar.id = a.artistId
         WHERE EXISTS (
@@ -319,7 +576,8 @@ interface MusicDao {
     @Query(
         """
         SELECT a.id, a.title, ar.name AS artistName, a.year, a.genre,
-            COALESCE(NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri
+            COALESCE(NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri,
+            MAX(COALESCE(a.localArtworkCheckedAt, 0), COALESCE(a.coverUpdatedAt, 0)) AS artworkRevision
         FROM albums a
         INNER JOIN artists ar ON ar.id = a.artistId
         WHERE EXISTS (
@@ -357,7 +615,8 @@ interface MusicDao {
     @Query(
         """
         SELECT a.id, a.title, ar.name AS artistName, a.year, a.genre,
-            COALESCE(NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri
+            COALESCE(NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri,
+            MAX(COALESCE(a.localArtworkCheckedAt, 0), COALESCE(a.coverUpdatedAt, 0)) AS artworkRevision
         FROM albums a
         INNER JOIN artists ar ON ar.id = a.artistId
         WHERE EXISTS (
@@ -396,7 +655,8 @@ interface MusicDao {
         """
         SELECT t.id, t.title, t.artistName, t.albumName AS albumTitle, t.durationMs,
             a.year, a.genre,
-            COALESCE(NULLIF(t.albumArtUri, ''), NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri
+            COALESCE(NULLIF(t.albumArtUri, ''), NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri,
+            MAX(t.lastModified, COALESCE(a.localArtworkCheckedAt, 0), COALESCE(a.coverUpdatedAt, 0)) AS artworkRevision
         FROM library_tracks t
         LEFT JOIN albums a ON t.albumId = a.id
         WHERE t.isPresent = 1
@@ -419,7 +679,8 @@ interface MusicDao {
         """
         SELECT t.id, t.title, t.artistName, t.albumName AS albumTitle, t.durationMs,
             a.year, a.genre,
-            COALESCE(NULLIF(t.albumArtUri, ''), NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri
+            COALESCE(NULLIF(t.albumArtUri, ''), NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri,
+            MAX(t.lastModified, COALESCE(a.localArtworkCheckedAt, 0), COALESCE(a.coverUpdatedAt, 0)) AS artworkRevision
         FROM library_tracks t
         LEFT JOIN albums a ON t.albumId = a.id
         WHERE t.isPresent = 1
@@ -448,7 +709,8 @@ interface MusicDao {
         """
         SELECT t.id, t.title, t.artistName, t.albumName AS albumTitle, t.durationMs,
             a.year, a.genre,
-            COALESCE(NULLIF(t.albumArtUri, ''), NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri
+            COALESCE(NULLIF(t.albumArtUri, ''), NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri,
+            MAX(t.lastModified, COALESCE(a.localArtworkCheckedAt, 0), COALESCE(a.coverUpdatedAt, 0)) AS artworkRevision
         FROM library_tracks t
         LEFT JOIN albums a ON t.albumId = a.id
         WHERE t.isPresent = 1
@@ -477,7 +739,8 @@ interface MusicDao {
         """
         SELECT t.id, t.title, t.artistName, t.albumName AS albumTitle, t.durationMs,
             a.year, a.genre,
-            COALESCE(NULLIF(t.albumArtUri, ''), NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri
+            COALESCE(NULLIF(t.albumArtUri, ''), NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri,
+            MAX(t.lastModified, COALESCE(a.localArtworkCheckedAt, 0), COALESCE(a.coverUpdatedAt, 0)) AS artworkRevision
         FROM library_tracks t
         LEFT JOIN albums a ON t.albumId = a.id
         WHERE t.isPresent = 1
@@ -513,7 +776,8 @@ interface MusicDao {
         """
         SELECT t.id, t.title, t.artistName, t.albumName AS albumTitle, t.durationMs,
             a.year, a.genre,
-            COALESCE(NULLIF(t.albumArtUri, ''), NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri
+            COALESCE(NULLIF(t.albumArtUri, ''), NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri,
+            MAX(t.lastModified, COALESCE(a.localArtworkCheckedAt, 0), COALESCE(a.coverUpdatedAt, 0)) AS artworkRevision
         FROM library_tracks t
         LEFT JOIN albums a ON t.albumId = a.id
         WHERE t.isPresent = 1
@@ -549,7 +813,8 @@ interface MusicDao {
         """
         SELECT t.id, t.title, t.artistName, t.albumName AS albumTitle, t.durationMs,
             a.year, a.genre,
-            COALESCE(NULLIF(t.albumArtUri, ''), NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri
+            COALESCE(NULLIF(t.albumArtUri, ''), NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri,
+            MAX(t.lastModified, COALESCE(a.localArtworkCheckedAt, 0), COALESCE(a.coverUpdatedAt, 0)) AS artworkRevision
         FROM library_tracks t
         LEFT JOIN albums a ON t.albumId = a.id
         WHERE t.isPresent = 1
@@ -662,7 +927,8 @@ interface MusicDao {
     @Query(
         """
         SELECT a.id, a.title, ar.name AS artistName, a.year, COALESCE(a.genreSummary, a.genre) AS genre,
-            COALESCE(NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri
+            COALESCE(NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri,
+            MAX(COALESCE(a.localArtworkCheckedAt, 0), COALESCE(a.coverUpdatedAt, 0)) AS artworkRevision
         FROM album_genre_cross_ref ag
         INNER JOIN albums a ON a.id = ag.albumId
         INNER JOIN artists ar ON ar.id = a.artistId
@@ -681,7 +947,8 @@ interface MusicDao {
         """
         SELECT t.id, t.title, t.artistName, t.albumName AS albumTitle, t.durationMs,
             a.year, COALESCE(a.genreSummary, a.genre) AS genre,
-            COALESCE(NULLIF(t.albumArtUri, ''), NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri
+            COALESCE(NULLIF(t.albumArtUri, ''), NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri,
+            MAX(t.lastModified, COALESCE(a.localArtworkCheckedAt, 0), COALESCE(a.coverUpdatedAt, 0)) AS artworkRevision
         FROM track_genre_cross_ref tg
         INNER JOIN library_tracks t ON t.id = tg.trackId
         LEFT JOIN albums a ON t.albumId = a.id
@@ -697,20 +964,19 @@ interface MusicDao {
         """
         SELECT *
         FROM albums
-        WHERE (
-            metadataVersion < :currentVersion OR
+        WHERE metadataVersion < :currentVersion
+        OR (
             metadataState IN ('NOT_SYNCED', 'FAILED', 'PENDING')
-        )
-        AND metadataState NOT IN ('DONE', 'NO_MATCH')
-        AND (
-            metadataState != 'FAILED' OR
-            lastMetadataAttemptAt IS NULL OR
-            lastMetadataAttemptAt < :retryTimestamp
-        )
-        AND (
-            metadataState != 'PENDING' OR
-            lastMetadataAttemptAt IS NULL OR
-            lastMetadataAttemptAt < :pendingTimeoutTimestamp
+            AND (
+                metadataState != 'FAILED' OR
+                lastMetadataAttemptAt IS NULL OR
+                lastMetadataAttemptAt < :retryTimestamp
+            )
+            AND (
+                metadataState != 'PENDING' OR
+                lastMetadataAttemptAt IS NULL OR
+                lastMetadataAttemptAt < :pendingTimeoutTimestamp
+            )
         )
         ORDER BY
             CASE metadataState
@@ -740,22 +1006,23 @@ interface MusicDao {
             SELECT 1 FROM library_tracks t
             WHERE t.albumId = a.id AND t.isPresent = 1
         )
-        AND (a.albumArtUri IS NULL OR a.albumArtUri = '')
+        AND a.localArtworkState = 'MISSING'
         AND (a.coverUri IS NULL OR a.coverUri = '')
         AND (
-            a.coverLookupVersion < :currentVersion OR
-            a.coverLookupState IN ('NOT_SYNCED', 'FAILED', 'PENDING')
-        )
-        AND a.coverLookupState NOT IN ('DONE', 'NO_MATCH')
-        AND (
-            a.coverLookupState != 'FAILED' OR
-            a.coverLookupAttemptAt IS NULL OR
-            a.coverLookupAttemptAt < :retryTimestamp
-        )
-        AND (
-            a.coverLookupState != 'PENDING' OR
-            a.coverLookupAttemptAt IS NULL OR
-            a.coverLookupAttemptAt < :pendingTimeoutTimestamp
+            a.coverLookupVersion < :currentVersion
+            OR (
+                a.coverLookupState IN ('NOT_SYNCED', 'FAILED', 'PENDING')
+                AND (
+                    a.coverLookupState != 'FAILED' OR
+                    a.coverLookupAttemptAt IS NULL OR
+                    a.coverLookupAttemptAt < :retryTimestamp
+                )
+                AND (
+                    a.coverLookupState != 'PENDING' OR
+                    a.coverLookupAttemptAt IS NULL OR
+                    a.coverLookupAttemptAt < :pendingTimeoutTimestamp
+                )
+            )
         )
         ORDER BY
             CASE a.coverLookupState
@@ -785,7 +1052,7 @@ interface MusicDao {
             SELECT 1 FROM library_tracks t
             WHERE t.albumId = a.id AND t.isPresent = 1
         )
-        AND (a.albumArtUri IS NULL OR a.albumArtUri = '')
+        AND a.localArtworkState = 'MISSING'
         AND (a.coverUri IS NULL OR a.coverUri = '')
         ORDER BY
             CASE a.coverLookupState
@@ -804,6 +1071,28 @@ interface MusicDao {
 
     @Update
     suspend fun updateAlbum(album: AlbumEntity)
+
+    @Transaction
+    suspend fun updateAlbumPreservingLocalArtwork(album: AlbumEntity) {
+        val current = getAlbumById(album.id) ?: return
+        updateAlbum(
+            album.copy(
+                albumArtUri = current.albumArtUri,
+                localArtworkKey = current.localArtworkKey,
+                localArtworkFingerprint = current.localArtworkFingerprint,
+                localArtworkState = current.localArtworkState,
+                localArtworkCheckedAt = current.localArtworkCheckedAt,
+                coverSource = if (
+                    current.localArtworkState != "MISSING" &&
+                    !current.albumArtUri.isNullOrBlank()
+                ) {
+                    current.coverSource
+                } else {
+                    album.coverSource
+                },
+            )
+        )
+    }
 
     @Query("UPDATE albums SET metadataState = :state, lastMetadataAttemptAt = :timestamp WHERE id = :albumId")
     suspend fun updateAlbumSyncState(albumId: Long, state: String, timestamp: Long)
@@ -831,6 +1120,66 @@ interface MusicDao {
         trackId: Long,
         recordingMbid: String?,
         identityTrust: Int,
+    )
+
+    @Query(
+        """
+        UPDATE albums
+        SET musicBrainzReleaseGroupMbid = CASE
+                WHEN :releaseGroupMbid IS NOT NULL
+                    AND (musicBrainzReleaseGroupMbid IS NULL OR :identityTrust > identitySourceTrust)
+                THEN :releaseGroupMbid
+                ELSE musicBrainzReleaseGroupMbid
+            END,
+            identitySourceTrust = CASE
+                WHEN :releaseGroupMbid IS NOT NULL
+                    AND (musicBrainzReleaseGroupMbid IS NULL OR :identityTrust > identitySourceTrust)
+                THEN :identityTrust
+                ELSE identitySourceTrust
+            END,
+            year = CASE
+                WHEN :year IS NOT NULL AND (year IS NULL OR :yearTrust > yearSourceTrust)
+                THEN :year
+                ELSE year
+            END,
+            yearSourceTrust = CASE
+                WHEN :year IS NOT NULL AND (year IS NULL OR :yearTrust > yearSourceTrust)
+                THEN :yearTrust
+                ELSE yearSourceTrust
+            END
+        WHERE id = :albumId
+        """
+    )
+    suspend fun updateAlbumEmbeddedIdentityAndYear(
+        albumId: Long,
+        releaseGroupMbid: String?,
+        year: Int?,
+        identityTrust: Int,
+        yearTrust: Int,
+    )
+
+    @Query(
+        """
+        UPDATE artists
+        SET musicBrainzArtistMbid = :artistMbid
+        WHERE id = :artistId AND musicBrainzArtistMbid IS NULL
+        """
+    )
+    suspend fun updateArtistEmbeddedIdentity(
+        artistId: Long,
+        artistMbid: String,
+    )
+
+    @Query(
+        """
+        UPDATE album_releases
+        SET date = COALESCE(date, :date)
+        WHERE releaseMbid = :releaseMbid
+        """
+    )
+    suspend fun updateAlbumReleaseDateIfMissing(
+        releaseMbid: String,
+        date: String?,
     )
 
     @Query(
@@ -872,9 +1221,39 @@ interface MusicDao {
     @Query(
         """
         UPDATE albums
-        SET albumArtUri = COALESCE(:albumArtUri, albumArtUri),
+        SET albumArtUri = CASE
+                WHEN :localArtworkState = 'PRESENT' THEN :albumArtUri
+                WHEN :localArtworkState = 'MISSING' THEN NULL
+                WHEN localArtworkKey IS NOT :localArtworkKey
+                    OR localArtworkFingerprint != :localArtworkFingerprint
+                THEN NULL
+                ELSE albumArtUri
+            END,
+            localArtworkKey = :localArtworkKey,
+            localArtworkFingerprint = :localArtworkFingerprint,
+            localArtworkState = CASE
+                WHEN :localArtworkState != 'UNKNOWN' THEN :localArtworkState
+                WHEN localArtworkKey IS NOT :localArtworkKey
+                    OR localArtworkFingerprint != :localArtworkFingerprint
+                THEN 'UNKNOWN'
+                ELSE localArtworkState
+            END,
+            localArtworkCheckedAt = CASE
+                WHEN :localArtworkState != 'UNKNOWN' THEN :timestamp
+                WHEN localArtworkKey IS NOT :localArtworkKey
+                    OR localArtworkFingerprint != :localArtworkFingerprint
+                THEN NULL
+                ELSE localArtworkCheckedAt
+            END,
             coverSource = CASE
-                WHEN :albumArtUri IS NOT NULL THEN :coverSource
+                WHEN :localArtworkState = 'PRESENT' THEN :coverSource
+                WHEN :localArtworkState = 'MISSING'
+                    OR localArtworkKey IS NOT :localArtworkKey
+                    OR localArtworkFingerprint != :localArtworkFingerprint
+                THEN CASE
+                    WHEN coverUri IS NOT NULL AND coverUri != '' THEN 'REMOTE'
+                    ELSE 'NONE'
+                END
                 ELSE coverSource
             END,
             lastSeenTimestamp = :timestamp,
@@ -888,9 +1267,53 @@ interface MusicDao {
         albumId: Long,
         albumArtUri: String?,
         coverSource: String,
+        localArtworkKey: String?,
+        localArtworkFingerprint: String,
+        localArtworkState: String,
         timestamp: Long,
         titleSortKey: String,
         artistSortKey: String,
+    )
+
+    @Query(
+        """
+        UPDATE albums
+        SET albumArtUri = CASE
+                WHEN :state = 'PRESENT' THEN :artworkUri
+                WHEN :state = 'MISSING' THEN NULL
+                ELSE albumArtUri
+            END,
+            localArtworkState = :state,
+            localArtworkCheckedAt = :timestamp,
+            coverSource = CASE
+                WHEN :state = 'PRESENT' THEN :coverSource
+                WHEN :state = 'MISSING' THEN CASE
+                    WHEN coverUri IS NOT NULL AND coverUri != '' THEN 'REMOTE'
+                    ELSE 'NONE'
+                END
+                ELSE coverSource
+            END,
+            coverLookupState = CASE
+                WHEN :state = 'MISSING' AND (coverUri IS NULL OR coverUri = '') THEN 'NOT_SYNCED'
+                ELSE coverLookupState
+            END,
+            coverLookupAttemptAt = CASE
+                WHEN :state = 'MISSING' AND (coverUri IS NULL OR coverUri = '') THEN NULL
+                ELSE coverLookupAttemptAt
+            END,
+            coverLookupVersion = CASE
+                WHEN :state = 'MISSING' AND (coverUri IS NULL OR coverUri = '') THEN 0
+                ELSE coverLookupVersion
+            END
+        WHERE id = :albumId
+        """
+    )
+    suspend fun updateLocalArtworkVerification(
+        albumId: Long,
+        state: String,
+        artworkUri: String?,
+        coverSource: String,
+        timestamp: Long,
     )
 
     @Query("UPDATE albums SET deletedAt = :timestamp WHERE lastSeenTimestamp < :threshold AND deletedAt IS NULL")
@@ -908,6 +1331,22 @@ interface MusicDao {
     @Query("SELECT * FROM library_tracks WHERE id IN (:trackIds)")
     suspend fun getTracksByIds(trackIds: List<Long>): List<TrackEntity>
 
+    @Query(
+        """
+        SELECT t.*,
+            COALESCE(NULLIF(t.albumArtUri, ''), NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri,
+            MAX(
+                t.lastModified,
+                COALESCE(a.localArtworkCheckedAt, 0),
+                COALESCE(a.coverUpdatedAt, 0)
+            ) AS artworkRevision
+        FROM library_tracks t
+        LEFT JOIN albums a ON a.id = t.albumId
+        WHERE t.id IN (:trackIds)
+        """
+    )
+    suspend fun getTracksWithArtworkByIds(trackIds: List<Long>): List<TrackWithArtwork>
+
     @Query("SELECT * FROM library_tracks WHERE mediaStoreId IN (:mediaStoreIds)")
     suspend fun getTracksByMediaStoreIds(mediaStoreIds: List<Long>): List<TrackEntity>
 
@@ -917,11 +1356,39 @@ interface MusicDao {
     @Query("SELECT filePath FROM library_tracks WHERE isPresent = 1")
     suspend fun getPresentTrackPaths(): List<String>
 
-    @Query("SELECT * FROM library_tracks WHERE albumId = :albumId AND isPresent = 1 ORDER BY titleSortKey ASC, id ASC")
-    fun getTracksByAlbum(albumId: Long): Flow<List<TrackEntity>>
+    @Query(
+        """
+        SELECT t.*,
+            COALESCE(NULLIF(t.albumArtUri, ''), NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri,
+            MAX(
+                t.lastModified,
+                COALESCE(a.localArtworkCheckedAt, 0),
+                COALESCE(a.coverUpdatedAt, 0)
+            ) AS artworkRevision
+        FROM library_tracks t
+        LEFT JOIN albums a ON a.id = t.albumId
+        WHERE t.albumId = :albumId AND t.isPresent = 1
+        ORDER BY t.titleSortKey ASC, t.id ASC
+        """
+    )
+    fun getTracksWithArtworkByAlbum(albumId: Long): Flow<List<TrackWithArtwork>>
 
-    @Query("SELECT * FROM library_tracks WHERE artistId = :artistId AND isPresent = 1 ORDER BY titleSortKey ASC, id ASC")
-    fun getTracksByArtist(artistId: Long): Flow<List<TrackEntity>>
+    @Query(
+        """
+        SELECT t.*,
+            COALESCE(NULLIF(t.albumArtUri, ''), NULLIF(a.albumArtUri, ''), NULLIF(a.coverUri, '')) AS artworkUri,
+            MAX(
+                t.lastModified,
+                COALESCE(a.localArtworkCheckedAt, 0),
+                COALESCE(a.coverUpdatedAt, 0)
+            ) AS artworkRevision
+        FROM library_tracks t
+        LEFT JOIN albums a ON a.id = t.albumId
+        WHERE t.artistId = :artistId AND t.isPresent = 1
+        ORDER BY t.titleSortKey ASC, t.id ASC
+        """
+    )
+    fun getTracksWithArtworkByArtist(artistId: Long): Flow<List<TrackWithArtwork>>
 
     @Query("UPDATE library_tracks SET isPresent = 0, availability = 'MISSING', deletedAt = :timestamp WHERE filePath IN (:filePaths)")
     suspend fun markTracksMissingByPaths(filePaths: List<String>, timestamp: Long)

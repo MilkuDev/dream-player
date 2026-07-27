@@ -40,8 +40,9 @@ private val imageCache = object : LruCache<String, Bitmap>(imageCacheSizeKb) {
     }
 }
 private const val MaxFailedImageCacheEntries = 4096
-private val failedImageCache = object : LinkedHashMap<String, Boolean>(64, 0.75f, true) {
-    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?): Boolean {
+private const val FailedImageRetryMs = 30L * 60 * 1000
+private val failedImageCache = object : LinkedHashMap<String, Long>(64, 0.75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean {
         return size > MaxFailedImageCacheEntries
     }
 }
@@ -54,6 +55,7 @@ actual fun TrackImage(
     fallbackIcon: DrawableResource,
     maxDecodeSizePx: Int,
     loadUncached: Boolean,
+    artworkRevision: Long,
 ) {
     val executionPolicy = LocalSceneExecutionPolicy.current
     val effectiveLoadUncached =
@@ -62,8 +64,8 @@ actual fun TrackImage(
     val cacheDecodeSizePx = remember(maxDecodeSizePx) {
         maxDecodeSizePx.normalizedArtworkDecodeSize()
     }
-    val cacheKey = remember(uri, cacheDecodeSizePx) {
-        uri?.let { "${cacheDecodeSizePx}:$it" }
+    val cacheKey = remember(uri, cacheDecodeSizePx, artworkRevision) {
+        uri?.let { "${cacheDecodeSizePx}:$artworkRevision:$it" }
     }
     val cachedImageBitmap = remember(cacheKey) {
         cacheKey?.let(::getCachedBitmap)?.asImageBitmap()
@@ -170,13 +172,19 @@ private fun putCachedBitmap(cacheKey: String, bitmap: Bitmap) {
 
 private fun isFailedImage(cacheKey: String): Boolean {
     return synchronized(failedImageCache) {
-        cacheKey in failedImageCache
+        val failedAt = failedImageCache[cacheKey] ?: return@synchronized false
+        if (System.currentTimeMillis() - failedAt < FailedImageRetryMs) {
+            true
+        } else {
+            failedImageCache.remove(cacheKey)
+            false
+        }
     }
 }
 
 private fun putFailedImage(cacheKey: String) {
     synchronized(failedImageCache) {
-        failedImageCache[cacheKey] = true
+        failedImageCache[cacheKey] = System.currentTimeMillis()
     }
 }
 

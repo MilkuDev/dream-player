@@ -46,6 +46,7 @@ actual fun TrackImage(
     fallbackIcon: DrawableResource,
     maxDecodeSizePx: Int,
     loadUncached: Boolean,
+    artworkRevision: Long,
 ) {
     val executionPolicy = LocalSceneExecutionPolicy.current
     val effectiveLoadUncached =
@@ -53,8 +54,8 @@ actual fun TrackImage(
     val cacheDecodeSizePx = remember(maxDecodeSizePx) {
         maxDecodeSizePx.normalizedArtworkDecodeSize()
     }
-    val cacheKey = remember(uri, cacheDecodeSizePx) {
-        uri?.let { "${cacheDecodeSizePx}:$it" }
+    val cacheKey = remember(uri, cacheDecodeSizePx, artworkRevision) {
+        uri?.let { "${cacheDecodeSizePx}:$artworkRevision:$it" }
     }
     val cachedImageBitmap = remember(cacheKey) {
         cacheKey?.let { TrackImageCache.get(it) }
@@ -107,6 +108,7 @@ private object TrackImageCache {
     private val MaxBytes = ((Runtime.getRuntime().maxMemory() / 10L)
         .coerceIn(48L * 1024L * 1024L, 128L * 1024L * 1024L))
     private const val MAX_FAILED_ENTRIES = 4096
+    private const val FAILED_RETRY_MS = 30L * 60 * 1000
 
     private data class Entry(
         val image: ImageBitmap,
@@ -114,7 +116,7 @@ private object TrackImageCache {
     )
 
     private val entries = LinkedHashMap<String, Entry>(0, 0.75f, true)
-    private val failedEntries = LinkedHashSet<String>()
+    private val failedEntries = LinkedHashMap<String, Long>(0, 0.75f, true)
     private var currentBytes = 0L
 
     @Synchronized
@@ -139,13 +141,19 @@ private object TrackImageCache {
 
     @Synchronized
     fun isFailed(cacheKey: String): Boolean {
-        return cacheKey in failedEntries
+        val failedAt = failedEntries[cacheKey] ?: return false
+        if (System.currentTimeMillis() - failedAt < FAILED_RETRY_MS) {
+            return true
+        }
+        failedEntries.remove(cacheKey)
+        return false
     }
 
     @Synchronized
     fun putFailed(cacheKey: String) {
-        if (failedEntries.add(cacheKey) && failedEntries.size > MAX_FAILED_ENTRIES) {
-            val iterator = failedEntries.iterator()
+        failedEntries[cacheKey] = System.currentTimeMillis()
+        if (failedEntries.size > MAX_FAILED_ENTRIES) {
+            val iterator = failedEntries.entries.iterator()
             if (iterator.hasNext()) {
                 iterator.next()
                 iterator.remove()

@@ -1,6 +1,6 @@
 package org.milkdev.dreamplayer.extensions.data
 
-import org.milkdev.dreamplayer.diagnostics.AppDebugLog
+import org.milkdev.dreamplayer.diagnostics.MetadataDebugLog
 import org.milkdev.dreamplayer.extensions.network.LastFmErrorType
 import org.milkdev.dreamplayer.extensions.network.LastFmResult
 import org.milkdev.dreamplayer.extensions.network.LastFmService
@@ -19,18 +19,28 @@ class LastFmRepository(private val lastFmService: LastFmService) {
 
     suspend fun lookupAlbumMetadata(artist: String, album: String): LastFmAlbumLookup {
         if (artist.isBlank() || album.isBlank()) {
-            AppDebugLog.log("LastFmRepo: Пропуск, пустое имя артиста или альбома")
+            MetadataDebugLog.event(
+                "metadata_provider_result",
+                "provider" to "lastfm",
+                "result" to "no_match",
+                "reason" to "blank_query",
+            )
             return LastFmAlbumLookup.NoMatch
         }
 
         val apiKey = LastFmSecretStore.getApiKey()?.takeIf { it.isNotBlank() }
         if (apiKey == null) {
-            AppDebugLog.log("LastFmRepo: Ошибка - API-ключ Last.fm не найден!")
+            MetadataDebugLog.event(
+                "metadata_provider_result",
+                "provider" to "lastfm",
+                "result" to "skipped",
+                "reason" to "no_api_key",
+            )
             return LastFmAlbumLookup.NoApiKey
         }
 
         return lookupAlbumMetadata(artist = artist, album = album, apiKey = apiKey)
-    } // TODO: idk
+    }
 
     suspend fun lookupAlbumMetadata(
         artist: String,
@@ -39,26 +49,56 @@ class LastFmRepository(private val lastFmService: LastFmService) {
         mbid: String? = null,
         expectedYear: Int? = null,
     ): LastFmAlbumLookup {
-        AppDebugLog.log("LastFmRepo: Запрос Last.fm -> Исполнитель='$artist', Альбом='$album'")
+        MetadataDebugLog.event(
+            "metadata_provider_lookup_start",
+            "provider" to "lastfm",
+            "hasMbid" to !mbid.isNullOrBlank(),
+            "hasExpectedYear" to (expectedYear != null),
+        )
         return when (val response = resolveAlbumInfo(artist = artist, album = album, apiKey = apiKey, mbid = mbid, expectedYear = expectedYear)) {
             is LastFmResult.Success -> {
                 val albumData = response.value.album
                 if (albumData == null) {
-                    AppDebugLog.log("LastFmRepo: Ответа нет, данные альбома пусты (NoMatch)")
+                    MetadataDebugLog.event(
+                        "metadata_provider_result",
+                        "provider" to "lastfm",
+                        "result" to "no_match",
+                        "reason" to "empty_album",
+                    )
                     return LastFmAlbumLookup.NoMatch
                 }
 
                 val metadata = albumData.toMetadata()
                 if (metadata.hasAnyValue()) {
-                    AppDebugLog.log("LastFmRepo: Успех! Найдены метаданные: Год=${metadata.year}, Жанр='${metadata.genre}'")
+                    MetadataDebugLog.event(
+                        "metadata_provider_result",
+                        "provider" to "lastfm",
+                        "result" to "found",
+                        "yearPresent" to (metadata.year != null),
+                        "genreCount" to metadata.genres.size,
+                        "coverPresent" to !metadata.coverUrl.isNullOrBlank(),
+                        "sourceMbidPresent" to !metadata.sourceMbid.isNullOrBlank(),
+                    )
                     LastFmAlbumLookup.Found(metadata)
                 } else {
-                    AppDebugLog.log("LastFmRepo: Ответ получен, но полезных данных (год/жанр/обложка) в нем нет")
+                    MetadataDebugLog.event(
+                        "metadata_provider_result",
+                        "provider" to "lastfm",
+                        "result" to "no_match",
+                        "reason" to "no_useful_fields",
+                    )
                     LastFmAlbumLookup.NoMatch
                 }
             }
             is LastFmResult.Failure -> {
-                AppDebugLog.log("LastFmRepo: Ошибка сети Last.fm - ${response.type}: ${response.message}")
+                MetadataDebugLog.event(
+                    "metadata_provider_result",
+                    "provider" to "lastfm",
+                    "result" to "failure",
+                    "failureType" to response.type,
+                    "apiCode" to response.code,
+                    "httpStatus" to response.httpStatusCode,
+                )
                 when (response.type) {
                     LastFmErrorType.NotFound -> LastFmAlbumLookup.NoMatch
                     LastFmErrorType.InvalidApiKey,
@@ -137,8 +177,7 @@ class LastFmRepository(private val lastFmService: LastFmService) {
 
     @Suppress("RemoveExplicitTypeArguments")
     private fun LastFmAlbum.toMetadata(): LastFmAlbumMetadata {
-        val allTags = toptags?.tag?.map { it.name }
-        AppDebugLog.log("LastFmRepo: Полученные теги для '${this.name}' -> $allTags")
+        val receivedTagCount = toptags?.tag.orEmpty().size
         val validGenres = toptags?.tag
             .orEmpty()
             .asSequence()
@@ -153,6 +192,12 @@ class LastFmRepository(private val lastFmService: LastFmService) {
             .distinct()
             .take(MAX_LASTFM_GENRES)
             .toList()
+        MetadataDebugLog.event(
+            "metadata_provider_tags",
+            "provider" to "lastfm",
+            "received" to receivedTagCount,
+            "accepted" to validGenres.size,
+        )
 
         return LastFmAlbumMetadata(
             year = parseYear(releasedate),

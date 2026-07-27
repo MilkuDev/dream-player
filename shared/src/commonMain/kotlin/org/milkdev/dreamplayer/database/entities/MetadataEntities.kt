@@ -21,7 +21,10 @@ enum class RemoteResolveStatus {
 
 enum class MetadataEntityType {
     ALBUM,
-    TRACK
+    ALBUM_ARTIST,
+    ALBUM_RELEASE,
+    ARTIST,
+    TRACK,
 }
 
 enum class MetadataProvider {

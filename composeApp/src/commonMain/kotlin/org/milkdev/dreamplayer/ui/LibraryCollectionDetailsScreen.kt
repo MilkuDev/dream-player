@@ -241,6 +241,7 @@ private fun LibraryCollectionAlbumItem(
                 modifier = Modifier.fillMaxSize(),
                 fallbackIcon = Res.drawable.album,
                 maxDecodeSizePx = 160,
+                artworkRevision = album.artworkRevision,
             )
         }
 
@@ -303,6 +304,7 @@ private fun LibraryCollectionTrackItem(
                 modifier = Modifier.fillMaxSize(),
                 fallbackIcon = fallbackIcon,
                 maxDecodeSizePx = 160,
+                artworkRevision = track.contentVersion,
             )
         }
 

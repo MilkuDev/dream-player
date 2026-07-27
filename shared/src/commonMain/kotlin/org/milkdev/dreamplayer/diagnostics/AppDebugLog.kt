@@ -20,5 +20,6 @@ enum class TraceCategory {
     Queue,
     Controller,
     ViewModel,
+    Metadata,
     Diagnostics
 }

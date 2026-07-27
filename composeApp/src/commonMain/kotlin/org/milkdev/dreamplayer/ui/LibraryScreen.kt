@@ -305,6 +305,7 @@ private fun LibraryTrackList(
                             modifier = Modifier.fillMaxSize(),
                             maxDecodeSizePx = 192,
                             loadUncached = loadUncachedArtwork,
+                            artworkRevision = track.contentVersion,
                         )
                     }
                     Spacer(modifier = Modifier.width(16.dp))
@@ -354,6 +355,7 @@ private fun LibraryAlbumGrid(
                 title = album.title,
                 subtitle = "${album.artistName}${album.year?.let { " • $it" } ?: ""}",
                 artworkUri = album.artworkUri,
+                artworkRevision = album.artworkRevision,
                 onClick = { onIntent(LibraryIntent.OpenAlbum(album)) },
                 loadUncached = loadUncachedArtwork,
             )
