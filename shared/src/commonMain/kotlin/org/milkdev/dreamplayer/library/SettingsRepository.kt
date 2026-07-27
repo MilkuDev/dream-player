@@ -49,6 +49,7 @@ private val KEY_FORCE_NIGHT_MODE = booleanPreferencesKey("force_night_mode")
 private val KEY_LAST_QUEUE_TRACK_IDS = stringPreferencesKey("last_queue_track_ids")
 private val KEY_LAST_QUEUE_SHUFFLED_IDS = stringPreferencesKey("last_queue_shuffled_ids")
 private val KEY_LAST_QUEUE_INDEX = intPreferencesKey("last_queue_index")
+private val KEY_LAST_TRACK_ID = longPreferencesKey("last_track_id")
 private val KEY_LAST_TRACK_POSITION_MS = longPreferencesKey("last_track_position_ms")
 private val KEY_LAST_SHUFFLE_ENABLED = booleanPreferencesKey("last_shuffle_enabled")
 private val KEY_LAST_REPEAT_MODE = stringPreferencesKey("last_repeat_mode")
@@ -189,31 +190,36 @@ object SettingsRepository {
         val queueTrackIds: List<Long>,
         val queueShuffledIds: List<Long>?,
         val queueIndex: Int,
+        val currentTrackId: Long?,
         val trackPositionMs: Long,
         val shuffleEnabled: Boolean,
         val repeatMode: String,
     )
 
-    fun savePlaybackState(state: SavedPlaybackState) {
-        storeScope.launch {
-            settingsDataStore.edit { preferences ->
-                preferences[KEY_LAST_QUEUE_TRACK_IDS] = state.queueTrackIds.joinToString(",")
-                preferences[KEY_LAST_QUEUE_SHUFFLED_IDS] = state.queueShuffledIds
-                    ?.takeIf { it.isNotEmpty() }
-                    ?.joinToString(",")
-                    .orEmpty()
-                preferences[KEY_LAST_QUEUE_INDEX] = state.queueIndex
-                preferences[KEY_LAST_TRACK_POSITION_MS] = state.trackPositionMs
-                preferences[KEY_LAST_SHUFFLE_ENABLED] = state.shuffleEnabled
-                preferences[KEY_LAST_REPEAT_MODE] = state.repeatMode
+    suspend fun savePlaybackState(state: SavedPlaybackState) {
+        settingsDataStore.edit { preferences ->
+            preferences[KEY_LAST_QUEUE_TRACK_IDS] = state.queueTrackIds.joinToString(",")
+            preferences[KEY_LAST_QUEUE_SHUFFLED_IDS] = state.queueShuffledIds
+                ?.takeIf { it.isNotEmpty() }
+                ?.joinToString(",")
+                .orEmpty()
+            preferences[KEY_LAST_QUEUE_INDEX] = state.queueIndex
+            val currentTrackId = state.currentTrackId
+            if (currentTrackId == null) {
+                preferences.remove(KEY_LAST_TRACK_ID)
+            } else {
+                preferences[KEY_LAST_TRACK_ID] = currentTrackId
             }
+            preferences[KEY_LAST_TRACK_POSITION_MS] = state.trackPositionMs.coerceAtLeast(0L)
+            preferences[KEY_LAST_SHUFFLE_ENABLED] = state.shuffleEnabled
+            preferences[KEY_LAST_REPEAT_MODE] = state.repeatMode
         }
     }
 
-    fun saveTrackPositionOnly(positionMs: Long) {
-        storeScope.launch {
-            settingsDataStore.edit { preferences ->
-                preferences[KEY_LAST_TRACK_POSITION_MS] = positionMs
+    suspend fun saveTrackPositionOnly(trackId: Long, positionMs: Long) {
+        settingsDataStore.edit { preferences ->
+            if (preferences[KEY_LAST_TRACK_ID] == trackId) {
+                preferences[KEY_LAST_TRACK_POSITION_MS] = positionMs.coerceAtLeast(0L)
             }
         }
     }
@@ -235,27 +241,36 @@ object SettingsRepository {
                 ?.split(",")
                 ?.mapNotNull { it.toLongOrNull() }
 
+            val queueIndex = preferences[KEY_LAST_QUEUE_INDEX] ?: 0
+            val shuffleEnabled = preferences[KEY_LAST_SHUFFLE_ENABLED] ?: false
+            val activeIds = if (shuffleEnabled && !shuffledIds.isNullOrEmpty()) {
+                shuffledIds
+            } else {
+                trackIds
+            }
+
             SavedPlaybackState(
                 queueTrackIds = trackIds,
                 queueShuffledIds = shuffledIds?.takeIf { it.isNotEmpty() },
-                queueIndex = preferences[KEY_LAST_QUEUE_INDEX] ?: 0,
+                queueIndex = queueIndex,
+                currentTrackId = preferences[KEY_LAST_TRACK_ID]
+                    ?: activeIds.getOrNull(queueIndex),
                 trackPositionMs = preferences[KEY_LAST_TRACK_POSITION_MS] ?: 0L,
-                shuffleEnabled = preferences[KEY_LAST_SHUFFLE_ENABLED] ?: false,
+                shuffleEnabled = shuffleEnabled,
                 repeatMode = preferences[KEY_LAST_REPEAT_MODE] ?: "Off",
             )
         }.first()
     }
 
-    fun clearPlaybackState() {
-        storeScope.launch {
-            settingsDataStore.edit { preferences ->
-                preferences.remove(KEY_LAST_QUEUE_TRACK_IDS)
-                preferences.remove(KEY_LAST_QUEUE_SHUFFLED_IDS)
-                preferences.remove(KEY_LAST_QUEUE_INDEX)
-                preferences.remove(KEY_LAST_TRACK_POSITION_MS)
-                preferences.remove(KEY_LAST_SHUFFLE_ENABLED)
-                preferences.remove(KEY_LAST_REPEAT_MODE)
-            }
+    suspend fun clearPlaybackState() {
+        settingsDataStore.edit { preferences ->
+            preferences.remove(KEY_LAST_QUEUE_TRACK_IDS)
+            preferences.remove(KEY_LAST_QUEUE_SHUFFLED_IDS)
+            preferences.remove(KEY_LAST_QUEUE_INDEX)
+            preferences.remove(KEY_LAST_TRACK_ID)
+            preferences.remove(KEY_LAST_TRACK_POSITION_MS)
+            preferences.remove(KEY_LAST_SHUFFLE_ENABLED)
+            preferences.remove(KEY_LAST_REPEAT_MODE)
         }
     }
 

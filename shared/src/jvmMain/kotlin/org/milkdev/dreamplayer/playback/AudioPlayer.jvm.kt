@@ -33,6 +33,7 @@ actual object AudioPlayer {
     private var playbackSnapshot: PlaybackSnapshot? = null
     private var queue: List<ResolvedPlaybackItem> = emptyList()
     private var currentIndex: Int = -1
+    private var preparedPositionMs: Long = 0L
     private var repeatMode: PlaybackRepeatMode = PlaybackRepeatMode.Off
     private var nextSessionId: Int = 1
     private var currentSessionId: Int = 0
@@ -46,17 +47,43 @@ actual object AudioPlayer {
                 val isPlaying = s.isPlaying
                 val durationMs = s.totalDurationMs
                 val underlyingPositionMs = playbackSession?.getCurrentPosition()
-                val positionMs = underlyingPositionMs
-                    ?: if (s.currentTrackId != null && !isPlaying) durationMs else 0L
+                val positionMs = underlyingPositionMs ?: preparedPositionMs
 
                 PlaybackTimeSnapshot(
                     positionMs = positionMs,
                     durationMs = durationMs,
-                    bufferedPositionMs = durationMs,
+                    bufferedPositionMs = if (playbackSession != null) durationMs else 0L,
                     playbackSpeed = 1f,
                     isPlaying = isPlaying,
                 )
             }
+        }
+    }
+
+    actual fun prepare(snapshot: PlaybackSnapshot, startPositionMs: Long) {
+        PlaybackTrace.event(
+            TraceCategory.Playback,
+            "PREPARE",
+            "startPositionMs=$startPositionMs itemCount=${snapshot.items.size}"
+        )
+
+        synchronized(lock) {
+            if (snapshot.items.isEmpty()) {
+                stopLocked()
+                return
+            }
+
+            playbackSession?.close()
+            playbackSession = null
+            setSnapshotLocked(snapshot)
+            val currentItem = queue.getOrNull(currentIndex)
+            preparedPositionMs = currentItem.clampPosition(startPositionMs)
+            _state.value = AudioPlayerState(
+                currentTrackId = currentItem?.trackId,
+                isPlaying = false,
+                totalDurationMs = currentItem?.metadata?.durationMs ?: 0L,
+                queue = playbackSnapshot?.queue ?: EmptyPlaybackQueueSnapshot,
+            )
         }
     }
 
@@ -76,7 +103,9 @@ actual object AudioPlayer {
 
         synchronized(lock) {
             setSnapshotLocked(snapshot)
-            playCurrentTrackLocked(startPositionMs)
+            val currentItem = queue.getOrNull(currentIndex)
+            preparedPositionMs = currentItem.clampPosition(startPositionMs)
+            playCurrentTrackLocked(preparedPositionMs)
         }
     }
 
@@ -96,6 +125,13 @@ actual object AudioPlayer {
             val previousTrackId = _state.value.currentTrackId
             setSnapshotLocked(snapshot, preferredTrackId = previousTrackId)
             val currentItem = queue.getOrNull(currentIndex)
+            if (playbackSession == null) {
+                preparedPositionMs = if (currentItem?.trackId == previousTrackId) {
+                    currentItem.clampPosition(preparedPositionMs)
+                } else {
+                    0L
+                }
+            }
             _state.value = _state.value.copy(
                 currentTrackId = currentItem?.trackId,
                 totalDurationMs = currentItem?.metadata?.durationMs ?: 0L,
@@ -140,7 +176,7 @@ actual object AudioPlayer {
             }
 
             if (currentIndex in queue.indices) {
-                playCurrentTrackLocked()
+                playCurrentTrackLocked(preparedPositionMs)
             }
         }
     }
@@ -163,7 +199,15 @@ actual object AudioPlayer {
             "positionMs=$positionMs"
         )
         synchronized(lock) {
-            playbackSession?.seekTo(positionMs)
+            val session = playbackSession
+            if (session != null) {
+                session.seekTo(positionMs)
+            } else {
+                val currentItem = queue.getOrNull(currentIndex)
+                if (currentItem != null) {
+                    preparedPositionMs = currentItem.clampPosition(positionMs)
+                }
+            }
         }
         PlaybackTrace.event(
             TraceCategory.Playback,
@@ -180,10 +224,12 @@ actual object AudioPlayer {
 
     private fun playCurrentTrackLocked(startPositionMs: Long = 0L) {
         val item = queue.getOrNull(currentIndex) ?: return
+        val clampedStartPositionMs = item.clampPosition(startPositionMs)
+        preparedPositionMs = clampedStartPositionMs
         PlaybackTrace.event(
             TraceCategory.Playback,
             "SET_MEDIA_ITEMS",
-            "reason=play_track startIndex=$currentIndex startPosition=$startPositionMs itemCount=1"
+            "reason=play_track startIndex=$currentIndex startPosition=$clampedStartPositionMs itemCount=1"
         )
         if (item.ref.availability != TrackAvailability.AVAILABLE || item.ref.uri.isBlank()) return
 
@@ -203,8 +249,8 @@ actual object AudioPlayer {
         )
         playbackSession?.close()
         playbackSession = nextSession
-        if (startPositionMs > 0L) {
-            nextSession.seekTo(startPositionMs)
+        if (clampedStartPositionMs > 0L) {
+            nextSession.seekTo(clampedStartPositionMs)
         }
         val queueSnapshot = playbackSnapshot?.queue
             ?.copy(
@@ -252,6 +298,11 @@ actual object AudioPlayer {
                         currentIndex += 1
                         playCurrentTrackLocked()
                     } else {
+                        preparedPositionMs = queue.getOrNull(currentIndex)
+                            ?.metadata
+                            ?.durationMs
+                            ?.coerceAtLeast(0L)
+                            ?: 0L
                         playbackSession = null
                         _state.value = _state.value.copy(isPlaying = false)
                     }
@@ -264,6 +315,7 @@ actual object AudioPlayer {
         synchronized(lock) {
             if (playbackSession !== failedSession) return@synchronized
 
+            preparedPositionMs = failedSession.getCurrentPosition()
             playbackSession = null
             _state.value = _state.value.copy(isPlaying = false)
 
@@ -277,6 +329,7 @@ actual object AudioPlayer {
         playbackSnapshot = null
         queue = emptyList()
         currentIndex = -1
+        preparedPositionMs = 0L
         _state.value = AudioPlayerState()
     }
 
@@ -311,6 +364,15 @@ actual object AudioPlayer {
             "Media file does not exist: $this"
         }
         return mediaFile
+    }
+
+    private fun ResolvedPlaybackItem?.clampPosition(positionMs: Long): Long {
+        val durationMs = this?.metadata?.durationMs ?: 0L
+        return if (durationMs > 0L) {
+            positionMs.coerceIn(0L, durationMs)
+        } else {
+            positionMs.coerceAtLeast(0L)
+        }
     }
 
     private fun String.hasWindowsDriveScheme(scheme: String): Boolean {

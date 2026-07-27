@@ -30,6 +30,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.TopAppBarScrollBehavior
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,6 +46,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import org.jetbrains.compose.resources.painterResource
 import org.milkdev.dreamplayer.app.AppTheme
+import org.milkdev.dreamplayer.app.LocalSceneExecutionPolicy
 import org.milkdev.dreamplayer.database.DailyPlaylistGenerationMode
 import org.milkdev.dreamplayer.diagnostics.LogStorage
 import org.milkdev.dreamplayer.extensions.ai.AiPlaylistModels
@@ -77,7 +79,13 @@ fun SettingsScreen(
     onMusicBrainzCoverSync: () -> Unit,
     contentPadding: PaddingValues = PaddingValues(0.dp),
 ) {
+    val executionPolicy = LocalSceneExecutionPolicy.current
     var showAboutDialog by remember { mutableStateOf(false) }
+    LaunchedEffect(executionPolicy.allowsFocusAndPopups) {
+        if (!executionPolicy.allowsFocusAndPopups) {
+            showAboutDialog = false
+        }
+    }
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
 
     Scaffold(
@@ -162,7 +170,7 @@ fun SettingsScreen(
         }
     }
 
-    if (showAboutDialog) {
+    if (showAboutDialog && executionPolicy.allowsFocusAndPopups) {
         AboutDialog(onDismiss = { showAboutDialog = false })
     }
 }
@@ -564,7 +572,13 @@ private fun AiModelDropdown(
     selectedModelId: String,
     onModelChange: (String) -> Unit,
 ) {
+    val executionPolicy = LocalSceneExecutionPolicy.current
     var expanded by remember(providerId) { mutableStateOf(false) }
+    LaunchedEffect(executionPolicy.allowsFocusAndPopups) {
+        if (!executionPolicy.allowsFocusAndPopups) {
+            expanded = false
+        }
+    }
     val models = AiPlaylistModels.forProvider(providerId)
     val selectedModel = AiPlaylistModels.byApiModel(providerId, selectedModelId)
 
@@ -582,7 +596,7 @@ private fun AiModelDropdown(
             Text("Выбрать")
         }
         DropdownMenu(
-            expanded = expanded,
+            expanded = expanded && executionPolicy.allowsFocusAndPopups,
             onDismissRequest = { expanded = false },
         ) {
             models.forEach { model ->

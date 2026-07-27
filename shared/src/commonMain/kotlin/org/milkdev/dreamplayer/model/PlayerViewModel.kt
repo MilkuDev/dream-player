@@ -45,6 +45,7 @@ import org.milkdev.dreamplayer.features.PlatformFeatureProvider
 import org.milkdev.dreamplayer.library.AlbumListItem
 import org.milkdev.dreamplayer.library.ArtistListItem
 import org.milkdev.dreamplayer.library.GenreListItem
+import org.milkdev.dreamplayer.library.LibraryCollectionType
 import org.milkdev.dreamplayer.library.LibraryTrack
 import org.milkdev.dreamplayer.library.DailyPlaylistAiDebugInfo
 import org.milkdev.dreamplayer.library.DailyPlaylistGenerationResult
@@ -55,29 +56,41 @@ import org.milkdev.dreamplayer.library.SettingsRepository
 import org.milkdev.dreamplayer.library.ShuffleAnchor
 import org.milkdev.dreamplayer.library.UserPlaylist
 import org.milkdev.dreamplayer.library.dailyPlaylistRepository
+import org.milkdev.dreamplayer.navigation.AppNavigationSnapshot
+import org.milkdev.dreamplayer.navigation.AppNavigator
+import org.milkdev.dreamplayer.navigation.AppRoute
+import org.milkdev.dreamplayer.navigation.MainTab
+import org.milkdev.dreamplayer.navigation.NavigationCause
+import org.milkdev.dreamplayer.navigation.NavigationIntent
+import org.milkdev.dreamplayer.navigation.NavigationPlan
+import org.milkdev.dreamplayer.navigation.NavigationTransaction
 import org.milkdev.dreamplayer.playback.AudioPlayer
 import org.milkdev.dreamplayer.playback.DailyPlaylistUiState
 import org.milkdev.dreamplayer.playback.PlaybackQueueController
 import org.milkdev.dreamplayer.playback.PlaybackQueueSnapshot
+import org.milkdev.dreamplayer.playback.PlaybackPersistenceCoordinator
+import org.milkdev.dreamplayer.playback.PlaybackProgressWorker
 import org.milkdev.dreamplayer.playback.PlaybackRepeatMode
 import org.milkdev.dreamplayer.playback.PlaybackResolver
 import org.milkdev.dreamplayer.playback.PlaybackSnapshot
-import org.milkdev.dreamplayer.playback.SavePointWorker
-import org.milkdev.dreamplayer.playback.PlayerPresentation
 import org.milkdev.dreamplayer.playback.LibraryUiState
 import org.milkdev.dreamplayer.playback.PlaybackUiState
-import org.milkdev.dreamplayer.playback.PlayerUiState
 import org.milkdev.dreamplayer.playback.ResolvedPlaybackItem
-import org.milkdev.dreamplayer.playback.Screen
 import org.milkdev.dreamplayer.playback.SettingsUiState
 import org.milkdev.dreamplayer.playback.TrackAvailability
 import org.milkdev.dreamplayer.playback.matchesQueue
 import org.milkdev.dreamplayer.playback.movedCopy
+import org.milkdev.dreamplayer.playback.planPlaybackRestore
 import org.milkdev.dreamplayer.playback.shuffledWithCurrentFirst
 import kotlin.random.Random
 import kotlin.time.Clock
 
 private const val PageSize = 60
+
+private data class PendingPresentationEviction(
+    val token: PresentationEvictionToken,
+    val route: AppRoute,
+)
 
 class PlayerViewModel {
     private val storeScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -88,16 +101,31 @@ class PlayerViewModel {
     private val _libraryState = MutableStateFlow(LibraryUiState())
     val libraryState: StateFlow<LibraryUiState> = _libraryState.asStateFlow()
 
+    private val _detailPresentationState = MutableStateFlow(DetailPresentationState())
+    val detailPresentationState: StateFlow<DetailPresentationState> =
+        _detailPresentationState.asStateFlow()
+
     private val _settingsState = MutableStateFlow(SettingsUiState())
     val settingsState: StateFlow<SettingsUiState> = _settingsState.asStateFlow()
+
+    private val _navigationSnapshot = MutableStateFlow(AppNavigationSnapshot())
+    val navigationSnapshot: StateFlow<AppNavigationSnapshot> =
+        _navigationSnapshot.asStateFlow()
+
     private val aiDailyPlaylistFeature = PlatformFeatureProvider.aiDailyPlaylistApi
     private val aiNetworkDiagnosticsService = AiNetworkDiagnosticsService()
     private val aiPromptService = AiPromptService()
     private val lastFmNetworkDiagnosticsService = LastFmNetworkDiagnosticsService()
     private val playbackQueueController = PlaybackQueueController()
+    private val detailEntryStore = DetailEntryStore()
     private var dailyPlaylistGenerationJob: Job? = null
-    private var playlistTracksJob: Job? = null
-    private var navigationState = AppNavigationState()
+    private var detailContentJob: Job? = null
+    private var searchPageLoadJob: Job? = null
+    private var searchRequestGeneration: Long = 0L
+    private val pendingPresentationEvictions =
+        mutableMapOf<Long, PendingPresentationEviction>()
+    private var nextPresentationOwnerEpoch = 1L
+    private var activePresentationOwnerEpoch: Long? = null
     private var checkedDailyPlaylistEpochDay: Long? = null
     private var trackPageCursor: LibraryPageCursor? = null
     private var albumPageCursor: LibraryPageCursor? = null
@@ -106,11 +134,17 @@ class PlayerViewModel {
     private var searchPageCursor: LibraryPageCursor? = null
     private var playlistPickerPageCursor: LibraryPageCursor? = null
     private var restoreAttempted = false
-    private var pendingResumePositionMs: Long = 0L
-    private val savePointWorker = SavePointWorker(
+    private val currentNavigationSnapshot: AppNavigationSnapshot
+        get() = _navigationSnapshot.value
+    private val currentNavigationState
+        get() = currentNavigationSnapshot.state
+
+    private val playbackPersistence = PlaybackPersistenceCoordinator(storeScope)
+    private val playbackProgressWorker = PlaybackProgressWorker(
         scope = storeScope,
         audioPlayerState = AudioPlayer.state,
         playbackTimeSource = AudioPlayer.playbackTimeSource,
+        onCheckpoint = playbackPersistence::savePosition,
     )
 
     init {
@@ -139,26 +173,37 @@ class PlayerViewModel {
                         } else {
                             DailyPlaylistUiState.Available(tracks)
                         },
-                        selectedPlaylistTracks = if (currentState.selectedPlaylist?.id == SystemPlaylists.DailyPlaylist.id) {
-                            tracks
-                        } else {
-                            currentState.selectedPlaylistTracks
-                        },
                     )
+                }
+                _detailPresentationState.update { currentState ->
+                    currentState.mapEntries { entry ->
+                        if (
+                            entry is PlaylistDetailUiState &&
+                            entry.playlist.id == SystemPlaylists.DailyPlaylist.id
+                        ) {
+                            entry.copy(tracks = tracks, isLoading = false)
+                        } else {
+                            entry
+                        }
+                    }
                 }
             }
         }
 
         storeScope.launch {
             PlaylistRepository.visiblePlaylists.collect { playlists ->
-                _libraryState.update { currentState ->
-                    val selectedPlaylist = currentState.selectedPlaylist?.let { selected ->
-                        playlists.firstOrNull { it.id == selected.id } ?: selected
+                _libraryState.update { currentState -> currentState.copy(playlists = playlists) }
+                _detailPresentationState.update { currentState ->
+                    currentState.mapEntries { entry ->
+                        if (entry is PlaylistDetailUiState) {
+                            entry.copy(
+                                playlist = playlists.firstOrNull { it.id == entry.playlist.id }
+                                    ?: entry.playlist,
+                            )
+                        } else {
+                            entry
+                        }
                     }
-                    currentState.copy(
-                        playlists = playlists,
-                        selectedPlaylist = selectedPlaylist,
-                    )
                 }
             }
         }
@@ -176,12 +221,12 @@ class PlayerViewModel {
                 val previousTrackId = _playbackState.value.currentTrack?.id
                 val newTrackId = currentQueueSnapshot.currentTrackId
                 if (previousTrackId != null && newTrackId != null && previousTrackId != newTrackId) {
-                    savePlaybackState()
+                    savePlaybackState(positionMs = 0L)
                 }
 
                 val queueTracks = when {
                     currentQueueSnapshot.trackIds.isEmpty() -> emptyList()
-                    _playbackState.value.isQueueSheetVisible -> {
+                    currentNavigationState.currentDestination == AppRoute.Queue -> {
                         withContext(Dispatchers.Default) {
                             _playbackState.value.findTracksForIds(currentQueueSnapshot.trackIds)
                         }
@@ -211,7 +256,7 @@ class PlayerViewModel {
                 }
 
                 if (currentTrack == null) {
-                    navigationState = navigationState.withoutPlaybackDestinations()
+                    commitNavigationIntent(NavigationIntent.RemovePlaybackOverlays)
                 }
             }
         }
@@ -320,7 +365,7 @@ class PlayerViewModel {
                 }
             }
         }
-        savePointWorker.start()
+        playbackProgressWorker.start()
         storeScope.launch {
             @OptIn(ExperimentalCoroutinesApi::class)
             AudioPlayer.state
@@ -587,97 +632,141 @@ class PlayerViewModel {
         }
     }
 
-    fun navigateTo(screen: Screen) {
-        setNavigationState(
-            navigationState.navigateTo(
-                destination = screen.toAppDestination(),
-                hasCurrentTrack = _playbackState.value.currentTrack != null,
-            )
-        )
-        if (screen == Screen.Queue) {
-            refreshQueueDisplay(playbackQueueController.snapshot())
-        }
+    fun selectMainTab(tab: MainTab) {
+        commitNavigationIntent(NavigationIntent.SelectMainTab(tab))
     }
 
-    fun navigateBack(): Boolean {
-        val nextNavigationState = navigationState.navigateBack() ?: return false
-        AppDebugLog.log(
-            "navigate_back from=${navigationState.currentDestination.name} " +
-                "to=${nextNavigationState.currentDestination.name}"
+    fun openSettings() {
+        commitNavigationIntent(NavigationIntent.Push(AppRoute.Settings))
+    }
+
+    fun openAiDebugSettings() {
+        commitNavigationIntent(NavigationIntent.Push(AppRoute.AiDebugSettings))
+    }
+
+    fun planBack(expectedTopEntryId: Long? = null): NavigationPlan? {
+        return AppNavigator.plan(
+            currentNavigationSnapshot,
+            NavigationIntent.Back(expectedTopEntryId),
         )
-        setNavigationState(nextNavigationState)
+    }
+
+    fun commitBack(plan: NavigationPlan): Boolean {
+        if (plan.cause != NavigationCause.Back) return false
+        return commitNavigationPlan(plan) != null
+    }
+
+    fun acquirePresentationOwner(): Long {
+        if (activePresentationOwnerEpoch != null) {
+            cleanupPendingEvictionsWithoutRenderer()
+        }
+        val epoch = nextPresentationOwnerEpoch++
+        activePresentationOwnerEpoch = epoch
+        return epoch
+    }
+
+    fun acknowledgePresentationEviction(
+        token: PresentationEvictionToken,
+        presentationOwnerEpoch: Long,
+    ): Boolean {
+        val pending = pendingPresentationEvictions[token.entryId] ?: return false
+        if (
+            !canAcknowledgePresentationEviction(
+                token = token,
+                pendingToken = pending.token,
+                currentEntryIds = currentNavigationState.backStack
+                    .mapTo(mutableSetOf()) { entry -> entry.entryId },
+                activePresentationOwnerEpoch = activePresentationOwnerEpoch,
+                acknowledgementOwnerEpoch = presentationOwnerEpoch,
+            )
+        ) {
+            return false
+        }
+
+        pendingPresentationEvictions.remove(token.entryId)
+        cleanupEvictedPresentation(pending)
         return true
+    }
+
+    fun releasePresentationOwner(presentationOwnerEpoch: Long) {
+        if (activePresentationOwnerEpoch != presentationOwnerEpoch) return
+        activePresentationOwnerEpoch = null
+        cleanupPendingEvictionsWithoutRenderer()
+    }
+
+    private fun cleanupPendingEvictionsWithoutRenderer() {
+        pendingPresentationEvictions.values
+            .filter { pending ->
+                currentNavigationState.backStack.none {
+                    it.entryId == pending.token.entryId
+                }
+            }
+            .toList()
+            .forEach { pending ->
+                pendingPresentationEvictions.remove(pending.token.entryId)
+                cleanupEvictedPresentation(pending)
+            }
+    }
+
+    private fun cleanupEvictedPresentation(
+        pending: PendingPresentationEviction,
+    ) {
+        detailEntryStore.remove(pending.token.entryId)
+        _detailPresentationState.update { state ->
+            state.removeEntry(pending.token.entryId)
+        }
+        if (
+            pending.route == AppRoute.Search &&
+            !currentNavigationState.contains(AppRoute.Search)
+        ) {
+            searchPageLoadJob?.cancel()
+            searchPageLoadJob = null
+            searchRequestGeneration += 1L
+            searchPageCursor = null
+            _libraryState.update { currentState ->
+                currentState.copy(
+                    librarySearch = currentState.librarySearch.copy(
+                        isActive = false,
+                        query = "",
+                    ),
+                    searchTrackListItems = emptyList(),
+                    hasMoreSearchTracks = false,
+                    isSearchPageLoading = false,
+                )
+            }
+        }
     }
 
     fun openPlayer() {
         AppDebugLog.log("open_player tracks=${_libraryState.value.librarySummary.trackCount}")
-        setNavigationState(
-            navigationState.navigateTo(
-                destination = AppDestination.Player,
-                hasCurrentTrack = _playbackState.value.currentTrack != null,
-            )
-        )
+        if (_playbackState.value.currentTrack == null) return
+        commitNavigationIntent(NavigationIntent.Push(AppRoute.Player))
     }
 
     fun openQueueSheet() {
         AppDebugLog.log("open_queue_sheet tracks=${_playbackState.value.playbackQueue.size}")
-        setNavigationState(
-            navigationState.navigateTo(
-                destination = AppDestination.Queue,
-                hasCurrentTrack = _playbackState.value.currentTrack != null ,
-            )
-        )
+        if (_playbackState.value.currentTrack == null) return
+        if (commitNavigationIntent(NavigationIntent.Push(AppRoute.Queue)) == null) return
         refreshQueueDisplay(playbackQueueController.snapshot())
     }
 
     fun openPlaylist(playlist: UserPlaylist) {
         AppDebugLog.log("open_playlist id=${playlist.id}")
-        setNavigationState(
-            navigationState.navigateTo(AppDestination.PlaylistDetails),
-        )
-        _libraryState.update {
-            it.copy(
-                selectedPlaylist = playlist,
-                selectedPlaylistTracks = emptyList(),
-                selectedLibraryCollection = null,
-            )
-        }
-        observePlaylistTracks(playlist.id)
+        openDetail(PlaylistDetailDescriptor(playlist))
     }
 
     fun openAlbumDetails(album: AlbumListItem) {
         AppDebugLog.log("open_album_details id=${album.id}")
 
-        val libraryCollection = LibraryCollectionDetailsUiModel(
-            type = LibraryCollectionType.ALBUM,
-            title = album.title,
-            subtitle = "${album.artistName}${album.year?.let { year -> " • $year" } ?: ""}",
-            artworkUri = album.artworkUri,
-            tracks = emptyList(),
+        openDetail(
+            LibraryCollectionDetailDescriptor(
+                type = LibraryCollectionType.ALBUM,
+                collectionId = album.id,
+                title = album.title,
+                subtitle = "${album.artistName}${album.year?.let { year -> " • $year" } ?: ""}",
+                artworkUri = album.artworkUri,
+            ),
         )
-
-        setNavigationState(
-            navigationState.navigateTo(AppDestination.LibraryCollectionDetails),
-        )
-
-        _libraryState.update {
-            it.copy(
-                selectedPlaylist = null,
-                selectedPlaylistTracks = emptyList(),
-                selectedLibraryCollection = libraryCollection,
-            )
-        }
-
-        playlistTracksJob?.cancel()
-        playlistTracksJob = storeScope.launch {
-            MusicLibrarySource.getTracksByAlbum(album.id).collect { tracks ->
-                _libraryState.update {
-                    it.copy(
-                        selectedLibraryCollection = it.selectedLibraryCollection?.copy(tracks = tracks),
-                    )
-                }
-            }
-        }
     }
 
     fun openDailyPlaylist() {
@@ -693,20 +782,7 @@ class PlayerViewModel {
             canRename = dailyPlaylist.permissions.canRename,
         )
 
-        setNavigationState(
-            navigationState.navigateTo(AppDestination.PlaylistDetails),
-        )
-
-        _libraryState.update {
-            it.copy(
-                selectedPlaylist = selectedPlaylist,
-                selectedPlaylistTracks = (_libraryState.value.dailyPlaylistState as? DailyPlaylistUiState.Available)
-                    ?.tracks
-                    .orEmpty(),
-                selectedLibraryCollection = null,
-            )
-        }
-        observePlaylistTracks(dailyPlaylist.id)
+        openDetail(PlaylistDetailDescriptor(selectedPlaylist))
     }
 
     fun createPlaylist(name: String) {
@@ -746,8 +822,8 @@ class PlayerViewModel {
     }
 
     fun openLibrarySearch() {
-        setNavigationState(navigationState.navigateTo(AppDestination.Search))
         _libraryState.update { it.copy(librarySearch = it.librarySearch.copy(isActive = true)) }
+        commitNavigationIntent(NavigationIntent.OpenSearch)
         loadNextSearchPage(reset = true)
     }
 
@@ -762,27 +838,37 @@ class PlayerViewModel {
 
     fun loadNextSearchPage(reset: Boolean = false) {
         val currentState = _libraryState.value
-        if (currentState.isSearchPageLoading) return
+        if (!reset && currentState.isSearchPageLoading) return
         if (!reset && !currentState.hasMoreSearchTracks) return
 
         if (reset) {
+            searchPageLoadJob?.cancel()
+            searchRequestGeneration += 1L
             searchPageCursor = null
         }
-        storeScope.launch {
-            _libraryState.update {
-                it.copy(
-                    isSearchPageLoading = true,
-                    searchTrackListItems = if (reset) emptyList() else it.searchTrackListItems,
-                    hasMoreSearchTracks = if (reset) true else it.hasMoreSearchTracks,
-                )
-            }
+        val requestGeneration = searchRequestGeneration
+        val requestedCursor = searchPageCursor
+        _libraryState.update {
+            it.copy(
+                isSearchPageLoading = true,
+                searchTrackListItems = if (reset) emptyList() else it.searchTrackListItems,
+                hasMoreSearchTracks = if (reset) true else it.hasMoreSearchTracks,
+            )
+        }
+        searchPageLoadJob = storeScope.launch {
             val searchState = _libraryState.value
             val page = MusicLibrarySource.searchTrackPage(
                 query = searchState.librarySearch.query,
                 mode = searchState.librarySearch.mode,
-                cursor = searchPageCursor,
+                cursor = requestedCursor,
                 limit = PageSize,
             )
+            if (
+                requestGeneration != searchRequestGeneration ||
+                !currentNavigationState.contains(AppRoute.Search)
+            ) {
+                return@launch
+            }
             searchPageCursor = page.nextCursor
             _libraryState.update {
                 it.copy(
@@ -797,80 +883,29 @@ class PlayerViewModel {
     fun openArtistDetails(artist: ArtistListItem) {
         AppDebugLog.log("open_artist_details id=${artist.id}")
 
-        val libraryCollection = LibraryCollectionDetailsUiModel(
-            type = LibraryCollectionType.ARTIST,
-            title = artist.name,
-            subtitle = "${artist.albumCount} альбомов • ${artist.trackCount} треков",
-            artworkUri = artist.artworkUri,
-            tracks = emptyList(),
+        openDetail(
+            LibraryCollectionDetailDescriptor(
+                type = LibraryCollectionType.ARTIST,
+                collectionId = artist.id,
+                title = artist.name,
+                subtitle = "${artist.albumCount} альбомов • ${artist.trackCount} треков",
+                artworkUri = artist.artworkUri,
+            ),
         )
-
-        setNavigationState(
-            navigationState.navigateTo(AppDestination.LibraryCollectionDetails),
-        )
-
-        _libraryState.update {
-            it.copy(
-                selectedPlaylist = null,
-                selectedPlaylistTracks = emptyList(),
-                selectedLibraryCollection = libraryCollection,
-            )
-        }
-
-        playlistTracksJob?.cancel()
-        playlistTracksJob = storeScope.launch {
-            MusicLibrarySource.getTracksByArtist(artist.id).collect { tracks ->
-                _libraryState.update {
-                    it.copy(
-                        selectedLibraryCollection = it.selectedLibraryCollection?.copy(tracks = tracks),
-                    )
-                }
-            }
-        }
     }
 
     fun openGenreDetails(genre: GenreListItem) {
         AppDebugLog.log("open_genre_details id=${genre.id}")
 
-        val libraryCollection = LibraryCollectionDetailsUiModel(
-            type = LibraryCollectionType.GENRE,
-            title = genre.name,
-            subtitle = "${genre.albumCount} альбомов • ${genre.trackCount} треков",
-            artworkUri = null,
-            albums = emptyList(),
-            tracks = emptyList(),
+        openDetail(
+            LibraryCollectionDetailDescriptor(
+                type = LibraryCollectionType.GENRE,
+                collectionId = genre.id,
+                title = genre.name,
+                subtitle = "${genre.albumCount} альбомов • ${genre.trackCount} треков",
+                artworkUri = null,
+            ),
         )
-
-        setNavigationState(
-            navigationState.navigateTo(AppDestination.LibraryCollectionDetails),
-        )
-
-        _libraryState.update {
-            it.copy(
-                selectedPlaylist = null,
-                selectedPlaylistTracks = emptyList(),
-                selectedLibraryCollection = libraryCollection,
-            )
-        }
-
-        playlistTracksJob?.cancel()
-        playlistTracksJob = storeScope.launch {
-            combine(
-                MusicLibrarySource.getAlbumsByGenre(genre.id),
-                MusicLibrarySource.getTracksByGenre(genre.id),
-            ) { albums, tracks -> albums to tracks }
-                .collect { (albums, tracks) ->
-                    _libraryState.update {
-                        it.copy(
-                            selectedLibraryCollection = it.selectedLibraryCollection?.copy(
-                                artworkUri = albums.firstOrNull()?.artworkUri,
-                                albums = albums,
-                                tracks = tracks,
-                            ),
-                        )
-                    }
-                }
-        }
     }
 
     suspend fun loadLibrary() {
@@ -934,12 +969,17 @@ class PlayerViewModel {
         }
     }
 
-    fun playFromSelectedPlaylist(track: LibraryTrack) {
-        playFromVisibleTracks(_libraryState.value.selectedPlaylistTracks, track)
+    fun playFromPlaylistEntry(entryId: Long, track: LibraryTrack) {
+        val detail = _detailPresentationState.value.entry(entryId) as? PlaylistDetailUiState
+            ?: return
+        playFromVisibleTracks(detail.tracks, track)
     }
 
-    fun playFromSelectedLibraryCollection(track: LibraryTrack) {
-        playFromVisibleTracks(_libraryState.value.selectedLibraryCollection?.tracks.orEmpty(), track)
+    fun playFromLibraryCollectionEntry(entryId: Long, track: LibraryTrack) {
+        val detail = _detailPresentationState.value.entry(entryId)
+            as? LibraryCollectionDetailUiState
+            ?: return
+        playFromVisibleTracks(detail.collection.tracks, track)
     }
 
     fun playQueueItem(index: Int) {
@@ -957,12 +997,9 @@ class PlayerViewModel {
         if (AudioPlayer.state.value.currentTrackId == null) {
             val snapshot = playbackQueueController.snapshot()
             if (snapshot.trackIds.isNotEmpty()) {
-                val restoredPosition = pendingResumePositionMs
-                pendingResumePositionMs = 0L
                 applyQueueSnapshot(
                     snapshot,
                     PlaybackSnapshotApplyMode.Play,
-                    startPositionMs = restoredPosition,
                 )
                 return
             }
@@ -983,7 +1020,16 @@ class PlayerViewModel {
     }
 
     fun seekTo(positionMs: Long) {
-        AudioPlayer.seekTo(positionMs)
+        val durationMs = AudioPlayer.state.value.totalDurationMs
+        val clampedPositionMs = if (durationMs > 0L) {
+            positionMs.coerceIn(0L, durationMs)
+        } else {
+            positionMs.coerceAtLeast(0L)
+        }
+        AudioPlayer.seekTo(clampedPositionMs)
+        playbackQueueController.currentTrackId?.let { trackId ->
+            playbackPersistence.savePosition(trackId, clampedPositionMs)
+        }
     }
 
     fun toggleShuffle() {
@@ -996,7 +1042,7 @@ class PlayerViewModel {
             } else {
                 null
             }
-            val shouldResolveDisplayQueue = _playbackState.value.isQueueSheetVisible
+            val shouldResolveDisplayQueue = currentNavigationState.currentDestination == AppRoute.Queue
 
             val orderedIds = withContext(Dispatchers.Default) {
                 originalIds ?: baseSnapshot.trackIds.shuffledWithCurrentFirst(currentTrackId)
@@ -1063,13 +1109,13 @@ class PlayerViewModel {
                 moveRequest = QueueMoveRequest(fromIndex, toIndex),
                 shuffleApplyMode = ShuffleApplyMode.QueueVisible,
             )
+            savePlaybackState()
         }
     }
 
     fun clearQueue() {
         playbackQueueController.clear()
         AudioPlayer.stop()
-        navigationState = navigationState.withoutPlaybackDestinations()
         _playbackState.update {
             it.copy(
                 currentTrack = null,
@@ -1079,13 +1125,10 @@ class PlayerViewModel {
                 currentQueueIndex = -1,
                 queueVersion = playbackQueueController.snapshot().queueVersion,
                 isShuffleEnabled = false,
-                currentScreen = navigationState.currentContentDestination.toScreen(),
-                canNavigateBack = navigationState.canNavigateBack,
-                playerPresentation = PlayerPresentation.Mini,
-                isQueueSheetVisible = false,
             )
         }
-        SettingsRepository.clearPlaybackState()
+        commitNavigationIntent(NavigationIntent.RemovePlaybackOverlays)
+        playbackPersistence.clear()
     }
 
     fun setBlurEnabled(enabled: Boolean) {
@@ -1434,18 +1477,141 @@ class PlayerViewModel {
         applyQueueSnapshot(snapshot, PlaybackSnapshotApplyMode.Play)
     }
 
-    private fun observePlaylistTracks(playlistId: Long) {
-        playlistTracksJob?.cancel()
-        playlistTracksJob = storeScope.launch {
-            PlaylistRepository.tracksForPlaylist(playlistId).collect { tracks ->
-                _libraryState.update { currentState ->
-                    if (currentState.selectedPlaylist?.id == playlistId) {
-                        currentState.copy(selectedPlaylistTracks = tracks)
+    private fun openDetail(descriptor: DetailEntryDescriptor) {
+        val plan = AppNavigator.plan(
+            currentNavigationSnapshot,
+            NavigationIntent.Push(descriptor.route),
+        ) ?: return
+
+        val entry = plan.targetState.currentContentEntry
+        detailEntryStore.register(entry, descriptor)
+        commitNavigationPlan(plan)
+    }
+
+    private fun prepareDetailUi(
+        entryId: Long,
+        descriptor: DetailEntryDescriptor,
+    ) {
+        _detailPresentationState.update { currentState ->
+            val initialState = when (descriptor) {
+                is PlaylistDetailDescriptor -> PlaylistDetailUiState(
+                    playlist = descriptor.playlist,
+                    tracks = if (
+                        descriptor.playlist.id == SystemPlaylists.DailyPlaylist.id
+                    ) {
+                        (_libraryState.value.dailyPlaylistState as? DailyPlaylistUiState.Available)
+                            ?.tracks
+                            .orEmpty()
                     } else {
-                        currentState
+                        emptyList()
+                    },
+                    isLoading = descriptor.playlist.id != SystemPlaylists.DailyPlaylist.id,
+                )
+
+                is LibraryCollectionDetailDescriptor -> LibraryCollectionDetailUiState(
+                    collection = LibraryCollectionDetailsUiModel(
+                        type = descriptor.type,
+                        title = descriptor.title,
+                        subtitle = descriptor.subtitle,
+                        artworkUri = descriptor.artworkUri,
+                        tracks = emptyList(),
+                    ),
+                )
+            }
+            currentState.activate(
+                entryId = entryId,
+                initialState = initialState,
+            )
+        }
+    }
+
+    private fun clearActiveDetailUi() {
+        _detailPresentationState.update(DetailPresentationState::deactivate)
+    }
+
+    private fun startDetailObservation(
+        entryId: Long,
+        descriptor: DetailEntryDescriptor,
+    ) {
+        detailContentJob = storeScope.launch {
+            when (descriptor) {
+                is PlaylistDetailDescriptor -> {
+                    PlaylistRepository.tracksForPlaylist(descriptor.playlist.id).collect { tracks ->
+                        updateActiveDetail(entryId) { currentEntry ->
+                            val playlist = currentEntry as? PlaylistDetailUiState
+                                ?: return@updateActiveDetail currentEntry
+                            playlist.copy(
+                                tracks = tracks,
+                                isLoading = false,
+                            )
+                        }
+                    }
+                }
+
+                is LibraryCollectionDetailDescriptor -> {
+                    when (descriptor.type) {
+                        LibraryCollectionType.ALBUM -> {
+                            MusicLibrarySource.getTracksByAlbum(descriptor.collectionId).collect { tracks ->
+                                updateActiveDetail(entryId) { currentEntry ->
+                                    val collection = currentEntry as? LibraryCollectionDetailUiState
+                                        ?: return@updateActiveDetail currentEntry
+                                    collection.copy(
+                                        collection = collection.collection.copy(tracks = tracks),
+                                        isLoading = false,
+                                    )
+                                }
+                            }
+                        }
+
+                        LibraryCollectionType.ARTIST -> {
+                            MusicLibrarySource.getTracksByArtist(descriptor.collectionId).collect { tracks ->
+                                updateActiveDetail(entryId) { currentEntry ->
+                                    val collection = currentEntry as? LibraryCollectionDetailUiState
+                                        ?: return@updateActiveDetail currentEntry
+                                    collection.copy(
+                                        collection = collection.collection.copy(tracks = tracks),
+                                        isLoading = false,
+                                    )
+                                }
+                            }
+                        }
+
+                        LibraryCollectionType.GENRE -> {
+                            combine(
+                                MusicLibrarySource.getAlbumsByGenre(descriptor.collectionId),
+                                MusicLibrarySource.getTracksByGenre(descriptor.collectionId),
+                            ) { albums, tracks -> albums to tracks }
+                                .collect { (albums, tracks) ->
+                                    updateActiveDetail(entryId) { currentEntry ->
+                                        val collection = currentEntry as? LibraryCollectionDetailUiState
+                                            ?: return@updateActiveDetail currentEntry
+                                        collection.copy(
+                                            collection = collection.collection.copy(
+                                                artworkUri = albums.firstOrNull()?.artworkUri,
+                                                albums = albums,
+                                                tracks = tracks,
+                                            ),
+                                            isLoading = false,
+                                        )
+                                    }
+                                }
+                        }
                     }
                 }
             }
+        }
+    }
+
+    private fun updateActiveDetail(
+        expectedEntryId: Long,
+        transform: (DetailEntryUiState) -> DetailEntryUiState,
+    ) {
+        _detailPresentationState.update { currentState ->
+            currentState.updateActiveEntry(
+                expectedEntryId = expectedEntryId,
+                currentContentEntryId = currentNavigationState.currentContentEntry.entryId,
+                transform = transform,
+            )
         }
     }
 
@@ -1503,7 +1669,10 @@ class PlayerViewModel {
             }
 
             when (mode) {
-                PlaybackSnapshotApplyMode.Play -> AudioPlayer.play(playbackSnapshot, startPositionMs)
+                PlaybackSnapshotApplyMode.Play -> {
+                    AudioPlayer.play(playbackSnapshot, startPositionMs)
+                    savePlaybackState(positionMs = startPositionMs)
+                }
                 PlaybackSnapshotApplyMode.Update -> AudioPlayer.updateQueue(playbackSnapshot)
                 PlaybackSnapshotApplyMode.Move -> {
                     val request = moveRequest ?: return@launch
@@ -1527,7 +1696,7 @@ class PlayerViewModel {
             if (!latestQueueSnapshot.matchesDisplayRequest(currentQueueSnapshot)) return@launch
 
             _playbackState.update { currentState ->
-                if (!currentState.isQueueSheetVisible) {
+                if (currentNavigationState.currentDestination != AppRoute.Queue) {
                     currentState
                 } else {
                     currentState.copy(
@@ -1541,19 +1710,22 @@ class PlayerViewModel {
         }
     }
 
-    private fun savePlaybackState() {
+    private fun savePlaybackState(positionMs: Long? = null) {
         val snapshot = playbackQueueController.snapshot()
         if (snapshot.trackIds.isEmpty()) return
+        val currentTrackId = snapshot.currentTrackId ?: return
         val currentPlaybackState = _playbackState.value
-        val positionMs = AudioPlayer.playbackTimeSource.snapshot().positionMs
-        SettingsRepository.savePlaybackState(
+        val resolvedPositionMs = positionMs
+            ?: AudioPlayer.playbackTimeSource.snapshot().positionMs
+        playbackPersistence.saveState(
             SettingsRepository.SavedPlaybackState(
                 queueTrackIds = playbackQueueController.originalTrackIdsSnapshot().toList(),
                 queueShuffledIds = if (playbackQueueController.isShuffleEnabled) {
                     snapshot.trackIds.toList()
                 } else null,
                 queueIndex = snapshot.currentIndex,
-                trackPositionMs = positionMs,
+                currentTrackId = currentTrackId,
+                trackPositionMs = resolvedPositionMs.coerceAtLeast(0L),
                 shuffleEnabled = playbackQueueController.isShuffleEnabled,
                 repeatMode = currentPlaybackState.repeatMode.name,
             )
@@ -1575,26 +1747,34 @@ class PlayerViewModel {
             .filter { it.ref.availability != TrackAvailability.MISSING }
             .map { it.trackId }
 
-        if (availableIds.isEmpty()) {
-            SettingsRepository.clearPlaybackState()
+        val restorePlan = planPlaybackRestore(
+            originalTrackIds = savedState.queueTrackIds,
+            shuffledTrackIds = savedState.queueShuffledIds,
+            shuffleEnabled = savedState.shuffleEnabled,
+            queueIndex = savedState.queueIndex,
+            savedCurrentTrackId = savedState.currentTrackId,
+            savedPositionMs = savedState.trackPositionMs,
+            availableTrackIds = availableIds.toSet(),
+        )
+        if (restorePlan == null) {
+            playbackPersistence.clear()
+            playbackPersistence.flush()
             return
         }
 
-        val filteredIds = availableIds.toLongArray()
-        val queueIndex = savedState.queueIndex.coerceIn(0, filteredIds.lastIndex)
-        val currentId = filteredIds.getOrNull(queueIndex) ?: return
-
-        val snapshot = playbackQueueController.setQueue(filteredIds, queueIndex)
+        val originalIds = restorePlan.originalTrackIds.toLongArray()
+        val originalCurrentIndex = restorePlan.originalTrackIds
+            .indexOf(restorePlan.currentTrackId)
+            .coerceAtLeast(0)
+        val snapshot = playbackQueueController.setQueue(originalIds, originalCurrentIndex)
 
         if (savedState.shuffleEnabled) {
-            val shuffledIds = savedState.queueShuffledIds
-                ?.filter { it in availableIds.toSet() }
-                ?.toLongArray()
-            if (shuffledIds != null && shuffledIds.size == filteredIds.size) {
+            val shuffledIds = restorePlan.shuffledTrackIds?.toLongArray()
+            if (shuffledIds != null) {
                 playbackQueueController.replaceActiveOrder(
                     expectedQueueVersion = snapshot.queueVersion,
                     orderedTrackIds = shuffledIds,
-                    currentTrackId = currentId,
+                    currentTrackId = restorePlan.currentTrackId,
                     shuffleEnabled = true,
                     updateOriginalOrder = false,
                 )
@@ -1607,7 +1787,10 @@ class PlayerViewModel {
         val displayQueue = withContext(Dispatchers.Default) {
             MusicLibrarySource.resolveDisplayQueue(finalSnapshot.trackIds)
         }
-        val resolvedTrack = resolvedItems.firstOrNull { it.trackId == currentId }
+        val preparedPlaybackSnapshot = PlaybackResolver.resolve(finalSnapshot)
+        val resolvedTrack = resolvedItems.firstOrNull {
+            it.trackId == restorePlan.currentTrackId
+        }
         val libraryTrack = resolvedTrack?.let { item ->
             LibraryTrack(
                 id = item.trackId,
@@ -1624,10 +1807,11 @@ class PlayerViewModel {
         } catch (_: IllegalArgumentException) {
             PlaybackRepeatMode.Off
         }
-        val maxDuration = displayQueue.firstOrNull { it.id == currentId }?.durationMs ?: 0L
-        val clampedPosition = savedState.trackPositionMs.coerceIn(0L, maxDuration)
-
-        pendingResumePositionMs = clampedPosition
+        val maxDuration = displayQueue
+            .firstOrNull { it.id == restorePlan.currentTrackId }
+            ?.durationMs
+            ?: 0L
+        val clampedPosition = restorePlan.trackPositionMs.coerceIn(0L, maxDuration)
 
         _playbackState.update {
             it.copy(
@@ -1641,6 +1825,9 @@ class PlayerViewModel {
                 isPlaying = false,
             )
         }
+        AudioPlayer.prepare(preparedPlaybackSnapshot, clampedPosition)
+        AudioPlayer.setRepeatMode(repeatMode)
+        savePlaybackState(positionMs = clampedPosition)
     }
 
     private suspend fun refreshAiPlaylistApiKeyConfigured(providerId: String) {
@@ -1711,37 +1898,112 @@ class PlayerViewModel {
         )
     }
 
-    private fun setNavigationState(
-        nextNavigationState: AppNavigationState,
-    ) {
-        val previousNavigationState = navigationState
-        if (
-            (previousNavigationState.contains(AppDestination.PlaylistDetails) &&
-             !nextNavigationState.contains(AppDestination.PlaylistDetails)) ||
-            (previousNavigationState.contains(AppDestination.LibraryCollectionDetails) &&
-             !nextNavigationState.contains(AppDestination.LibraryCollectionDetails))
+    private fun commitNavigationIntent(
+        intent: NavigationIntent,
+    ): NavigationTransaction? {
+        val plan = AppNavigator.plan(currentNavigationSnapshot, intent) ?: return null
+        return commitNavigationPlan(plan)
+    }
+
+    private fun commitNavigationPlan(
+        plan: NavigationPlan,
+    ): NavigationTransaction? {
+        val previousSnapshot = currentNavigationSnapshot
+        val commit = AppNavigator.commit(previousSnapshot, plan) ?: return null
+        val previousNavigationState = previousSnapshot.state
+        val nextNavigationState = commit.snapshot.state
+
+        val contentChanged = previousNavigationState.currentContentEntry.entryId !=
+            nextNavigationState.currentContentEntry.entryId
+        val nextDetailDescriptor = if (
+            contentChanged &&
+            (
+                nextNavigationState.currentContentEntry.route is AppRoute.Playlist ||
+                    nextNavigationState.currentContentEntry.route is AppRoute.LibraryCollection
+            )
         ) {
-            playlistTracksJob?.cancel()
-            playlistTracksJob = null
+            checkNotNull(detailEntryStore.descriptorFor(nextNavigationState.currentContentEntry)) {
+                "Detail navigation entry must have a descriptor before publication"
+            }
+        } else {
+            null
         }
 
-        navigationState = nextNavigationState
-        _playbackState.update {
-            val hasPlaybackDestination = it.currentTrack != null &&
-                (
-                    nextNavigationState.contains(AppDestination.Player) ||
-                        nextNavigationState.contains(AppDestination.Queue)
+        if (contentChanged) {
+            detailContentJob?.cancel()
+            detailContentJob = null
+            if (nextDetailDescriptor != null) {
+                prepareDetailUi(
+                    entryId = nextNavigationState.currentContentEntry.entryId,
+                    descriptor = nextDetailDescriptor,
                 )
-            it.copy(
-                currentScreen = nextNavigationState.currentContentDestination.toScreen(),
-                canNavigateBack = nextNavigationState.canNavigateBack,
-                playerPresentation = if (hasPlaybackDestination) {
-                    PlayerPresentation.Fullscreen
-                } else {
-                    PlayerPresentation.Mini
-                },
-                isQueueSheetVisible = it.currentTrack != null &&
-                    nextNavigationState.currentDestination == AppDestination.Queue,
+            } else {
+                clearActiveDetailUi()
+            }
+        }
+
+        val retainedEntryIds = nextNavigationState.backStack
+            .mapTo(mutableSetOf()) { entry -> entry.entryId }
+        previousNavigationState.backStack
+            .asSequence()
+            .filter { entry -> entry.entryId !in retainedEntryIds }
+            .filter { entry ->
+                entry.route != AppRoute.Home &&
+                    entry.route != AppRoute.Library &&
+                    entry.route != AppRoute.Player &&
+                    entry.route != AppRoute.Queue
+            }
+            .forEach { entry ->
+                pendingPresentationEvictions[entry.entryId] =
+                    PendingPresentationEviction(
+                        token = PresentationEvictionToken(
+                            entryId = entry.entryId,
+                            removedAtRevision = commit.snapshot.revision,
+                        ),
+                        route = entry.route,
+                    )
+            }
+
+        _navigationSnapshot.value = commit.snapshot
+
+        if (
+            previousNavigationState.contains(AppRoute.Search) &&
+            !nextNavigationState.contains(AppRoute.Search)
+        ) {
+            searchPageLoadJob?.cancel()
+            searchPageLoadJob = null
+            searchRequestGeneration += 1L
+            searchPageCursor = null
+            _libraryState.update { currentState ->
+                currentState.copy(
+                    librarySearch = currentState.librarySearch.copy(
+                        isActive = false,
+                    ),
+                    isSearchPageLoading = false,
+                )
+            }
+        }
+
+        if (contentChanged && nextDetailDescriptor != null) {
+            startDetailObservation(
+                entryId = nextNavigationState.currentContentEntry.entryId,
+                descriptor = nextDetailDescriptor,
+            )
+        }
+        logNavigationTransaction(commit.transaction)
+        return commit.transaction
+    }
+
+    private fun logNavigationTransaction(transaction: NavigationTransaction) {
+        AppDebugLog.log(
+            "navigation_commit id=${transaction.id} " +
+                "operation=${transaction.operation.logName} " +
+                "from=${transaction.fromEntry.route} to=${transaction.toEntry.route}",
+        )
+        if (transaction.cause == NavigationCause.Back) {
+            AppDebugLog.log(
+                "navigate_back from=${transaction.fromEntry.route} " +
+                    "to=${transaction.toEntry.route}",
             )
         }
     }
@@ -1766,203 +2028,9 @@ class PlayerViewModel {
     }
 }
 
-internal enum class AppDestination {
-    Home,
-    Library,
-    PlaylistDetails,
-    LibraryCollectionDetails,
-    Search,
-    Settings,
-    AiDebugSettings,
-    Player,
-    Queue,
-}
-
-internal data class AppNavigationState(
-    val backStack: List<AppDestination> = listOf(AppDestination.Home),
-) {
-    private val normalizedBackStack: List<AppDestination>
-        get() = backStack.ifEmpty { listOf(AppDestination.Home) }
-
-    val currentDestination: AppDestination
-        get() = normalizedBackStack.last()
-
-    val currentContentDestination: AppDestination
-        get() = normalizedBackStack.asReversed()
-            .firstOrNull { !it.isPlaybackDestination }
-            ?: AppDestination.Home
-
-    val canNavigateBack: Boolean
-        get() = normalizedBackStack.size > 1
-
-    fun contains(destination: AppDestination): Boolean {
-        return destination in normalizedBackStack
-    }
-
-    fun navigateBack(): AppNavigationState? {
-        if (!canNavigateBack) return null
-        return AppNavigationState(normalizedBackStack.dropLast(1))
-    }
-
-    fun navigateTo(
-        destination: AppDestination,
-        hasCurrentTrack: Boolean = true,
-    ): AppNavigationState {
-        val stack = normalizedBackStack
-        return when (destination) {
-            AppDestination.Home -> AppNavigationState(listOf(AppDestination.Home))
-            AppDestination.Library -> AppNavigationState(
-                listOf(AppDestination.Home, AppDestination.Library)
-            )
-            AppDestination.Settings -> AppNavigationState(
-                listOf(AppDestination.Home, AppDestination.Settings)
-            )
-            AppDestination.AiDebugSettings -> {
-                val baseStack = if (stack.lastOrNull() == AppDestination.Settings) {
-                    stack
-                } else {
-                    listOf(AppDestination.Home, AppDestination.Settings)
-                }
-                AppNavigationState(baseStack.pushUnique(AppDestination.AiDebugSettings))
-            }
-            AppDestination.Search -> AppNavigationState(
-                stack.pushUnique(AppDestination.Search)
-            )
-            AppDestination.PlaylistDetails,
-            AppDestination.LibraryCollectionDetails -> AppNavigationState(
-                stack
-                    .withoutPlaybackDestinations()
-                    .withoutDestination(AppDestination.PlaylistDetails)
-                    .withoutDestination(AppDestination.LibraryCollectionDetails)
-                    .pushUnique(destination)
-            )
-            AppDestination.Player -> {
-                if (!hasCurrentTrack) {
-                    this
-                } else {
-                    AppNavigationState(
-                        stack
-                            .withoutDestination(AppDestination.Queue)
-                            .pushUnique(AppDestination.Player)
-                    )
-                }
-            }
-            AppDestination.Queue -> {
-                if (!hasCurrentTrack) {
-                    this
-                } else {
-                    val playerStack = stack
-                        .withoutDestination(AppDestination.Queue)
-                        .pushUnique(AppDestination.Player)
-                    AppNavigationState(playerStack.pushUnique(AppDestination.Queue))
-                }
-            }
-        }
-    }
-
-    fun withoutPlaybackDestinations(): AppNavigationState {
-        return AppNavigationState(normalizedBackStack.withoutPlaybackDestinations())
-    }
-}
-
-private val AppDestination.isPlaybackDestination: Boolean
-    get() = this == AppDestination.Player || this == AppDestination.Queue
-
-private fun List<AppDestination>.pushUnique(destination: AppDestination): List<AppDestination> {
-    return if (lastOrNull() == destination) this else this + destination
-}
-
-private fun List<AppDestination>.withoutDestination(destination: AppDestination): List<AppDestination> {
-    return filterNot { it == destination }.ifEmpty { listOf(AppDestination.Home) }
-}
-
-private fun List<AppDestination>.withoutPlaybackDestinations(): List<AppDestination> {
-    return filterNot { it.isPlaybackDestination }.ifEmpty { listOf(AppDestination.Home) }
-}
-
-private fun Screen.toAppDestination(): AppDestination {
-    return when (this) {
-        Screen.Home -> AppDestination.Home
-        Screen.Library -> AppDestination.Library
-        Screen.PlaylistDetails -> AppDestination.PlaylistDetails
-        Screen.LibraryCollectionDetails -> AppDestination.LibraryCollectionDetails
-        Screen.Player -> AppDestination.Player
-        Screen.Queue -> AppDestination.Queue
-        Screen.Settings -> AppDestination.Settings
-        Screen.AiDebugSettings -> AppDestination.AiDebugSettings
-        Screen.Search -> AppDestination.Search
-    }
-}
-
-private fun AppDestination.toScreen(): Screen {
-    return when (this) {
-        AppDestination.Home -> Screen.Home
-        AppDestination.Library -> Screen.Library
-        AppDestination.PlaylistDetails -> Screen.PlaylistDetails
-        AppDestination.LibraryCollectionDetails -> Screen.LibraryCollectionDetails
-        AppDestination.Search -> Screen.Search
-        AppDestination.Settings -> Screen.Settings
-        AppDestination.AiDebugSettings -> Screen.AiDebugSettings
-        AppDestination.Player -> Screen.Player
-        AppDestination.Queue -> Screen.Queue
-    }
-}
-
-internal fun PlayerUiState.withNavigationState(
-    navigationState: AppNavigationState,
-): PlayerUiState {
-    val hasPlaybackDestination = currentTrack != null &&
-        (
-            navigationState.contains(AppDestination.Player) ||
-                navigationState.contains(AppDestination.Queue)
-        )
-
-    return copy(
-        currentScreen = navigationState.currentContentDestination.toScreen(),
-        canNavigateBack = navigationState.canNavigateBack,
-        playerPresentation = if (hasPlaybackDestination) {
-            PlayerPresentation.Fullscreen
-        } else {
-            PlayerPresentation.Mini
-        },
-        isQueueSheetVisible = currentTrack != null &&
-            navigationState.currentDestination == AppDestination.Queue,
-    )
-}
-
-internal fun PlayerUiState.withNavigationTarget(screen: Screen): PlayerUiState {
-    return when (screen) {
-        Screen.Player -> withPlayerOpened()
-        Screen.Queue -> withQueueSheetOpened()
-        else -> copy(currentScreen = screen)
-    }
-}
-
-internal fun PlayerUiState.withPlayerOpened(): PlayerUiState {
-    if (currentTrack == null) return this
-
-    return copy(playerPresentation = PlayerPresentation.Fullscreen)
-}
-
-internal fun PlayerUiState.withPlayerClosed(): PlayerUiState {
-    return copy(
-        playerPresentation = PlayerPresentation.Mini,
-        isQueueSheetVisible = false,
-    )
-}
-
-internal fun PlayerUiState.withQueueSheetOpened(): PlayerUiState {
-    if (currentTrack == null) return this
-
-    return copy(
-        playerPresentation = PlayerPresentation.Fullscreen,
-        isQueueSheetVisible = true,
-    )
-}
-
-internal fun PlayerUiState.withShuffleEnabled(
+internal fun PlaybackUiState.withShuffleEnabled(
     random: Random = Random.Default,
-): PlayerUiState? {
+): PlaybackUiState? {
     val currentTrackId = currentTrack?.id ?: return null
     val nextQueue = playbackQueue.shuffledWithTrackFirstOrNull(
         currentTrackId = currentTrackId,
@@ -1976,9 +2044,9 @@ internal fun PlayerUiState.withShuffleEnabled(
     )
 }
 
-internal fun PlayerUiState.withShuffleDisabled(
+internal fun PlaybackUiState.withShuffleDisabled(
     originalQueue: List<LibraryTrack>?,
-): PlayerUiState {
+): PlaybackUiState {
     val currentTrackId = currentTrack?.id
     val restoredQueue = if (currentTrackId == null) {
         null
@@ -1999,7 +2067,7 @@ internal fun PlayerUiState.withShuffleDisabled(
     }
 }
 
-internal fun PlayerUiState.withRepeatToggled(): PlayerUiState {
+internal fun PlaybackUiState.withRepeatToggled(): PlaybackUiState {
     return copy(repeatMode = repeatMode.next())
 }
 

@@ -42,6 +42,9 @@ kotlin {
         }
         jvmMain.dependencies {
         }
+        commonTest.dependencies {
+            implementation(kotlin("test"))
+        }
     }
 }
 

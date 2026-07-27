@@ -3,7 +3,10 @@ package org.milkdev.dreamplayer.ui
 import androidx.compose.runtime.Composable
 
 @Composable
-actual fun PlatformBackHandler(
+internal actual fun PlatformBackHandler(
     enabled: Boolean,
-    onBack: () -> Unit,
+    onBackStarted: () -> Unit,
+    onBackProgressed: (org.milkdev.dreamplayer.app.PlatformBackEvent) -> Unit,
+    onBackCancelled: () -> Unit,
+    onBackCommitted: (hadProgress: Boolean) -> Unit,
 ) = Unit

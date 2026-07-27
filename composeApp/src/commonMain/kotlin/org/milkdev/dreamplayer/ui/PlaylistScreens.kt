@@ -30,6 +30,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,11 +44,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import org.jetbrains.compose.resources.painterResource
 import org.milkdev.dreamplayer.app.AppTheme
+import org.milkdev.dreamplayer.app.LocalSceneExecutionPolicy
 import org.milkdev.dreamplayer.generated.resources.Res
 import org.milkdev.dreamplayer.generated.resources.arrow_back
 import org.milkdev.dreamplayer.generated.resources.music_note
 import org.milkdev.dreamplayer.generated.resources.playlist_add
 import org.milkdev.dreamplayer.library.LibraryTrack
+import org.milkdev.dreamplayer.model.PlaylistDetailUiState
 import org.milkdev.dreamplayer.playback.LibraryUiState
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -55,6 +58,7 @@ import org.milkdev.dreamplayer.playback.LibraryUiState
 fun PlaylistDetailsScreen(
     modifier: Modifier = Modifier,
     libraryState: LibraryUiState,
+    detailState: PlaylistDetailUiState,
     onBackClick: () -> Unit,
     onTrackClick: (LibraryTrack) -> Unit,
     onSaveTracks: (Long, List<Long>) -> Unit,
@@ -62,9 +66,15 @@ fun PlaylistDetailsScreen(
     contentPadding: PaddingValues = PaddingValues.Zero,
     currentTrackId: Long? = null,
 ) {
-    val playlist = libraryState.selectedPlaylist
-    val editablePlaylist = playlist?.takeIf { it.canEditTracks }
+    val executionPolicy = LocalSceneExecutionPolicy.current
+    val playlist = detailState.playlist
+    val editablePlaylist = playlist.takeIf { it.canEditTracks }
     var isTrackPickerVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(executionPolicy.allowsFocusAndPopups) {
+        if (!executionPolicy.allowsFocusAndPopups) {
+            isTrackPickerVisible = false
+        }
+    }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -73,7 +83,7 @@ fun PlaylistDetailsScreen(
             TopAppBar(
                 title = {
                     Text(
-                        text = playlist?.name ?: "Плейлист",
+                        text = playlist.name,
                         style = AppTheme.typography.snPro.headlineMedium,
                         fontWeight = FontWeight.ExtraBold,
                         maxLines = 1,
@@ -108,7 +118,7 @@ fun PlaylistDetailsScreen(
             }
         },
     ) { innerPadding ->
-        if (libraryState.selectedPlaylistTracks.isEmpty()) {
+        if (detailState.tracks.isEmpty()) {
             EmptyPlaylistMessage(
                 modifier = Modifier
                     .fillMaxSize()
@@ -129,7 +139,7 @@ fun PlaylistDetailsScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(
-                    items = libraryState.selectedPlaylistTracks,
+                    items = detailState.tracks,
                     key = { it.id },
                     contentType = { "playlist_track" },
                 ) { track ->
@@ -143,10 +153,14 @@ fun PlaylistDetailsScreen(
         }
     }
 
-    if (isTrackPickerVisible && editablePlaylist != null) {
+    if (
+        isTrackPickerVisible &&
+        editablePlaylist != null &&
+        executionPolicy.allowsFocusAndPopups
+    ) {
         PlaylistTrackPickerDialog(
             allTracks = libraryState.playlistPickerTrackItems.map { it.toLibraryTrack() },
-            currentPlaylistTracks = libraryState.selectedPlaylistTracks,
+            currentPlaylistTracks = detailState.tracks,
             hasMoreTracks = libraryState.hasMorePlaylistPickerTracks,
             isLoadingMore = libraryState.isPlaylistPickerPageLoading,
             onLoadMore = onLoadNextPickerTracks,

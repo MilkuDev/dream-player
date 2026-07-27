@@ -19,7 +19,7 @@ This document describes architectural contracts rather than implementation detai
 - DataStore хранит пользовательские настройки.
 - `PlaybackTimeSource` предоставляет актуальное время воспроизведения напрямую UI и SavePoint-воркеру, минуя ViewModel.
 - Playback-слой берет id треков из базы, превращает их в воспроизводимые URI и отдает платформенному плееру.
-- `AppNavigationState` — платформенно-независимая навигация: immutable back stack, stateless `navigateTo()` / `navigateBack()`.
+- `AppNavigationState` — платформенно-независимая навигация: immutable back stack из уникальных `NavigationEntry` и чистые операции переходов.
 
 Воспроизведение разделено на два независимых потока: **состояние** (очередь, repeat, shuffle — через ViewModel) и **время** (позиция, длительность — через PlaybackTimeSource напрямую потребителям).
 
@@ -46,7 +46,7 @@ flowchart TD
     VM --> Nav
     VM --> Source
     VM --> DataStore
-    Nav -->|currentScreen, canNavigateBack| UI
+    Nav -->|NavigationEntry, activeMainDestination| UI
     Source --> Repo
     Repo --> Scanner
     Repo --> DAO
@@ -75,7 +75,7 @@ The following rules are considered architectural contracts. Changing any of them
 - **AppNavigationState is the only source of navigation state.**
 - Navigation remains platform-independent.
 - Navigation state is immutable.
-- State transitions remain stateless.
+- Navigation transitions remain pure and return a new state.
 - Navigation never owns screen data.
 - UI decides how destinations are rendered.
 - Playback pipeline never depends on Compose.
@@ -84,75 +84,87 @@ The following rules are considered architectural contracts. Changing any of them
 
 ## Навигация
 
-Навигация в приложении построена на платформенно-независимой immutable-модели. Модель не зависит от Compose, Android, Desktop или SwiftUI и может использоваться любой UI-технологией.
+Навигация построена на платформенно-независимой immutable-модели в `shared`. Она не зависит от Compose, Android или Desktop. Compose напрямую собирает её `StateFlow` и сам решает, что рисовать как content, dock destination или overlay.
 
 ### Navigation Principles
 
-1. **Platform-independent** — вся навигационная модель написана на чистом Kotlin без платформенных зависимостей
-2. **Immutable navigation state** — состояние навигации (back stack) — неизменяемый объект. Каждый переход создаёт новое состояние, старое остаётся доступным
-3. **Stateless transitions** — `navigateTo()` и `navigateBack()` — чистые функции, возвращающие новое состояние без побочных эффектов
-4. **Single owner of live navigation state** — ровно один компонент в приложении владеет "живым" навигационным состоянием. Владелец может изменять его и синхронизировать с UI
-5. **UI-agnostic** — навигационная модель не знает, какая технология её отображает (Compose, SwiftUI и т.д.). Каждая платформа самостоятельно интерпретирует текущее состояние
-6. **Overlay support** — навигация различает контентные экраны и overlay-экраны. Overlay не заменяет контент под собой
-7. **Platform rendering is external** — отрисовка навигации (анимации переходов, back gesture, Predictive Back) — ответственность UI-слоя, а не навигационной модели
-8. **Navigation does not own data** — навигация отвечает только за вопрос "какой экран активен". Данные для экрана загружаются отдельно
+1. **Platform-independent** — core написан на чистом Kotlin без UI/platform imports.
+2. **Immutable state** — операции возвращают новый `AppNavigationState`, исходный объект не изменяется.
+3. **Single live owner** — `PlayerViewModel` владеет единственным `StateFlow<AppNavigationState>`.
+4. **Entry identity** — каждый динамический вход имеет уникальный `entryId`; одинаковый route может честно встречаться в истории несколько раз.
+5. **Structural rules only** — core проверяет форму стека, а доступность контекстных ссылок задаётся semantic callbacks экранов.
+6. **External rendering** — Compose владеет анимациями, saveable state, системным Back и будущей Predictive Back-интеграцией.
+7. **No screen data in routes** — route хранит только тип назначения и идентификаторы сущностей.
 
 ### Ключевые компоненты
 
-- `AppNavigationState` — immutable data class. Хранит `backStack: List<AppDestination>`. Предоставляет чистые функции `navigateTo()` и `navigateBack()`, возвращающие новый экземпляр состояния. Не имеет побочных эффектов, не запускает корутины, не знает о платформе.
-
-- `AppDestination` — модель всех возможных экранов. В текущей реализации — enum-класс.
-
-- `Screen` — публичная модель экранов, используемая UI. В текущей реализации представлена enum-классом, изоморфна `AppDestination`. Конвертируется через `Screen.toAppDestination()` / `AppDestination.toScreen()`.
+- `AppRoute` — sealed route model: `Home`, `Library`, `Search`, `Playlist(id)`, `LibraryCollection(type, id)`, `Settings`, `AiDebugSettings`, `Player`, `Queue`.
+- `NavigationEntry(entryId, route)` — элемент истории со стабильной identity.
+- `AppNavigationState` — immutable stack и pure operations: `selectMainPage`, `openSearch`, `closeSearch`, `push`, `pop`, `previewBack`, `removePlaybackOverlays`.
+- `MainDestination` — вычисляемое активное назначение dock: Home, Library или Search.
+- `DetailEntryStore` — принадлежащий ViewModel store лёгких header descriptors по `entryId`; tracks/albums в нём не хранятся.
 
 ### Как устроен back stack
 
-Управление навигацией полностью stateless: каждый переход создаёт новый `AppNavigationState`, старый остаётся неизменным.
+Home всегда является первым entry. Library — вторая основная страница, поэтому Back из Library возвращает Home. Повторный выбор Home/Library сбрасывает соответствующий detail suffix.
 
-```
-AppNavigationState(backStack = [Home])
-  .navigateTo(AppDestination.Library)          → [Home, Library]
-  .navigateTo(AppDestination.PlaylistDetails)   → [Home, Library, PlaylistDetails]
-  .navigateTo(AppDestination.Player)            → [Home, Library, PlaylistDetails, Player]
-  .navigateTo(AppDestination.Queue)             → [Home, Library, PlaylistDetails, Player, Queue]
+```text
+[Home]
+  -> selectMainPage(Library) -> [Home, Library]
+  -> push(Genre(5))          -> [Home, Library, Genre(5)]
+  -> push(Album(42))         -> [Home, Library, Genre(5), Album(42)]
+  -> push(Player)            -> [Home, Library, Genre(5), Album(42), Player]
+  -> push(Queue)             -> [Home, Library, Genre(5), Album(42), Player, Queue]
 ```
 
-`navigateBack()` проверяет `canNavigateBack` (`backStack.size > 1`) и возвращает новый `AppNavigationState` с `backStack.dropLast(1)`.
+Последовательный exact duplicate верхнего route игнорируется. Тот же route после другого entry получает новый ID. `pop()` на Home возвращает `null`; UI интерпретирует это как отсутствие внутреннего Back.
+
+Search является отдельным main destination, но визуально рендерит библиотечный поиск:
+
+```text
+Home -> Search       = [Home, Search]
+Library -> Search    = [Home, Library, Search]
+Search -> detail     = Search остаётся active main
+closeSearch()        = удалить Search и весь suffix, сохранить Home/Library anchor
+```
+
+Query и результаты живут, пока Search entry остаётся в стеке. После committed удаления Search они очищаются.
 
 ### Overlay Principle
 
-Контентные экраны и playback overlay — независимые слои. Навигация отвечает только за активную destination. UI сам решает, рисовать destination как:
-
-- полноценный экран (Home, Library, Settings и т.д.);
-- overlay поверх контента (Player, Queue).
-
-Back stack различает два понятия:
-- `currentDestination` — верхушка стека (может быть `Player` или `Queue`)
-- `currentContentDestination` — последний контентный экран под playback-дестинациями (нужен для рендеринга контентной области)
+`Player` и `Queue` образуют только suffix `Player` либо `Player -> Queue`. `currentDestination` может быть overlay, а `currentContentEntry` всегда указывает на контент под ним. Queue допускается только сразу после Player. Back закрывает Queue, затем Player, затем content history. Наличие текущего трека проверяет ViewModel, а не navigation core.
 
 ### Владение навигацией
 
 `PlayerViewModel` — единственный владелец живого `AppNavigationState`. Он отвечает за:
 
-- базовые навигационные команды (`navigateTo` / `navigateBack`) — тонкое делегирование `AppNavigationState`
-- orchestration-операции: методы высокого уровня (открыть альбом, открыть плейлист, открыть поиск) объединяют изменение навигации, подготовку данных экрана и управление жизненным циклом реактивных потоков
-- синхронизацию навигационного состояния с UI-состоянием приложения (через StateFlow, доступный Compose-слою)
+- semantic commands (`selectMainPage`, `openSettings`, `openPlaylist`, `openAlbumDetails`, `openPlayer`, `openQueueSheet` и т.д.);
+- единую публикацию committed navigation state;
+- регистрацию detail descriptor до публикации route;
+- запуск и отмену reactive detail subscription при смене `currentContentEntry`;
+- защиту async updates по active `entryId`;
+- cleanup descriptors и Search state после commit.
 
 ### Как UI узнаёт о навигации
 
-Навигационная модель не зависит от Compose и может использоваться любой UI-технологией (Compose, SwiftUI и др.). Каждая платформа самостоятельно отображает текущее навигационное состояние в собственную систему навигации.
+Compose собирает `StateFlow<AppNavigationState>` напрямую:
 
-В текущей реализации Compose-слой читает состояние через `StateFlow<PlaybackUiState>`:
-- `currentScreen` — target для `AnimatedContent`
-- `canNavigateBack` — enabled для `PlatformBackHandler`
-- `playerPresentation` — показывать ли overlay плеера
-- `isQueueSheetVisible` — показывать ли очередь поверх плеера
+- `currentContentEntry` — target для `AnimatedContent`;
+- `NavigationEntry.entryId` — dynamic saveable key;
+- Home/Library используют стабильные presentation IDs;
+- `activeMainDestination` управляет dock;
+- наличие `Player`/`Queue` routes управляет overlays;
+- `canNavigateBack` управляет `PlatformBackHandler`.
+
+`Screen`, `AppDestination` и navigation-поля в `PlaybackUiState` удалены: параллельной проекции больше нет.
 
 ### Обработка системной кнопки "Назад"
 
 `PlatformBackHandler` — Compose `expect`/`actual`:
-- Android: использует `BackHandler` из `androidx.activity.compose`. Сюда же интегрируется Android Predictive Back — строго в `composeApp/androidMain`, без изменений в `shared`.
-- Desktop: no-op (возврат `Unit`)
+- Android: использует `BackHandler` из `androidx.activity.compose`.
+- Desktop: no-op.
+
+Core уже предоставляет side-effect-free `previewBack()`. Визуальная Android Predictive Back-интеграция остаётся отдельным поздним этапом и не требует переписывать stack model.
 
 ### Что навигация НЕ делает
 
@@ -174,12 +186,10 @@ flowchart LR
     subgraph shared ["shared (pure Kotlin)"]
         direction LR
         NS["AppNavigationState
-            backStack: List<AppDestination>
-            navigateTo() / navigateBack()"]
-        AD["AppDestination
-            Home, Library, ..."]
-        SC["Screen
-            (изоморфен AppDestination)"]
+            List<NavigationEntry>
+            pure stack operations"]
+        AR["AppRoute
+            routes + entity IDs"]
     end
 
     subgraph composeApp ["composeApp (Compose)"]
@@ -196,25 +206,22 @@ flowchart LR
 
     subgraph viewmodel ["PlayerViewModel (shared)"]
         VM["PlayerViewModel
-            owns navigationState
-            navigateTo / navigateBack
-            orchestration operations
-            sync navigation state with UI"]
-        PS["UI State
-            currentScreen
-            canNavigateBack
-            playerPresentation
-            isQueueSheetVisible"]
+            owns StateFlow
+            semantic commands
+            detail activation"]
+        DS["DetailEntryStore
+            descriptor by entryId"]
     end
 
     VM -->|делегирует| NS
-    NS -->|currentScreen, canNavigateBack| PS
-    PS -->|collectAsState| APP
-    PS -->|canNavigateBack| PBH
+    NS --> AR
+    VM --> DS
+    NS -->|collectAsState| APP
+    NS -->|canNavigateBack| PBH
     PBH -->|android| PBH_A
     PBH -->|jvm| PBH_J
-    APP -->|onClick → navigateTo| VM
-    APP -->|onBack → navigateBack| VM
+    APP -->|semantic callbacks| VM
+    APP -->|Back| VM
 ```
 
 ## Где что лежит
@@ -227,7 +234,7 @@ flowchart LR
 - `shared/src/commonMain/kotlin/.../library/metadata/` — `MetadataSyncService`, `EmbeddedMetadataReader`.
 - `shared/src/commonMain/kotlin/.../playback/` — `AudioPlayer` expect/actual, `PlaybackQueueController`, `PlaybackResolver`.
 - `shared/src/commonMain/kotlin/.../model/` — `PlayerViewModel.kt`.
-- `shared/src/commonMain/kotlin/.../navigation/` — `NavigationScreen.kt`, `NavigationState.kt`: платформенно-независимая навигация (`AppNavigationState`, `AppDestination`, `Screen`, stateless `navigateTo()` / `navigateBack()`).
+- `shared/src/commonMain/kotlin/.../navigation/` — `AppRoute.kt`, `NavigationEntry.kt`, `AppNavigationState.kt`: платформенно-независимые routes, entry identity и pure stack operations.
 - `shared/src/commonMain/kotlin/.../extensions/` — AI, network, secrets, data.
 - `shared/src/commonMain/kotlin/.../features/` — фичи (ежедневный плейлист и т.д.).
 - `shared/src/androidMain/` / `jvmMain/` / `appleMain/` — platform `actual`-реализации (14 expect-деклараций).
@@ -780,13 +787,13 @@ Desktop использует Java Sound:
 
 `PlayerViewModel` — синглтон в модуле `shared/`, инициализированный в `composeApp/App.kt`. Живёт всё время жизни процесса приложения и никогда не пересоздаётся. Не использует Android ViewModel или Jetpack Lifecycle — только собственные мультиплатформенные механизмы. Центральный диспетчер приложения. Он:
 
-- хранит `PlayerUiState`;
+- хранит раздельные `PlaybackUiState`, `LibraryUiState`, `SettingsUiState` и `AppNavigationState` в `StateFlow`;
 - подписывается на `PlaybackState` (дискретные события: play, pause, track changed, queue updated);
 - подписывается на плейлисты и настройки;
 - **не владеет временем воспроизведения** — тайминг идёт напрямую из `PlaybackTimeSource`;
 - загружает страницы библиотеки;
-- отвечает за навигацию: владеет живым `AppNavigationState`, делегирует stateless-переходы `AppNavigationState`, синхронизирует навигационное состояние с UI-состоянием приложения;
-- orchestration-операции: методы высокого уровня (открыть альбом, открыть плейлист, открыть поиск и т.д.) объединяют изменение навигации, подготовку данных экрана и управление жизненным циклом реактивных потоков;
+- отвечает за навигацию: владеет живым `StateFlow<AppNavigationState>` и публикует только committed состояния;
+- orchestration-операции регистрируют detail descriptors по `entryId`, готовят header/loading state до публикации route и защищают reactive updates от устаревших emissions;
 - запускает синхронизацию;
 - управляет очередью и плеером.
 
@@ -854,8 +861,9 @@ Desktop:
 - `SettingsRepository`: читать/писать настройки DataStore.
 - `DailyPlaylistRepository`: собрать плейлист дня локально или через AI.
 - `PlayerViewModel`: принять действие пользователя и обновить состояние приложения.
-- `AppNavigationState`: хранить immutable back stack, определять `currentDestination`, `canNavigateBack`, выполнять stateless `navigateTo()` / `navigateBack()`.
-- `Screen` / `AppDestination`: описывать, какой экран сейчас показывать.
+- `AppRoute` / `NavigationEntry`: описывать destination с аргументами и уникальную identity каждого входа.
+- `AppNavigationState`: хранить immutable back stack, вычислять content/main destination и выполнять pure stack operations.
+- `DetailEntryStore`: восстанавливать header и reactive data нужного detail entry после Back.
 - `PlatformBackHandler` (expect/actual): обрабатывать системную кнопку "Назад" — Android через BackHandler, Desktop — no-op.
 - `PlaybackQueueController`: хранить порядок воспроизведения.
 - `PlaybackResolver`: превратить очередь id в очередь воспроизводимых элементов.

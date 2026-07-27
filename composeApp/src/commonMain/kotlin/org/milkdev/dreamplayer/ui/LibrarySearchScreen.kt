@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import org.jetbrains.compose.resources.painterResource
 import org.milkdev.dreamplayer.app.AppTheme
+import org.milkdev.dreamplayer.app.LocalSceneExecutionPolicy
 import org.milkdev.dreamplayer.generated.resources.Res
 import org.milkdev.dreamplayer.generated.resources.arrow_back
 import org.milkdev.dreamplayer.library.LibraryTrack
@@ -42,6 +43,7 @@ fun LibrarySearchScreen(
     contentPadding: PaddingValues = PaddingValues.Zero,
     currentTrackId: Long? = null,
 ) {
+    val executionPolicy = LocalSceneExecutionPolicy.current
     val filteredTracks = remember(libraryState.searchTrackListItems) {
         libraryState.searchTrackListItems.map { it.toLibraryTrack() }
     }
@@ -49,28 +51,48 @@ fun LibrarySearchScreen(
     val lazyListState = rememberLazyListState()
     val loadUncachedArtwork = rememberLazyArtworkLoadingEnabled(
         listState = lazyListState,
+        enabled = executionPolicy.allowsUncachedArtwork,
     )
 
-    LaunchedEffect(libraryState.librarySearch.query, libraryState.librarySearch.mode) {
-        lazyListState.scrollToItem(0)
+    var observedSearch by remember {
+        mutableStateOf(
+            libraryState.librarySearch.query to libraryState.librarySearch.mode,
+        )
     }
-
-    val shouldLoadMoreSearch by remember {
-        derivedStateOf {
-            val lastVisible = lazyListState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            lastVisible >= libraryState.searchTrackListItems.lastIndex - 8
+    LaunchedEffect(
+        libraryState.librarySearch.query,
+        libraryState.librarySearch.mode,
+        executionPolicy.allowsImperativeScroll,
+        executionPolicy.authorityEpoch,
+    ) {
+        val currentSearch =
+            libraryState.librarySearch.query to libraryState.librarySearch.mode
+        if (!executionPolicy.allowsImperativeScroll) {
+            observedSearch = currentSearch
+            return@LaunchedEffect
+        }
+        if (currentSearch != observedSearch) {
+            lazyListState.scrollToItem(0)
+            observedSearch = currentSearch
         }
     }
 
-    LaunchedEffect(shouldLoadMoreSearch, libraryState.hasMoreSearchTracks, libraryState.isSearchPageLoading) {
-        if (shouldLoadMoreSearch && libraryState.hasMoreSearchTracks && !libraryState.isSearchPageLoading) {
-            onLoadNextSearch()
-        }
-    }
+    InfiniteListHandler(
+        listState = lazyListState,
+        enabled = executionPolicy.allowsPagingDemand,
+        hasMore = libraryState.hasMoreSearchTracks,
+        isLoading = libraryState.isSearchPageLoading,
+        onLoadMore = onLoadNextSearch,
+    )
 
     var isDebugLoading by remember { mutableStateOf(isFirstLaunchDebug) }
 
-    LaunchedEffect(libraryState.isLoading) {
+    LaunchedEffect(
+        libraryState.isLoading,
+        executionPolicy.allowsImperativeScroll,
+        executionPolicy.authorityEpoch,
+    ) {
+        if (!executionPolicy.allowsImperativeScroll) return@LaunchedEffect
         if (!libraryState.isLoading) {
             if (isFirstLaunchDebug) {
                 delay(1.seconds)
