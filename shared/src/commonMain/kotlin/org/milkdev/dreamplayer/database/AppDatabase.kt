@@ -44,7 +44,7 @@ import org.milkdev.dreamplayer.database.entities.TrackReleaseRefEntity
         TrackGenreCrossRef::class,
         PlaybackHistoryEntity::class,
     ],
-    version = 8
+    version = 9
 )
 @ConstructedBy(AppDatabaseConstructor::class)
 abstract class AppDatabase : RoomDatabase() {
@@ -463,6 +463,48 @@ val Migration7To8 = object : Migration(7, 8) {
         )
         connection.execSql("CREATE INDEX IF NOT EXISTS index_playback_history_trackId ON playback_history(trackId)")
         connection.execSql("CREATE INDEX IF NOT EXISTS index_playback_history_timestamp ON playback_history(timestamp)")
+    }
+}
+
+val Migration8To9 = object : Migration(8, 9) {
+    override fun migrate(connection: SQLiteConnection) {
+        connection.execSql("ALTER TABLE albums ADD COLUMN localArtworkKey TEXT")
+        connection.execSql("ALTER TABLE albums ADD COLUMN localArtworkFingerprint TEXT NOT NULL DEFAULT ''")
+        connection.execSql("ALTER TABLE albums ADD COLUMN localArtworkState TEXT NOT NULL DEFAULT 'UNKNOWN'")
+        connection.execSql("ALTER TABLE albums ADD COLUMN localArtworkCheckedAt INTEGER")
+        connection.execSql(
+            """
+            UPDATE albums
+            SET localArtworkState = CASE
+                WHEN albumArtUri IS NOT NULL
+                    AND albumArtUri != ''
+                    AND albumArtUri NOT LIKE 'content://media/%/audio/albumart/%'
+                THEN 'PRESENT'
+                ELSE 'UNKNOWN'
+            END
+            """.trimIndent()
+        )
+        connection.execSql(
+            """
+            UPDATE albums
+            SET albumArtUri = NULL,
+                coverSource = CASE
+                    WHEN coverUri IS NOT NULL AND coverUri != '' THEN 'REMOTE'
+                    ELSE 'NONE'
+                END
+            WHERE albumArtUri LIKE 'content://media/%/audio/albumart/%'
+            """.trimIndent()
+        )
+        connection.execSql(
+            """
+            UPDATE library_tracks
+            SET albumArtUri = NULL
+            WHERE albumArtUri LIKE 'content://media/%/audio/albumart/%'
+            """.trimIndent()
+        )
+        connection.execSql(
+            "CREATE INDEX IF NOT EXISTS index_albums_localArtworkState ON albums(localArtworkState)"
+        )
     }
 }
 

@@ -210,6 +210,7 @@ private fun PlaylistTrackItem(
                 modifier = Modifier.fillMaxSize(),
                 fallbackIcon = Res.drawable.music_note,
                 maxDecodeSizePx = 160,
+                artworkRevision = track.contentVersion,
             )
         }
 
@@ -343,6 +344,7 @@ private fun PlaylistSelectableTrackItem(
                 modifier = Modifier.fillMaxSize(),
                 fallbackIcon = Res.drawable.music_note,
                 maxDecodeSizePx = 144,
+                artworkRevision = track.contentVersion,
             )
         }
 

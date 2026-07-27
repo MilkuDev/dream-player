@@ -1,11 +1,13 @@
 package org.milkdev.dreamplayer.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.Arrangement.SpaceBetween
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
@@ -16,14 +18,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import org.milkdev.dreamplayer.app.LocalSceneExecutionPolicy
 import org.milkdev.dreamplayer.diagnostics.LogEntry
+import org.milkdev.dreamplayer.diagnostics.LogEntryKind
 import org.milkdev.dreamplayer.diagnostics.LogStorage
 
 @Composable
@@ -40,29 +44,38 @@ fun LogConsole(
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
+    var isFollowingTail by remember(listState) { mutableStateOf(true) }
+    var autoScrollInProgress by remember(listState) { mutableStateOf(false) }
 
+    LaunchedEffect(logsFlow) {
+        logs = logsFlow.value
+        logsFlow.collect { nextLogs ->
+            logs = nextLogs
+        }
+    }
+    LaunchedEffect(listState) {
+        snapshotFlow {
+            listState.isScrollInProgress to listState.canScrollForward
+        }.collect { (isScrolling, canScrollForward) ->
+            if (isScrolling && !autoScrollInProgress) {
+                isFollowingTail = !canScrollForward
+            }
+        }
+    }
     LaunchedEffect(
-        logsFlow,
-        executionPolicy.allowsDiagnosticCollection,
+        logs.lastOrNull()?.sequenceId,
+        executionPolicy.allowsImperativeScroll,
         executionPolicy.authorityEpoch,
     ) {
-        if (!executionPolicy.allowsDiagnosticCollection) return@LaunchedEffect
-        logs = logsFlow.value
-        var observedTailId = logs.lastOrNull()?.sequenceId
-        logsFlow.collectLatest { nextLogs ->
-            val wasFollowingTail =
-                logs.isEmpty() ||
-                    listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index == logs.lastIndex
-            val nextTailId = nextLogs.lastOrNull()?.sequenceId
-            logs = nextLogs
-            if (
-                wasFollowingTail &&
-                nextLogs.isNotEmpty() &&
-                nextTailId != observedTailId
-            ) {
-                listState.animateScrollToItem(nextLogs.lastIndex)
+        if (logs.isEmpty()) {
+            isFollowingTail = true
+        } else if (isFollowingTail && executionPolicy.allowsImperativeScroll) {
+            autoScrollInProgress = true
+            try {
+                listState.scrollToItem(logs.lastIndex)
+            } finally {
+                autoScrollInProgress = false
             }
-            observedTailId = nextTailId
         }
     }
     Column(
@@ -79,15 +92,21 @@ fun LogConsole(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = title,
+                text = "$title · ${logs.size}",
                 color = Color.LightGray,
                 fontSize = 12.sp,
-                fontFamily = FontFamily.Monospace
+                fontFamily = FontFamily.Monospace,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
             )
             Row {
                 TextButton(
-                    enabled = executionPolicy.allowsInputAndSemantics,
-                    onClick = onClear,
+                    enabled = executionPolicy.allowsInputAndSemantics && logs.isNotEmpty(),
+                    onClick = {
+                        isFollowingTail = true
+                        onClear()
+                    },
                 ) {
                     Text("Очистить", color = Color.Red, fontSize = 12.sp)
                 }
@@ -99,7 +118,7 @@ fun LogConsole(
                             clipboard.setClipEntry(clipEntry)
                         }
                     },
-                    enabled = executionPolicy.allowsInputAndSemantics,
+                    enabled = executionPolicy.allowsInputAndSemantics && logs.isNotEmpty(),
                 ) {
                     Text("Копировать", color = Color(0xFF01FFE1), fontSize = 12.sp)
                 }
@@ -111,7 +130,7 @@ fun LogConsole(
         SelectionContainer(modifier = Modifier.fillMaxSize().padding(top = 8.dp)) {
             LazyColumn(state = listState) {
                 if (logs.isEmpty()) {
-                    item {
+                    item(key = "empty") {
                         Text(
                             text = emptyText,
                             color = Color.Gray,
@@ -127,13 +146,28 @@ fun LogConsole(
                 ) { logEntry ->
                     Text(
                         text = logEntry.message,
-                        color = Color(0xFF00D500),
+                        color = logEntry.kind.terminalColor(),
                         fontFamily = FontFamily.Monospace,
                         fontSize = 11.sp,
-                        modifier = Modifier.padding(vertical = 2.dp)
+                        softWrap = false,
+                        maxLines = 1,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(vertical = 2.dp),
                     )
                 }
             }
         }
+    }
+}
+
+private fun LogEntryKind.terminalColor(): Color {
+    return when (this) {
+        LogEntryKind.General -> Color(0xFF00D500)
+        LogEntryKind.NetworkRequest -> Color(0xFF4FC3F7)
+        LogEntryKind.NetworkResponse -> Color(0xFF69F0AE)
+        LogEntryKind.NetworkFailure -> Color(0xFFFF6E6E)
+        LogEntryKind.NetworkCancelled -> Color(0xFFFFD166)
     }
 }

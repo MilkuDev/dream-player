@@ -10,7 +10,7 @@ import org.milkdev.dreamplayer.database.SystemPlaylists
 import org.milkdev.dreamplayer.database.appDatabase
 import org.milkdev.dreamplayer.database.entities.PlaylistEntity
 import org.milkdev.dreamplayer.database.entities.PlaylistTrackCrossRef
-import org.milkdev.dreamplayer.database.entities.TrackEntity
+import org.milkdev.dreamplayer.database.entities.TrackWithArtwork
 import kotlin.random.Random
 
 data class UserPlaylist(
@@ -207,14 +207,15 @@ private fun SystemPlaylistDefinition.toEntity(existingPlaylist: PlaylistEntity? 
     )
 }
 
-private fun TrackEntity.toLibraryTrack(): LibraryTrack {
+private fun TrackWithArtwork.toLibraryTrack(): LibraryTrack {
     return LibraryTrack(
-        id = id,
-        title = title,
-        artistName = artistName,
-        albumName = albumName,
-        durationMs = durationMs,
-        albumArtUri = albumArtUri,
-        isPresent = isPresent,
+        id = track.id,
+        title = track.title,
+        artistName = track.artistName,
+        albumName = track.albumName,
+        durationMs = track.durationMs,
+        albumArtUri = artworkUri,
+        isPresent = track.isPresent,
+        contentVersion = artworkRevision,
     )
 }

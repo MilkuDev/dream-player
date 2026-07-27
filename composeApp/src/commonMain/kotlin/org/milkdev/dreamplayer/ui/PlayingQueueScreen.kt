@@ -404,6 +404,7 @@ fun PlayingQueueScreen(
                         title = track.title,
                         artist = track.artistName,
                         albumArtUri = track.albumArtUri,
+                        artworkRevision = track.contentVersion,
                         isPlaying = isPlaying,
                         isDragging = false,
                         loadUncachedArtwork = loadUncachedArtwork && !isDragging,
@@ -453,6 +454,7 @@ fun PlayingQueueScreen(
                     title = draggedTrack.title,
                     artist = draggedTrack.artistName,
                     albumArtUri = draggedTrack.albumArtUri,
+                    artworkRevision = draggedTrack.contentVersion,
                     isPlaying = isPlaying,
                     isDragging = true,
                     loadUncachedArtwork = false,
@@ -479,6 +481,7 @@ private fun QueueItem(
     title: String,
     artist: String,
     albumArtUri: String?,
+    artworkRevision: Long,
     isPlaying: Boolean,
     isDragging: Boolean = false,
     loadUncachedArtwork: Boolean,
@@ -517,6 +520,7 @@ private fun QueueItem(
                 modifier = Modifier.fillMaxSize(),
                 maxDecodeSizePx = 160,
                 loadUncached = loadUncachedArtwork,
+                artworkRevision = artworkRevision,
             )
         }
 

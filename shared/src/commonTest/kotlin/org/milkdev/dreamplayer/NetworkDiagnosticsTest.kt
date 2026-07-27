@@ -6,6 +6,7 @@ import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -15,6 +16,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.test.assertFailsWith
 import org.milkdev.dreamplayer.diagnostics.LogStorage
+import org.milkdev.dreamplayer.diagnostics.LogEntryKind
 import org.milkdev.dreamplayer.extensions.ai.AiPlaylistProviders
 import org.milkdev.dreamplayer.extensions.network.AiPromptService
 import org.milkdev.dreamplayer.extensions.network.buildAiPromptRequestBody
@@ -258,6 +260,56 @@ class NetworkDiagnosticsTest {
     }
 
     @Test
+    fun lastFmHttpRateLimitWithoutJsonErrorIsTypedAsRateLimited() = runTest {
+        val client = HttpClient(
+            MockEngine {
+                respond(
+                    content = "",
+                    status = HttpStatusCode.TooManyRequests,
+                )
+            }
+        )
+
+        val result = LastFmRepository(LastFmService(client)).lookupAlbumMetadata(
+            artist = "Daft Punk",
+            album = "Discovery",
+            apiKey = "key",
+        )
+
+        val failure = assertIs<LastFmAlbumLookup.RetryableFailure>(result)
+        assertTrue(failure.isRateLimited)
+        client.close()
+    }
+
+    @Test
+    fun lastFmCancelledRequestIsTracedAndRethrown() = runTest {
+        LogStorage.clearLastFmNetwork()
+        val client = HttpClient(
+            MockEngine {
+                throw CancellationException("cancel test")
+            }
+        )
+
+        var cancellationRethrown = false
+        try {
+            LastFmService(client).testApiKey("key")
+        } catch (_: CancellationException) {
+            cancellationRethrown = true
+        }
+
+        assertTrue(cancellationRethrown)
+        val entries = LogStorage.lastFmNetworkLogs.value
+        assertEquals(
+            listOf(LogEntryKind.NetworkRequest, LogEntryKind.NetworkCancelled),
+            entries.map { it.kind },
+        )
+        val traceIds = entries.mapNotNull { traceIdRegex.find(it.message)?.groupValues?.get(1) }
+        assertEquals(1, traceIds.distinct().size)
+        LogStorage.clearLastFmNetwork()
+        client.close()
+    }
+
+    @Test
     fun coverArtRepositoryUsesMusicBrainzUserAgentAndCachesCaaRedirect() = runTest {
         LogStorage.clearOtherNetwork()
         val saved = mutableListOf<SavedAlbumArt>()
@@ -325,6 +377,15 @@ class NetworkDiagnosticsTest {
         assertTrue(trace.contains("MusicBrainz -> GET"))
         assertTrue(trace.contains("Cover Art Archive -> GET"))
         assertTrue(trace.contains("bytes=10"))
+        val networkEntries = LogStorage.otherNetworkLogs.value
+        val requestIds = networkEntries
+            .filter { it.kind == LogEntryKind.NetworkRequest }
+            .mapNotNull { traceIdRegex.find(it.message)?.groupValues?.get(1) }
+        val responseIds = networkEntries
+            .filter { it.kind == LogEntryKind.NetworkResponse }
+            .mapNotNull { traceIdRegex.find(it.message)?.groupValues?.get(1) }
+        assertEquals(3, requestIds.size)
+        assertEquals(requestIds.toSet(), responseIds.toSet())
         LogStorage.clearOtherNetwork()
     }
 
@@ -478,5 +539,9 @@ class NetworkDiagnosticsTest {
             result = 31 * result + (contentType?.hashCode() ?: 0)
             return result
         }
+    }
+
+    private companion object {
+        val traceIdRegex = Regex("\\[#(\\d+)]")
     }
 }

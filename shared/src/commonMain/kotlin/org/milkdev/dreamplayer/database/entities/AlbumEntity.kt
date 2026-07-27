@@ -31,6 +31,7 @@ import androidx.room.PrimaryKey
         Index(value = ["deletedAt"]),
         Index(value = ["coverLookupState"]),
         Index(value = ["coverLookupAttemptAt"]),
+        Index(value = ["localArtworkState"]),
         Index(value = ["lastSeenTimestamp"])
     ]
 )
@@ -40,6 +41,10 @@ data class AlbumEntity(
     val title: String,
     val artistId: Long,
     val albumArtUri: String? = null,
+    val localArtworkKey: String? = null,
+    val localArtworkFingerprint: String = "",
+    val localArtworkState: String = "UNKNOWN",
+    val localArtworkCheckedAt: Long? = null,
     val coverUri: String? = null,
     val year: Int? = null,
     val genre: String? = null,

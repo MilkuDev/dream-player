@@ -7,12 +7,24 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlin.concurrent.atomics.AtomicLong
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.time.TimeMark
+import kotlin.time.TimeSource
 
 enum class NetworkTraceLogChannel {
     LastFm,
     OtherServices,
 }
 
+class NetworkRequestTrace internal constructor(
+    val id: Long,
+    internal val serviceName: String,
+    internal val channel: NetworkTraceLogChannel,
+    internal val startedAt: TimeMark,
+)
+
+@OptIn(ExperimentalAtomicApi::class)
 object NetworkTraceLog {
     private const val MAX_URL_LENGTH = 420
     private const val MAX_VALUE_LENGTH = 120
@@ -21,11 +33,7 @@ object NetworkTraceLog {
     private const val MAX_JSON_DEPTH = 3
     private const val MAX_JSON_ARRAY_ITEMS = 2
     private const val MAX_JSON_OBJECT_KEYS = 8
-
-    private val sensitiveQueryPatterns = listOf(
-        Regex("(?i)([?&](?:api_key|key|token|access_token)=)[^&]*"),
-        Regex("(?i)([?&]authorization=)[^&]*"),
-    )
+    private val nextTraceId = AtomicLong(1L)
 
     fun request(
         serviceName: String,
@@ -33,10 +41,20 @@ object NetworkTraceLog {
         url: String,
         parameters: List<Pair<String, String>> = emptyList(),
         channel: NetworkTraceLogChannel = channelFor(serviceName),
-    ) {
+    ): NetworkRequestTrace {
+        val trace = NetworkRequestTrace(
+            id = nextTraceId.fetchAndAdd(1L),
+            serviceName = serviceName,
+            channel = channel,
+            startedAt = TimeSource.Monotonic.markNow(),
+        )
         add(
             channel = channel,
+            kind = LogEntryKind.NetworkRequest,
             message = buildString {
+                append("[#")
+                append(trace.id)
+                append("] ")
                 append(serviceName)
                 append(" -> ")
                 append(method.uppercase())
@@ -54,29 +72,35 @@ object NetworkTraceLog {
                 }
             },
         )
+        return trace
     }
 
     fun textResponse(
-        serviceName: String,
+        trace: NetworkRequestTrace,
         statusCode: Int,
         body: String,
         contentType: String? = null,
         note: String? = null,
-        channel: NetworkTraceLogChannel = channelFor(serviceName),
     ) {
         add(
-            channel = channel,
+            channel = trace.channel,
+            kind = LogEntryKind.NetworkResponse,
             message = buildString {
-                append(serviceName)
+                append("[#")
+                append(trace.id)
+                append("] ")
+                append(trace.serviceName)
                 append(" <- HTTP ")
                 append(statusCode)
+                append(" durationMs=")
+                append(trace.elapsedMilliseconds())
                 contentType?.takeIf { it.isNotBlank() }?.let {
                     append(" type=")
                     append(it.ellipsize(MAX_VALUE_LENGTH))
                 }
                 note?.takeIf { it.isNotBlank() }?.let {
                     append(" ")
-                    append(it.ellipsize(MAX_VALUE_LENGTH))
+                    append(DiagnosticRedaction.sanitizeText(it).ellipsize(MAX_VALUE_LENGTH))
                 }
                 append(" body=")
                 append(summarizeBody(body))
@@ -85,19 +109,24 @@ object NetworkTraceLog {
     }
 
     fun metadataResponse(
-        serviceName: String,
+        trace: NetworkRequestTrace,
         statusCode: Int,
         contentType: String? = null,
         byteCount: Int? = null,
         note: String? = null,
-        channel: NetworkTraceLogChannel = channelFor(serviceName),
     ) {
         add(
-            channel = channel,
+            channel = trace.channel,
+            kind = LogEntryKind.NetworkResponse,
             message = buildString {
-                append(serviceName)
+                append("[#")
+                append(trace.id)
+                append("] ")
+                append(trace.serviceName)
                 append(" <- HTTP ")
                 append(statusCode)
+                append(" durationMs=")
+                append(trace.elapsedMilliseconds())
                 contentType?.takeIf { it.isNotBlank() }?.let {
                     append(" type=")
                     append(it.ellipsize(MAX_VALUE_LENGTH))
@@ -108,7 +137,7 @@ object NetworkTraceLog {
                 }
                 note?.takeIf { it.isNotBlank() }?.let {
                     append(" ")
-                    append(it.ellipsize(MAX_VALUE_LENGTH))
+                    append(DiagnosticRedaction.sanitizeText(it).ellipsize(MAX_VALUE_LENGTH))
                 }
             },
         )
@@ -121,15 +150,40 @@ object NetworkTraceLog {
     ) {
         add(
             channel = channel,
-            message = "$serviceName !! ${message.replace(Regex("\\s+"), " ").ellipsize(MAX_TEXT_PREVIEW_LENGTH)}",
+            kind = LogEntryKind.NetworkFailure,
+            message = "[-] $serviceName !! ${
+                DiagnosticRedaction.sanitizeText(message).ellipsize(MAX_TEXT_PREVIEW_LENGTH)
+            }",
+        )
+    }
+
+    fun failure(
+        trace: NetworkRequestTrace,
+        message: String,
+    ) {
+        add(
+            channel = trace.channel,
+            kind = LogEntryKind.NetworkFailure,
+            message = "[#${trace.id}] ${trace.serviceName} !! durationMs=${trace.elapsedMilliseconds()} ${
+                DiagnosticRedaction.sanitizeText(message).ellipsize(MAX_TEXT_PREVIEW_LENGTH)
+            }",
+        )
+    }
+
+    fun cancelled(trace: NetworkRequestTrace) {
+        add(
+            channel = trace.channel,
+            kind = LogEntryKind.NetworkCancelled,
+            message = "[#${trace.id}] ${trace.serviceName} <- CANCELLED durationMs=${trace.elapsedMilliseconds()}",
         )
     }
 
     private fun add(
         channel: NetworkTraceLogChannel,
         message: String,
+        kind: LogEntryKind,
     ) {
-        LogStorage.addNetworkLog(channel, message)
+        LogStorage.addNetworkLog(channel, message, kind)
     }
 
     private fun channelFor(serviceName: String): NetworkTraceLogChannel {
@@ -141,25 +195,14 @@ object NetworkTraceLog {
     }
 
     private fun sanitizeUrl(url: String): String {
-        return sensitiveQueryPatterns.fold(url) { current, pattern ->
-            pattern.replace(current) { match -> "${match.groupValues[1]}***" }
-        }
+        return DiagnosticRedaction.sanitizeText(url)
     }
 
     private fun sanitizeValue(
         name: String,
         value: String,
     ): String {
-        val normalizedName = name.lowercase()
-        return if (
-            normalizedName.contains("key") ||
-            normalizedName.contains("token") ||
-            normalizedName.contains("authorization")
-        ) {
-            "***"
-        } else {
-            value.replace(Regex("\\s+"), " ")
-        }
+        return DiagnosticRedaction.sanitizeValue(name, value)
     }
 
     private fun summarizeBody(body: String): String {
@@ -170,7 +213,7 @@ object NetworkTraceLog {
         val sample = if (jsonElement != null) {
             compactJson(jsonElement).toString()
         } else {
-            trimmed.replace(Regex("\\s+"), " ")
+            DiagnosticRedaction.sanitizeText(trimmed)
         }.ellipsize(MAX_TEXT_PREVIEW_LENGTH)
 
         return "${if (jsonElement != null) "json" else "text"}[$sample; chars=${trimmed.length}]"
@@ -185,7 +228,14 @@ object NetworkTraceLog {
         return when (element) {
             is JsonObject -> buildJsonObject {
                 element.entries.take(MAX_JSON_OBJECT_KEYS).forEach { (key, value) ->
-                    put(key, compactJson(value, depth + 1))
+                    put(
+                        key,
+                        if (DiagnosticRedaction.isSensitiveName(key)) {
+                            JsonPrimitive(DiagnosticRedaction.REDACTED)
+                        } else {
+                            compactJson(value, depth + 1)
+                        },
+                    )
                 }
                 if (element.size > MAX_JSON_OBJECT_KEYS) {
                     put("...", JsonPrimitive("${element.size - MAX_JSON_OBJECT_KEYS} more keys"))
@@ -204,16 +254,18 @@ object NetworkTraceLog {
     }
 
     private fun compactPrimitive(primitive: JsonPrimitive): JsonPrimitive {
-        val raw = primitive.toString()
-        return if (raw.length > MAX_JSON_STRING_LENGTH) {
-            JsonPrimitive(raw.ellipsize(MAX_JSON_STRING_LENGTH))
-        } else {
-            primitive
-        }
+        if (!primitive.isString) return primitive
+        val safeContent = DiagnosticRedaction.sanitizeText(primitive.content)
+            .ellipsize(MAX_JSON_STRING_LENGTH)
+        return JsonPrimitive(safeContent)
     }
 
     private fun String.ellipsize(maxLength: Int): String {
         return if (length <= maxLength) this else take(maxLength - 3) + "..."
+    }
+
+    private fun NetworkRequestTrace.elapsedMilliseconds(): Long {
+        return startedAt.elapsedNow().inWholeMilliseconds.coerceAtLeast(0L)
     }
 
     private val json = Json {

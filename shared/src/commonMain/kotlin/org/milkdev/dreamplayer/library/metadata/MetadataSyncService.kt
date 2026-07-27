@@ -22,7 +22,7 @@ import org.milkdev.dreamplayer.library.GenreDictionary
 import org.milkdev.dreamplayer.database.entities.MetadataEntityType
 import org.milkdev.dreamplayer.database.entities.MetadataProvider
 import org.milkdev.dreamplayer.database.entities.MetadataResolutionEntity
-import org.milkdev.dreamplayer.diagnostics.AppDebugLog
+import org.milkdev.dreamplayer.diagnostics.MetadataDebugLog
 import org.milkdev.dreamplayer.extensions.data.CoverArtLookup
 import org.milkdev.dreamplayer.extensions.data.CoverArtRepository
 import org.milkdev.dreamplayer.extensions.data.LastFmAlbumLookup
@@ -32,6 +32,7 @@ import org.milkdev.dreamplayer.extensions.data.MusicBrainzMetadataRepository
 import org.milkdev.dreamplayer.extensions.secrets.LastFmSecretStore
 import org.milkdev.dreamplayer.library.CoverLookupState
 import org.milkdev.dreamplayer.library.CoverSource
+import org.milkdev.dreamplayer.library.LocalArtworkState
 import org.milkdev.dreamplayer.library.MetadataState
 import org.milkdev.dreamplayer.library.MetadataSyncUiState
 import kotlin.time.Duration.Companion.milliseconds
@@ -42,6 +43,7 @@ class MetadataSyncService(
     private val musicBrainzRepository: MusicBrainzMetadataRepository,
     private val coverArtRepository: CoverArtRepository,
     private val scope: CoroutineScope,
+    private val lastFmApiKeyProvider: suspend () -> String? = { LastFmSecretStore.getApiKey() },
 ) {
     private val mutex = Mutex()
     private var drainJob: Job? = null
@@ -67,17 +69,17 @@ class MetadataSyncService(
                 while (isActive) {
                     val result = syncCoverBatch(limit = MANUAL_COVER_BATCH_SIZE)
                     finalStopReason = result.stopReason
-                    if (result.stopReason == MetadataSyncStopReason.RATE_LIMITED) break
+                    if (result.stopReason.stopsRemoteSync()) break
                     if (result.processed == 0) break
                     delay(BATCH_PAUSE_MS.milliseconds)
                 }
 
-                if (isActive && finalStopReason != MetadataSyncStopReason.RATE_LIMITED) {
+                if (isActive && !finalStopReason.stopsRemoteSync()) {
                     while (isActive) {
                         val result = syncLastFmBatch(limit = MANUAL_LASTFM_BATCH_SIZE)
                         finalStopReason = result.stopReason
                         if (result.stopReason == MetadataSyncStopReason.NO_API_KEY) break
-                        if (result.stopReason == MetadataSyncStopReason.RATE_LIMITED) break
+                        if (result.stopReason.stopsRemoteSync()) break
                         if (result.processed == 0) break
                         delay(BATCH_PAUSE_MS.milliseconds)
                     }
@@ -149,12 +151,25 @@ class MetadataSyncService(
                     currentVersion = CURRENT_COVER_LOOKUP_VERSION,
                 )
             }
+            val batchKind = if (forceMissingCovers) "forced_cover" else "cover"
+            MetadataDebugLog.event(
+                "metadata_sync_batch_start",
+                "kind" to batchKind,
+                "limit" to limit,
+                "queued" to albums.size,
+            )
 
             if (albums.isEmpty()) {
                 updateCountsAfterBatch(
                     processed = 0,
                     stopReason = MetadataSyncStopReason.EMPTY_QUEUE,
                     forceMissingCovers = forceMissingCovers,
+                )
+                MetadataDebugLog.event(
+                    "metadata_sync_batch_result",
+                    "kind" to batchKind,
+                    "processed" to 0,
+                    "stopReason" to MetadataSyncStopReason.EMPTY_QUEUE,
                 )
                 return MetadataSyncBatchResult(processed = 0, stopReason = MetadataSyncStopReason.EMPTY_QUEUE)
             }
@@ -172,6 +187,10 @@ class MetadataSyncService(
                         stopReason = MetadataSyncStopReason.RATE_LIMITED
                         break
                     }
+                    SyncItemOutcome.SOURCE_UNAVAILABLE -> {
+                        stopReason = MetadataSyncStopReason.SOURCE_UNAVAILABLE
+                        break
+                    }
                 }
             }
 
@@ -180,11 +199,17 @@ class MetadataSyncService(
                 stopReason = stopReason,
                 forceMissingCovers = forceMissingCovers,
             )
+            MetadataDebugLog.event(
+                "metadata_sync_batch_result",
+                "kind" to batchKind,
+                "processed" to processed,
+                "stopReason" to stopReason,
+            )
             MetadataSyncBatchResult(processed = processed, stopReason = stopReason)
         }
     }
 
-    private suspend fun syncLastFmBatch(limit: Int = MANUAL_LASTFM_BATCH_SIZE): MetadataSyncBatchResult {
+    internal suspend fun syncLastFmBatch(limit: Int = MANUAL_LASTFM_BATCH_SIZE): MetadataSyncBatchResult {
         return mutex.withLock {
             val countsBefore = pendingCounts()
             _state.update {
@@ -204,8 +229,20 @@ class MetadataSyncService(
                 pendingTimeoutTimestamp = now - PENDING_TIMEOUT_MS,
                 currentVersion = CURRENT_METADATA_VERSION,
             )
+            MetadataDebugLog.event(
+                "metadata_sync_batch_start",
+                "kind" to "album_metadata",
+                "limit" to limit,
+                "queued" to albums.size,
+            )
             if (albums.isEmpty()) {
                 updateCountsAfterBatch(processed = 0, stopReason = MetadataSyncStopReason.EMPTY_QUEUE)
+                MetadataDebugLog.event(
+                    "metadata_sync_batch_result",
+                    "kind" to "album_metadata",
+                    "processed" to 0,
+                    "stopReason" to MetadataSyncStopReason.EMPTY_QUEUE,
+                )
                 return MetadataSyncBatchResult(processed = 0, stopReason = MetadataSyncStopReason.EMPTY_QUEUE)
             }
 
@@ -222,11 +259,21 @@ class MetadataSyncService(
                         stopReason = MetadataSyncStopReason.RATE_LIMITED
                         break
                     }
+                    SyncItemOutcome.SOURCE_UNAVAILABLE -> {
+                        stopReason = MetadataSyncStopReason.SOURCE_UNAVAILABLE
+                        break
+                    }
                 }
                 delay(LASTFM_REQUEST_INTERVAL_MS.milliseconds)
             }
 
             updateCountsAfterBatch(processed = processed, stopReason = stopReason)
+            MetadataDebugLog.event(
+                "metadata_sync_batch_result",
+                "kind" to "album_metadata",
+                "processed" to processed,
+                "stopReason" to stopReason,
+            )
             MetadataSyncBatchResult(processed = processed, stopReason = stopReason)
         }
     }
@@ -245,7 +292,10 @@ class MetadataSyncService(
                 lastFmPendingCount = counts.lastFm,
                 processedCount = it.processedCount + processed,
                 message = if (forceMissingCovers) {
-                    stopReason.toForcedCoverStatusMessage(processed)
+                    stopReason.toForcedCoverStatusMessage(
+                        processed = processed,
+                        verificationPending = counts.localArtworkVerification,
+                    )
                 } else {
                     stopReason.toStatusMessage(
                         processed = processed,
@@ -260,6 +310,10 @@ class MetadataSyncService(
         val album = candidate.album
         val now = currentTimeMillis()
         musicDao.updateAlbumCoverLookupState(album.id, CoverLookupState.PENDING.name, now)
+        MetadataDebugLog.event(
+            "metadata_cover_lookup_start",
+            "albumId" to album.id,
+        )
 
         return when (val lookup = coverArtRepository.lookupAlbumCover(
             albumId = album.id,
@@ -267,7 +321,7 @@ class MetadataSyncService(
             album = album.title,
         )) {
             is CoverArtLookup.Found -> {
-                musicDao.updateAlbum(
+                musicDao.updateAlbumPreservingLocalArtwork(
                     album.copy(
                         coverUri = lookup.localUri,
                         coverSource = CoverSource.REMOTE.name,
@@ -280,35 +334,90 @@ class MetadataSyncService(
                             ?: album.musicBrainzReleaseGroupMbid,
                     )
                 )
+                MetadataDebugLog.event(
+                    "metadata_cover_lookup_result",
+                    "albumId" to album.id,
+                    "result" to "found",
+                    "releaseGroupMbidPresent" to !lookup.musicBrainzReleaseGroupMbid.isNullOrBlank(),
+                )
                 SyncItemOutcome.PROCESSED
             }
-            CoverArtLookup.NoMatch -> updateCoverNoMatch(album, now)
-            is CoverArtLookup.PermanentFailure -> updateCoverFailed(album, now)
+            CoverArtLookup.NoMatch -> {
+                val outcome = updateCoverNoMatch(album, now)
+                MetadataDebugLog.event(
+                    "metadata_cover_lookup_result",
+                    "albumId" to album.id,
+                    "result" to "no_match",
+                )
+                outcome
+            }
+            is CoverArtLookup.PermanentFailure -> {
+                val outcome = updateCoverFailed(album, now)
+                MetadataDebugLog.event(
+                    "metadata_cover_lookup_result",
+                    "albumId" to album.id,
+                    "result" to "failed",
+                    "reason" to "permanent_failure",
+                )
+                outcome
+            }
             is CoverArtLookup.RetryableFailure -> {
                 updateCoverFailed(album, now)
+                MetadataDebugLog.event(
+                    "metadata_cover_lookup_result",
+                    "albumId" to album.id,
+                    "result" to "failed",
+                    "reason" to if (lookup.isRateLimited) "rate_limited" else "source_unavailable",
+                )
                 if (lookup.isRateLimited) SyncItemOutcome.RATE_LIMITED else SyncItemOutcome.PROCESSED
             }
         }
     }
 
     private suspend fun processLastFmAlbum(album: AlbumEntity): SyncItemOutcome {
+        val apiKey = lastFmApiKeyProvider()?.takeIf { it.isNotBlank() }
+            ?: run {
+                MetadataDebugLog.event(
+                    "metadata_sync_album_result",
+                    "albumId" to album.id,
+                    "result" to "skipped",
+                    "reason" to "no_api_key",
+                )
+                return SyncItemOutcome.NO_API_KEY
+            }
         val now = currentTimeMillis()
         musicDao.updateAlbumSyncState(album.id, MetadataState.PENDING.name, now)
 
         val artistName = musicDao.getArtistName(album.artistId)
         if (artistName == null) {
-            AppDebugLog.log("MetadataSync: Артист для альбома '${album.title}' не найден в БД. Пропускаем.")
-            return updateNoMatch(album, now)
+            updateMetadataFailed(album, now)
+            MetadataDebugLog.event(
+                "metadata_sync_album_result",
+                "albumId" to album.id,
+                "result" to "failed",
+                "reason" to "artist_missing",
+            )
+            return SyncItemOutcome.PROCESSED
         }
 
-        AppDebugLog.log("MetadataSync: Начинаем синхронизацию альбома: '${album.title}' от '$artistName'")
+        MetadataDebugLog.event(
+            "metadata_sync_album_start",
+            "albumId" to album.id,
+            "hasReleaseGroupMbid" to !album.musicBrainzReleaseGroupMbid.isNullOrBlank(),
+            "hasYear" to (album.year != null),
+            "hasCover" to (
+                album.localArtworkState == LocalArtworkState.PRESENT.name ||
+                    !album.coverUri.isNullOrBlank()
+            ),
+        )
 
-        val musicBrainz = when (val lookup = musicBrainzRepository.lookupAlbumMetadata(
+        val musicBrainzLookup = musicBrainzRepository.lookupAlbumMetadata(
             artist = artistName,
             album = album.title,
             releaseGroupMbid = album.musicBrainzReleaseGroupMbid,
-        )) {
-            is MusicBrainzMetadataLookup.Found -> lookup.metadata.also {
+        )
+        val musicBrainz = when (musicBrainzLookup) {
+            is MusicBrainzMetadataLookup.Found -> musicBrainzLookup.metadata.also {
                 musicDao.insertMetadataResolution(
                     MetadataResolutionEntity(
                         entityType = MetadataEntityType.ALBUM.name,
@@ -327,22 +436,36 @@ class MetadataSyncService(
             MusicBrainzMetadataLookup.NoMatch -> null
             is MusicBrainzMetadataLookup.RetryableFailure -> null
         }
+        MetadataDebugLog.event(
+            "metadata_sync_provider_result",
+            "albumId" to album.id,
+            "provider" to "musicbrainz",
+            "result" to musicBrainzLookup.debugResult(),
+            "rateLimited" to (
+                (musicBrainzLookup as? MusicBrainzMetadataLookup.RetryableFailure)?.isRateLimited == true
+            ),
+        )
 
-        val apiKey = LastFmSecretStore.getApiKey()?.takeIf { it.isNotBlank() }
-        val lastFmLookup = if (apiKey == null) {
-            LastFmAlbumLookup.NoApiKey
-        } else {
-            lastFmRepository.lookupAlbumMetadata(
-                artist = artistName,
-                album = album.title,
-                apiKey = apiKey,
-                mbid = musicBrainz?.releaseGroupMbid ?: album.musicBrainzReleaseGroupMbid,
-                expectedYear = musicBrainz?.year ?: album.year,
-            )
-        }
+        val lastFmLookup = lastFmRepository.lookupAlbumMetadata(
+            artist = artistName,
+            album = album.title,
+            apiKey = apiKey,
+            mbid = musicBrainz?.releaseGroupMbid ?: album.musicBrainzReleaseGroupMbid,
+            expectedYear = musicBrainz?.year ?: album.year,
+        )
+        MetadataDebugLog.event(
+            "metadata_sync_provider_result",
+            "albumId" to album.id,
+            "provider" to "lastfm",
+            "result" to lastFmLookup.debugResult(),
+            "rateLimited" to (
+                (lastFmLookup as? LastFmAlbumLookup.RetryableFailure)?.isRateLimited == true
+            ),
+        )
 
         var cachedCoverUri: String? = null
-        var coverRateLimited = false
+        var coverFailure: CoverArtLookup.RetryableFailure? = null
+        var coverPermanentFailure = false
         val lastFmMetadata = (lastFmLookup as? LastFmAlbumLookup.Found)?.metadata
         if (lastFmMetadata != null) {
             musicDao.insertMetadataResolution(
@@ -362,7 +485,7 @@ class MetadataSyncService(
 
             if (
                 !lastFmMetadata.coverUrl.isNullOrBlank() &&
-                album.albumArtUri.isNullOrBlank() &&
+                album.localArtworkState == LocalArtworkState.MISSING.name &&
                 album.coverUri.isNullOrBlank() &&
                 TRUST_LASTFM_ARTWORK > album.artworkSourceTrust
             ) {
@@ -370,10 +493,39 @@ class MetadataSyncService(
                     albumId = album.id,
                     coverUrl = lastFmMetadata.coverUrl,
                 )) {
-                    is CoverArtLookup.Found -> cachedCoverUri = coverLookup.localUri
-                    is CoverArtLookup.RetryableFailure -> coverRateLimited = coverLookup.isRateLimited
+                    is CoverArtLookup.Found -> {
+                        cachedCoverUri = coverLookup.localUri
+                        MetadataDebugLog.event(
+                            "metadata_sync_provider_result",
+                            "albumId" to album.id,
+                            "provider" to "lastfm_cover",
+                            "result" to "found",
+                        )
+                    }
+                    is CoverArtLookup.RetryableFailure -> {
+                        coverFailure = coverLookup
+                        MetadataDebugLog.event(
+                            "metadata_sync_provider_result",
+                            "albumId" to album.id,
+                            "provider" to "lastfm_cover",
+                            "result" to "retryable_failure",
+                            "rateLimited" to coverLookup.isRateLimited,
+                        )
+                    }
                     CoverArtLookup.NoMatch,
-                    is CoverArtLookup.PermanentFailure -> Unit
+                    is CoverArtLookup.PermanentFailure -> {
+                        coverPermanentFailure = true
+                        MetadataDebugLog.event(
+                            "metadata_sync_provider_result",
+                            "albumId" to album.id,
+                            "provider" to "lastfm_cover",
+                            "result" to if (coverLookup is CoverArtLookup.NoMatch) {
+                                "no_match"
+                            } else {
+                                "permanent_failure"
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -404,15 +556,55 @@ class MetadataSyncService(
             releaseGroupMbidChoice.value != album.musicBrainzReleaseGroupMbid ||
             genreChoice.genres.isNotEmpty() ||
             hasNewCover
+        val hasConfirmedMatch = musicBrainzLookup is MusicBrainzMetadataLookup.Found ||
+            lastFmLookup is LastFmAlbumLookup.Found
+        val hasProviderFailure = musicBrainzLookup is MusicBrainzMetadataLookup.RetryableFailure ||
+            lastFmLookup is LastFmAlbumLookup.RetryableFailure ||
+            lastFmLookup is LastFmAlbumLookup.PermanentFailure ||
+            coverFailure != null ||
+            coverPermanentFailure
+        val isRateLimited =
+            (musicBrainzLookup as? MusicBrainzMetadataLookup.RetryableFailure)?.isRateLimited == true ||
+                (lastFmLookup as? LastFmAlbumLookup.RetryableFailure)?.isRateLimited == true ||
+                coverFailure?.isRateLimited == true
 
         if (!hasUsefulData) {
-            AppDebugLog.log("MetadataSync: Нет новых данных (ни жанра, ни года, ни обложки) для: '${album.title}'")
-            return if (coverRateLimited) {
-                musicDao.updateAlbumSyncState(album.id, MetadataState.FAILED.name, now)
-                SyncItemOutcome.RATE_LIMITED
-            } else {
-                updateNoMatch(album, now)
+            val result = when {
+                hasProviderFailure -> {
+                    updateMetadataFailed(album, now)
+                    MetadataAlbumDebugResult(
+                        outcome = if (isRateLimited) {
+                            SyncItemOutcome.RATE_LIMITED
+                        } else {
+                            SyncItemOutcome.SOURCE_UNAVAILABLE
+                        },
+                        result = "failed",
+                        reason = if (isRateLimited) "rate_limited" else "source_unavailable",
+                    )
+                }
+                hasConfirmedMatch -> {
+                    MetadataAlbumDebugResult(
+                        outcome = updateDoneWithoutChanges(album, now),
+                        result = "done",
+                        reason = "matched_no_changes",
+                    )
+                }
+                else -> {
+                    MetadataAlbumDebugResult(
+                        outcome = updateNoMatch(album, now),
+                        result = "no_match",
+                        reason = "providers_confirmed_no_match",
+                    )
+                }
             }
+            MetadataDebugLog.event(
+                "metadata_sync_album_result",
+                "albumId" to album.id,
+                "result" to result.result,
+                "reason" to result.reason,
+                "changed" to false,
+            )
+            return result.outcome
         }
 
         if (genreChoice.genres.isNotEmpty()) {
@@ -434,12 +626,7 @@ class MetadataSyncService(
             }
         }
 
-        AppDebugLog.log(
-            "MetadataSync: Сохраняем в БД '${album.title}': " +
-                "Жанры='${genreChoice.genres.joinToString(", ")}', Год='${yearChoice.value}'"
-        )
-
-        musicDao.updateAlbum(
+        musicDao.updateAlbumPreservingLocalArtwork(
             album.copy(
                 year = yearChoice.value,
                 musicBrainzReleaseGroupMbid = releaseGroupMbidChoice.value,
@@ -448,7 +635,7 @@ class MetadataSyncService(
                 artworkSourceTrust = if (hasNewCover) TRUST_LASTFM_ARTWORK else album.artworkSourceTrust,
                 yearSourceTrust = yearChoice.trust,
                 identitySourceTrust = releaseGroupMbidChoice.trust,
-                metadataState = MetadataState.DONE.name,
+                metadataState = if (hasProviderFailure) MetadataState.FAILED.name else MetadataState.DONE.name,
                 metadataUpdatedAt = now,
                 lastMetadataAttemptAt = now,
                 metadataVersion = CURRENT_METADATA_VERSION,
@@ -459,15 +646,57 @@ class MetadataSyncService(
                 coverLookupVersion = if (hasNewCover) CURRENT_COVER_LOOKUP_VERSION else album.coverLookupVersion,
             )
         )
-        return when (lastFmLookup) {
-            is LastFmAlbumLookup.RetryableFailure -> if (lastFmLookup.isRateLimited) SyncItemOutcome.RATE_LIMITED else SyncItemOutcome.PROCESSED
-            LastFmAlbumLookup.NoApiKey -> SyncItemOutcome.PROCESSED
+        MetadataDebugLog.event(
+            "metadata_sync_album_result",
+            "albumId" to album.id,
+            "result" to if (hasProviderFailure) "partial_failure" else "done",
+            "reason" to when {
+                isRateLimited -> "rate_limited"
+                hasProviderFailure -> "source_unavailable"
+                else -> "updated"
+            },
+            "changed" to true,
+            "yearChanged" to (yearChoice.value != album.year),
+            "identityChanged" to (
+                releaseGroupMbidChoice.value != album.musicBrainzReleaseGroupMbid
+            ),
+            "genreCandidateCount" to genreChoice.genres.size,
+            "coverChanged" to hasNewCover,
+        )
+        return when {
+            isRateLimited -> SyncItemOutcome.RATE_LIMITED
+            hasProviderFailure -> SyncItemOutcome.SOURCE_UNAVAILABLE
             else -> SyncItemOutcome.PROCESSED
         }
     }
 
+    private suspend fun updateMetadataFailed(album: AlbumEntity, timestamp: Long) {
+        musicDao.updateAlbumPreservingLocalArtwork(
+            album.copy(
+                metadataState = MetadataState.FAILED.name,
+                lastMetadataAttemptAt = timestamp,
+                metadataVersion = CURRENT_METADATA_VERSION,
+            )
+        )
+    }
+
+    private suspend fun updateDoneWithoutChanges(
+        album: AlbumEntity,
+        timestamp: Long,
+    ): SyncItemOutcome {
+        musicDao.updateAlbumPreservingLocalArtwork(
+            album.copy(
+                metadataState = MetadataState.DONE.name,
+                metadataUpdatedAt = timestamp,
+                lastMetadataAttemptAt = timestamp,
+                metadataVersion = CURRENT_METADATA_VERSION,
+            )
+        )
+        return SyncItemOutcome.PROCESSED
+    }
+
     private suspend fun updateCoverNoMatch(album: AlbumEntity, timestamp: Long): SyncItemOutcome {
-        musicDao.updateAlbum(
+        musicDao.updateAlbumPreservingLocalArtwork(
             album.copy(
                 coverLookupState = CoverLookupState.NO_MATCH.name,
                 coverLookupAttemptAt = timestamp,
@@ -479,7 +708,7 @@ class MetadataSyncService(
     }
 
     private suspend fun updateCoverFailed(album: AlbumEntity, timestamp: Long): SyncItemOutcome {
-        musicDao.updateAlbum(
+        musicDao.updateAlbumPreservingLocalArtwork(
             album.copy(
                 coverLookupState = CoverLookupState.FAILED.name,
                 coverLookupAttemptAt = timestamp,
@@ -490,7 +719,7 @@ class MetadataSyncService(
     }
 
     private suspend fun updateNoMatch(album: AlbumEntity, timestamp: Long): SyncItemOutcome {
-        musicDao.updateAlbum(
+        musicDao.updateAlbumPreservingLocalArtwork(
             album.copy(
                 metadataState = MetadataState.NO_MATCH.name,
                 lastMetadataAttemptAt = timestamp,
@@ -508,8 +737,14 @@ class MetadataSyncService(
             pendingTimeoutTimestamp = now - PENDING_TIMEOUT_MS,
             currentVersion = CURRENT_COVER_LOOKUP_VERSION,
         )
-        val lastFmPending = musicDao.getPendingMetadataCount()
-        return MetadataPendingCounts(cover = coverPending, lastFm = lastFmPending)
+        val lastFmPending = musicDao.getPendingMetadataCount(CURRENT_METADATA_VERSION)
+        val localArtworkVerification =
+            musicDao.getPendingLocalArtworkVerificationCount()
+        return MetadataPendingCounts(
+            cover = coverPending,
+            lastFm = lastFmPending,
+            localArtworkVerification = localArtworkVerification,
+        )
     }
 
     companion object {
@@ -577,6 +812,24 @@ private fun String.toSortKey(): String {
         .replace(Regex("\\s+"), " ")
 }
 
+private fun MusicBrainzMetadataLookup.debugResult(): String {
+    return when (this) {
+        is MusicBrainzMetadataLookup.Found -> "found"
+        MusicBrainzMetadataLookup.NoMatch -> "no_match"
+        is MusicBrainzMetadataLookup.RetryableFailure -> "retryable_failure"
+    }
+}
+
+private fun LastFmAlbumLookup.debugResult(): String {
+    return when (this) {
+        is LastFmAlbumLookup.Found -> "found"
+        LastFmAlbumLookup.NoApiKey -> "no_api_key"
+        LastFmAlbumLookup.NoMatch -> "no_match"
+        is LastFmAlbumLookup.PermanentFailure -> "permanent_failure"
+        is LastFmAlbumLookup.RetryableFailure -> "retryable_failure"
+    }
+}
+
 data class MetadataSyncBatchResult(
     val processed: Int,
     val stopReason: MetadataSyncStopReason,
@@ -587,13 +840,15 @@ enum class MetadataSyncStopReason {
     EMPTY_QUEUE,
     NO_API_KEY,
     RATE_LIMITED,
+    SOURCE_UNAVAILABLE,
 }
 
 private data class MetadataPendingCounts(
     val cover: Int,
     val lastFm: Int,
+    val localArtworkVerification: Int,
 ) {
-    val total: Int = cover + lastFm
+    val total: Int = cover + lastFm + localArtworkVerification
 }
 
 private fun MetadataSyncStopReason.toStatusMessage(
@@ -605,6 +860,7 @@ private fun MetadataSyncStopReason.toStatusMessage(
         MetadataSyncStopReason.EMPTY_QUEUE -> "Очередь метаданных пуста"
         MetadataSyncStopReason.BATCH_LIMIT -> "Обработано $processed, осталось $pending"
         MetadataSyncStopReason.RATE_LIMITED -> "Источник ограничил частоту запросов, продолжу позже"
+        MetadataSyncStopReason.SOURCE_UNAVAILABLE -> "Источник временно недоступен, продолжу позже"
     }
 }
 
@@ -613,23 +869,48 @@ private fun MetadataSyncStopReason.toFinalStatusMessage(
 ): String {
     return when {
         this == MetadataSyncStopReason.RATE_LIMITED -> "Источник ограничил частоту запросов, продолжу позже"
-        this == MetadataSyncStopReason.NO_API_KEY && counts.cover == 0 -> "Обложки обновлены, API-ключ Last.fm не задан"
+        this == MetadataSyncStopReason.SOURCE_UNAVAILABLE -> "Источник временно недоступен, продолжу позже"
+        this == MetadataSyncStopReason.NO_API_KEY &&
+            counts.cover == 0 &&
+            counts.localArtworkVerification == 0 ->
+            "Обложки обновлены, API-ключ Last.fm не задан"
         counts.total == 0 -> "Метаданные и обложки обновлены"
-        else -> "Осталось: обложки ${counts.cover}, Last.fm ${counts.lastFm}"
+        else -> "Осталось: локальная проверка ${counts.localArtworkVerification}, " +
+            "обложки ${counts.cover}, Last.fm ${counts.lastFm}"
     }
 }
 
-private fun MetadataSyncStopReason.toForcedCoverStatusMessage(processed: Int): String {
+private fun MetadataSyncStopReason.toForcedCoverStatusMessage(
+    processed: Int,
+    verificationPending: Int,
+): String {
     return when (this) {
-        MetadataSyncStopReason.EMPTY_QUEUE -> "MusicBrainz: отсутствующих обложек для проверки нет"
+        MetadataSyncStopReason.EMPTY_QUEUE -> if (verificationPending > 0) {
+            "Сначала проверяю локальные обложки: осталось $verificationPending"
+        } else {
+            "MusicBrainz: отсутствующих обложек для проверки нет"
+        }
         MetadataSyncStopReason.BATCH_LIMIT -> "MusicBrainz: проверено обложек $processed"
         MetadataSyncStopReason.RATE_LIMITED -> "MusicBrainz ограничил частоту запросов, попробуй позже"
+        MetadataSyncStopReason.SOURCE_UNAVAILABLE -> "MusicBrainz временно недоступен, попробуй позже"
         MetadataSyncStopReason.NO_API_KEY -> "MusicBrainz: API-ключ не нужен"
     }
+}
+
+private fun MetadataSyncStopReason.stopsRemoteSync(): Boolean {
+    return this == MetadataSyncStopReason.RATE_LIMITED ||
+        this == MetadataSyncStopReason.SOURCE_UNAVAILABLE
 }
 
 private enum class SyncItemOutcome {
     PROCESSED,
     NO_API_KEY,
     RATE_LIMITED,
+    SOURCE_UNAVAILABLE,
 }
+
+private data class MetadataAlbumDebugResult(
+    val outcome: SyncItemOutcome,
+    val result: String,
+    val reason: String,
+)

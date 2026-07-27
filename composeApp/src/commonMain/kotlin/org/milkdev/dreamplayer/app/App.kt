@@ -988,6 +988,7 @@ fun PlayerBar(
                     uri = currentTrack?.albumArtUri,
                     modifier = Modifier.fillMaxSize(),
                     maxDecodeSizePx = 160,
+                    artworkRevision = currentTrack?.contentVersion ?: 0L,
                 )
             }
 

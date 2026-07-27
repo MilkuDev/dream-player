@@ -10,8 +10,17 @@ import kotlin.concurrent.atomics.ExperimentalAtomicApi
 data class LogEntry(
     val sequenceId: Long,
     val message: String,
+    val kind: LogEntryKind = LogEntryKind.General,
 ) {
     override fun toString(): String = message
+}
+
+enum class LogEntryKind {
+    General,
+    NetworkRequest,
+    NetworkResponse,
+    NetworkFailure,
+    NetworkCancelled,
 }
 
 @OptIn(ExperimentalAtomicApi::class)
@@ -29,16 +38,17 @@ object LogStorage {
     val otherNetworkLogs: StateFlow<List<LogEntry>> = _otherNetworkLogs.asStateFlow()
 
     fun addLog(message: String) {
-        _logs.addBounded(message)
+        _logs.addBounded(message, LogEntryKind.General)
     }
 
     fun addNetworkLog(
         channel: NetworkTraceLogChannel,
         message: String,
+        kind: LogEntryKind,
     ) {
         when (channel) {
-            NetworkTraceLogChannel.LastFm -> _lastFmNetworkLogs.addBounded(message)
-            NetworkTraceLogChannel.OtherServices -> _otherNetworkLogs.addBounded(message)
+            NetworkTraceLogChannel.LastFm -> _lastFmNetworkLogs.addBounded(message, kind)
+            NetworkTraceLogChannel.OtherServices -> _otherNetworkLogs.addBounded(message, kind)
         }
     }
 
@@ -54,10 +64,14 @@ object LogStorage {
         _otherNetworkLogs.value = emptyList()
     }
 
-    private fun MutableStateFlow<List<LogEntry>>.addBounded(message: String) {
+    private fun MutableStateFlow<List<LogEntry>>.addBounded(
+        message: String,
+        kind: LogEntryKind,
+    ) {
         val entry = LogEntry(
             sequenceId = nextSequenceId.fetchAndAdd(1L),
             message = message,
+            kind = kind,
         )
         update { currentLogs ->
             (currentLogs + entry).takeLast(MAX_LOGS)

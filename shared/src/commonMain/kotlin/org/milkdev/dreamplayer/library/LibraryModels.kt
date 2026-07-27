@@ -41,6 +41,7 @@ data class AlbumListItem(
     val year: Int?,
     val genre: String?,
     val artworkUri: String?,
+    val artworkRevision: Long = 0L,
 )
 
 data class TrackListItem(
@@ -52,6 +53,7 @@ data class TrackListItem(
     val year: Int?,
     val genre: String?,
     val artworkUri: String?,
+    val artworkRevision: Long = 0L,
 ) {
     fun toLibraryTrack(): LibraryTrack {
         return LibraryTrack(
@@ -61,7 +63,8 @@ data class TrackListItem(
             albumName = albumTitle,
             durationMs = durationMs,
             albumArtUri = artworkUri,
-            isPresent = true
+            isPresent = true,
+            contentVersion = artworkRevision,
         )
     }
 }

@@ -202,6 +202,7 @@ fun LibrarySearchScreen(
                                                 modifier = Modifier.fillMaxSize(),
                                                 maxDecodeSizePx = 192,
                                                 loadUncached = loadUncachedArtwork,
+                                                artworkRevision = track.contentVersion,
                                             )
                                         }
                                         Spacer(modifier = Modifier.width(16.dp))

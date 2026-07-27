@@ -3,9 +3,14 @@
 package org.milkdev.dreamplayer.library
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.IO
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -27,6 +32,7 @@ import org.milkdev.dreamplayer.database.entities.PlaybackHistoryEntity
 import org.milkdev.dreamplayer.database.entities.SyncAuditEntity
 import org.milkdev.dreamplayer.database.entities.SyncStatus
 import org.milkdev.dreamplayer.database.entities.TrackEntity
+import org.milkdev.dreamplayer.database.entities.TrackWithArtwork
 import org.milkdev.dreamplayer.diagnostics.AppDebugLog
 import org.milkdev.dreamplayer.extensions.data.CoverArtRepository
 import org.milkdev.dreamplayer.extensions.data.LastFmRepository
@@ -57,6 +63,7 @@ class MusicRepository(
     private val playbackItemCache = KmpLruCache<Long, ResolvedPlaybackItem>(MAX_PLAYBACK_ITEM_CACHE_SIZE)
 
     private val playbackItemCacheMutex = Mutex()
+    private var artworkVerificationJob: Job? = null
     private val metadataSyncService = MetadataSyncService(
         musicDao = musicDao,
         lastFmRepository = LastFmRepository(LastFmService()),
@@ -95,7 +102,8 @@ class MusicRepository(
             val scanDurationMs = scanStart.elapsedMs()
 
             val artistMap = syncArtists(rawTracks)
-            val albumMap = syncAlbums(rawTracks, artistMap, currentSyncTimestamp)
+            val albumSyncResult = syncAlbums(rawTracks, artistMap, currentSyncTimestamp)
+            val albumMap = albumSyncResult.albumMap
             val movedTrackQueues = musicDao.getMissingTracks().toMovedTrackQueues()
             var changedTracks = 0
             var skippedTracks = 0
@@ -139,8 +147,12 @@ class MusicRepository(
                 )
             )
             clearPlaybackItemCache()
+            val artworkVerificationScheduled =
+                scheduleArtworkVerification(albumSyncResult.artworkCandidates)
             metadataSyncService.refreshPendingCount()
-            metadataSyncService.startAutoBatch()
+            if (!artworkVerificationScheduled) {
+                metadataSyncService.startAutoBatch()
+            }
         } catch (e: Exception) {
             AppDebugLog.log(
                 "library_sync_error tracks=$tracksFound durationMs=${syncStart.elapsedMs()} " +
@@ -177,17 +189,48 @@ class MusicRepository(
         rawTracks: List<RawTrackData>,
         artistMap: Map<String, Long>,
         timestamp: Long
-    ): Map<Pair<String, Long>, Long> {
-        val albums = rawTracks.mapNotNull {
-            val artistName = it.artist ?: UNKNOWN_ARTIST
+    ): AlbumSyncResult {
+        val tracksByAlbum = rawTracks.mapNotNull { raw ->
+            val artistName = raw.artist ?: UNKNOWN_ARTIST
             val artistId = artistMap[artistName] ?: return@mapNotNull null
+            ((raw.album ?: UNKNOWN_ALBUM) to artistId) to raw
+        }.groupBy(
+            keySelector = { it.first },
+            valueTransform = { it.second },
+        )
+        val albums = tracksByAlbum.map { (identity, tracks) ->
+            val presentTrack = tracks.firstOrNull {
+                it.effectiveLocalArtworkState() == LocalArtworkState.PRESENT &&
+                    !it.albumArtUri.isNullOrBlank()
+            }
+            val localArtworkState = when {
+                presentTrack != null -> LocalArtworkState.PRESENT
+                tracks.any { it.effectiveLocalArtworkState() == LocalArtworkState.UNKNOWN } ->
+                    LocalArtworkState.UNKNOWN
+                else -> LocalArtworkState.MISSING
+            }
+            val albumUris = tracks.mapNotNull { it.albumArtworkKey?.takeIf(String::isNotBlank) }
+                .distinct()
+                .sorted()
+            val localArtworkKey = albumUris.takeIf { it.isNotEmpty() }?.joinToString("|")
+            val localArtworkFingerprint = tracks
+                .sortedBy { it.path }
+                .joinToString("|") { "${it.path}:${it.fileSize}:${it.lastModified}" }
+                .stableHash64()
+                .toString()
+
             AlbumData(
-                title = it.album ?: UNKNOWN_ALBUM,
-                artistId = artistId,
-                artUri = it.albumArtUri,
-                coverSource = it.albumArtSource,
+                title = identity.first,
+                artistId = identity.second,
+                artUri = presentTrack?.albumArtUri,
+                coverSource = presentTrack?.albumArtSource ?: CoverSource.NONE,
+                localArtworkKey = localArtworkKey,
+                localArtworkFingerprint = localArtworkFingerprint,
+                localArtworkState = localArtworkState,
+                albumUris = albumUris,
+                sampleTrackUris = tracks.map { it.path }.distinct().take(MAX_ARTWORK_SAMPLE_TRACKS),
             )
-        }.distinctBy { it.title to it.artistId }
+        }
 
         if (albums.isNotEmpty()) {
             val artistNameMap = artistMap.entries.associate { it.value to it.key }
@@ -197,6 +240,12 @@ class MusicRepository(
                         title = it.title,
                         artistId = it.artistId,
                         albumArtUri = it.artUri,
+                        localArtworkKey = it.localArtworkKey,
+                        localArtworkFingerprint = it.localArtworkFingerprint,
+                        localArtworkState = it.localArtworkState.name,
+                        localArtworkCheckedAt = if (
+                            it.localArtworkState != LocalArtworkState.UNKNOWN
+                        ) timestamp else null,
                         coverSource = it.coverSource.name,
                         lastSeenTimestamp = timestamp,
                         titleSortKey = it.title.toSortKey(),
@@ -215,13 +264,115 @@ class MusicRepository(
                 albumId = albumId,
                 albumArtUri = album.artUri,
                 coverSource = album.coverSource.name,
+                localArtworkKey = album.localArtworkKey,
+                localArtworkFingerprint = album.localArtworkFingerprint,
+                localArtworkState = album.localArtworkState.name,
                 timestamp = timestamp,
                 titleSortKey = album.title.toSortKey(),
                 artistSortKey = (artistNameMap[album.artistId] ?: "").toSortKey(),
             )
         }
 
-        return albumMap
+        val artworkCandidates = albums.mapNotNull { album ->
+            if (album.albumUris.isEmpty()) return@mapNotNull null
+            val albumId = albumMap[album.title to album.artistId] ?: return@mapNotNull null
+            ArtworkProbeCandidate(
+                requestId = albumId,
+                albumUris = album.albumUris,
+                sampleTrackUris = album.sampleTrackUris,
+            )
+        }
+        return AlbumSyncResult(
+            albumMap = albumMap,
+            artworkCandidates = artworkCandidates,
+        )
+    }
+
+    private fun scheduleArtworkVerification(candidates: List<ArtworkProbeCandidate>): Boolean {
+        artworkVerificationJob?.cancel()
+        if (candidates.isEmpty()) return false
+
+        artworkVerificationJob = scope.launch(Dispatchers.IO) {
+            val now = currentTimeMillis()
+            val albumsById = candidates
+                .map { it.requestId }
+                .distinct()
+                .chunked(QUERY_BATCH_SIZE)
+                .flatMap { musicDao.getAlbumsByIds(it) }
+                .associateBy { it.id }
+            val dueCandidates = candidates.filter { candidate ->
+                val album = albumsById[candidate.requestId] ?: return@filter false
+                val checkedAt = album.localArtworkCheckedAt
+                when (album.localArtworkState.toLocalArtworkState()) {
+                    LocalArtworkState.UNKNOWN ->
+                        checkedAt == null || checkedAt < now - UNKNOWN_ARTWORK_RETRY_MS
+                    LocalArtworkState.PRESENT,
+                    LocalArtworkState.MISSING ->
+                        checkedAt == null || checkedAt < now - ARTWORK_REVERIFY_INTERVAL_MS
+                }
+            }
+            if (dueCandidates.isEmpty()) {
+                metadataSyncService.startAutoBatch()
+                return@launch
+            }
+
+            AppDebugLog.log("artwork_verify_start albums=${dueCandidates.size}")
+            var present = 0
+            var missing = 0
+            var unknown = 0
+
+            dueCandidates.chunked(ARTWORK_PROBE_CONCURRENCY).forEach { chunk ->
+                val results = coroutineScope {
+                    chunk.map { candidate ->
+                        async {
+                            runCatching { scanner.probeArtwork(candidate) }
+                                .getOrElse { error ->
+                                    if (error is CancellationException) throw error
+                                    ArtworkProbeResult(
+                                        requestId = candidate.requestId,
+                                        state = LocalArtworkState.UNKNOWN,
+                                    )
+                                }
+                        }
+                    }.awaitAll()
+                }
+                val checkedAt = currentTimeMillis()
+                results.forEach { result ->
+                    when (result.state) {
+                        LocalArtworkState.PRESENT -> present += 1
+                        LocalArtworkState.MISSING -> missing += 1
+                        LocalArtworkState.UNKNOWN -> unknown += 1
+                    }
+                    musicDao.updateLocalArtworkVerification(
+                        albumId = result.requestId,
+                        state = result.state.name,
+                        artworkUri = result.artworkUri,
+                        coverSource = CoverSource.LOCAL_CACHE.name,
+                        timestamp = checkedAt,
+                    )
+                }
+            }
+
+            clearPlaybackItemCache()
+            metadataSyncService.refreshPendingCount()
+            metadataSyncService.startAutoBatch()
+            AppDebugLog.log(
+                "artwork_verify_complete albums=${dueCandidates.size} " +
+                "present=$present missing=$missing unknown=$unknown"
+            )
+        }
+        artworkVerificationJob?.invokeOnCompletion { error ->
+            if (error != null && error !is CancellationException) {
+                scope.launch(Dispatchers.IO) {
+                    AppDebugLog.log(
+                        "artwork_verify_error message=${error.message.orEmpty()}"
+                    )
+                    metadataSyncService.refreshPendingCount()
+                    metadataSyncService.startAutoBatch()
+                }
+            }
+        }
+        return true
     }
 
     suspend fun getAllTrackIds(order: TrackSortOrder): LongArray = withContext(Dispatchers.IO) {
@@ -342,37 +493,35 @@ class MusicRepository(
                     !metadata.recordingMbid.isNullOrBlank() -> EmbeddedMbidStatus.FOUND
                     else -> EmbeddedMbidStatus.NOT_PRESENT
                 }
+                val parentGenres = metadata?.genres.orEmpty().flatMap {
+                    GenreDictionary.resolveParentGenres(it)
+                }.distinct()
 
-                musicDao.updateTrackEmbeddedIdentity(
+                musicDao.applyEmbeddedMetadata(
                     trackId = track.id,
+                    expectedFilePath = raw.path,
+                    expectedContentFingerprint = raw.contentFingerprint(),
+                    expectedGeneration = generation,
                     recordingMbid = metadata?.recordingMbid,
-                    identityTrust = TRUST_EMBEDDED_IDENTITY,
-                )
-                musicDao.upsertTrackEmbeddedMetadataState(
-                    trackId = track.id,
+                    releaseMbid = metadata?.releaseMbid,
+                    releaseGroupMbid = metadata?.releaseGroupMbid,
+                    artistMbids = metadata?.artistMbids.orEmpty(),
+                    albumArtistMbids = metadata?.albumArtistMbids.orEmpty(),
+                    year = metadata?.year,
+                    genres = parentGenres.map { genre ->
+                        GenreEntity(
+                            name = genre,
+                            sortKey = genre.toSortKey(),
+                            createdAt = now,
+                        )
+                    },
                     embeddedMbidStatus = mbidStatus.name,
                     embeddedFingerprint = metadata?.tagFingerprint,
-                    generation = generation,
                     timestamp = now,
+                    identityTrust = TRUST_EMBEDDED_IDENTITY,
+                    yearTrust = TRUST_EMBEDDED_YEAR,
+                    genreTrust = TRUST_EMBEDDED_GENRE,
                 )
-                metadata?.genres?.takeIf { it.isNotEmpty() }?.let { genres ->
-                    val parentGenres = genres.flatMap {
-                        GenreDictionary.resolveParentGenres(it)
-                    }.distinct()
-                    if (parentGenres.isNotEmpty()) {
-                        musicDao.replaceTrackGenres(
-                            trackId = track.id,
-                            genres = parentGenres.map { genre ->
-                                GenreEntity(
-                                    name = genre,
-                                    sortKey = genre.toSortKey(),
-                                    createdAt = now,
-                                )
-                            },
-                            sourceTrust = TRUST_EMBEDDED_GENRE,
-                        )
-                    }
-                }
             }
         }
     }
@@ -456,6 +605,15 @@ class MusicRepository(
         val artistId: Long,
         val artUri: String?,
         val coverSource: CoverSource,
+        val localArtworkKey: String?,
+        val localArtworkFingerprint: String,
+        val localArtworkState: LocalArtworkState,
+        val albumUris: List<String>,
+        val sampleTrackUris: List<String>,
+    )
+    private data class AlbumSyncResult(
+        val albumMap: Map<Pair<String, Long>, Long>,
+        val artworkCandidates: List<ArtworkProbeCandidate>,
     )
     private data class BatchSyncStats(
         val changed: Int,
@@ -470,7 +628,10 @@ class MusicRepository(
     )
 
     suspend fun getLibrarySummary(): LibrarySummary = withContext(Dispatchers.IO) {
-        musicDao.getLibrarySummary()
+        musicDao.getLibrarySummary(
+            currentMetadataVersion = MetadataSyncService.CURRENT_METADATA_VERSION,
+            currentCoverLookupVersion = MetadataSyncService.CURRENT_COVER_LOOKUP_VERSION,
+        )
     }
 
     suspend fun getTrackPage(
@@ -626,8 +787,8 @@ class MusicRepository(
             val cacheMisses = uniqueIds.filter { it !in cachedById }
             val loadedById = cacheMisses
                 .chunked(QUERY_BATCH_SIZE)
-                .flatMap { chunk -> musicDao.getTracksByIds(chunk) }
-                .associate { entity -> entity.id to entity.toResolvedPlaybackItem() }
+                .flatMap { chunk -> musicDao.getTracksWithArtworkByIds(chunk) }
+                .associate { row -> row.track.id to row.toResolvedPlaybackItem() }
 
             if (loadedById.isNotEmpty()) {
                 playbackItemCacheMutex.withLock {
@@ -654,11 +815,13 @@ class MusicRepository(
     }
 
     fun getTracksByAlbum(albumId: Long): Flow<List<LibraryTrack>> {
-        return musicDao.getTracksByAlbum(albumId).map { tracks -> tracks.map { it.toLibraryTrack() } }
+        return musicDao.getTracksWithArtworkByAlbum(albumId)
+            .map { tracks -> tracks.map { it.toLibraryTrack() } }
     }
 
     fun getTracksByArtist(artistId: Long): Flow<List<LibraryTrack>> {
-        return musicDao.getTracksByArtist(artistId).map { tracks -> tracks.map { it.toLibraryTrack() } }
+        return musicDao.getTracksWithArtworkByArtist(artistId)
+            .map { tracks -> tracks.map { it.toLibraryTrack() } }
     }
 
     fun getAlbumsByGenre(genreId: Long): Flow<List<AlbumListItem>> {
@@ -746,6 +909,19 @@ class MusicRepository(
         )
     }
 
+    private fun TrackWithArtwork.toLibraryTrack(): LibraryTrack {
+        return LibraryTrack(
+            id = track.id,
+            title = track.title,
+            artistName = track.artistName,
+            albumName = track.albumName,
+            durationMs = track.durationMs,
+            albumArtUri = artworkUri,
+            isPresent = track.isPresent,
+            contentVersion = track.contentVersion() xor artworkRevision,
+        )
+    }
+
     private fun TrackEntity.toResolvedPlaybackItem(): ResolvedPlaybackItem {
         val resolvedAvailability = when {
             !isPresent -> TrackAvailability.MISSING
@@ -766,6 +942,31 @@ class MusicRepository(
                 albumName = albumName,
                 durationMs = durationMs,
                 albumArtUri = albumArtUri,
+            ),
+        )
+    }
+
+    private fun TrackWithArtwork.toResolvedPlaybackItem(): ResolvedPlaybackItem {
+        val resolvedAvailability = when {
+            !track.isPresent -> TrackAvailability.MISSING
+            track.filePath.isBlank() -> TrackAvailability.NEEDS_RESOLVE
+            else -> track.availability.toTrackAvailability()
+        }
+        val resolvedContentVersion = track.contentVersion() xor artworkRevision
+
+        return ResolvedPlaybackItem(
+            ref = PlaybackItemRef(
+                trackId = track.id,
+                uri = track.filePath,
+                availability = resolvedAvailability,
+                contentVersion = resolvedContentVersion,
+            ),
+            metadata = TrackPlaybackMetadata(
+                title = track.title,
+                artistName = track.artistName,
+                albumName = track.albumName,
+                durationMs = track.durationMs,
+                albumArtUri = artworkUri,
             ),
         )
     }
@@ -847,6 +1048,19 @@ class MusicRepository(
         return "${mediaStoreId.orEmptyKey()}:$path:$fileSize:$lastModified:$durationMs:${albumArtUri.orEmpty()}"
     }
 
+    private fun RawTrackData.effectiveLocalArtworkState(): LocalArtworkState {
+        return if (albumArtUri.isNullOrBlank()) {
+            localArtworkState
+        } else {
+            LocalArtworkState.PRESENT
+        }
+    }
+
+    private fun String.toLocalArtworkState(): LocalArtworkState {
+        return LocalArtworkState.entries.firstOrNull { it.name == this }
+            ?: LocalArtworkState.UNKNOWN
+    }
+
     private fun Long?.orEmptyKey(): String = this?.toString().orEmpty()
 
     private fun String.stableHash64(): Long {
@@ -867,8 +1081,13 @@ class MusicRepository(
         const val BATCH_SIZE = 500
         const val QUERY_BATCH_SIZE = 500
         const val MAX_PLAYBACK_ITEM_CACHE_SIZE = 500
+        const val ARTWORK_PROBE_CONCURRENCY = 2
+        const val MAX_ARTWORK_SAMPLE_TRACKS = 3
+        const val UNKNOWN_ARTWORK_RETRY_MS = 6L * 60 * 60 * 1000
+        const val ARTWORK_REVERIFY_INTERVAL_MS = 7L * 24 * 60 * 60 * 1000
         const val TOMBSTONE_RETENTION_MS = 14L * 24 * 60 * 60 * 1000
         const val TRUST_EMBEDDED_IDENTITY = 100
+        const val TRUST_EMBEDDED_YEAR = 100
         const val TRUST_EMBEDDED_GENRE = 80
         const val UNKNOWN_ARTIST = "Unknown Artist"
         const val UNKNOWN_ALBUM = "Unknown Album"

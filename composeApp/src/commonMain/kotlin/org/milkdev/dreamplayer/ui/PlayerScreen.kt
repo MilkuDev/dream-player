@@ -188,6 +188,7 @@ private fun PortraitPlayerContent(
 
             AlbumArtwork(
                 albumArtUri = playbackState.currentTrack?.albumArtUri,
+                artworkRevision = playbackState.currentTrack?.contentVersion ?: 0L,
                 modifier = Modifier.size(artworkSize)
             )
         }
@@ -249,6 +250,7 @@ private fun WidePlayerContent(
 
             AlbumArtwork(
                 albumArtUri = playbackState.currentTrack?.albumArtUri,
+                artworkRevision = playbackState.currentTrack?.contentVersion ?: 0L,
                 modifier = Modifier.size(artworkSize)
             )
         }
@@ -299,6 +301,7 @@ private fun WidePlayerContent(
 @Composable
 private fun AlbumArtwork(
     albumArtUri: String?,
+    artworkRevision: Long,
     modifier: Modifier = Modifier
 ) {
     Box(
@@ -310,6 +313,7 @@ private fun AlbumArtwork(
         TrackImage(
             uri = albumArtUri,
             modifier = Modifier.fillMaxSize(),
+            artworkRevision = artworkRevision,
         )
     }
 }

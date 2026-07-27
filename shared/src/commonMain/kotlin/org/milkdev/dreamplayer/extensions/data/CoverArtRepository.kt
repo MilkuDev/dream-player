@@ -9,6 +9,7 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.Url
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -106,7 +107,7 @@ class CoverArtRepository(
         musicBrainzLimiter.awaitPermit()
         val query = buildReleaseGroupQuery(artist = artist, album = album)
 
-        NetworkTraceLog.request(
+        val requestTrace = NetworkTraceLog.request(
             serviceName = endpoint.serviceName,
             method = "GET",
             url = endpoint.url,
@@ -117,63 +118,62 @@ class CoverArtRepository(
             ),
         )
 
-        return runCatching {
-            client.get(endpoint.url) {
+        return try {
+            val response = client.get(endpoint.url) {
                 header(HttpHeaders.UserAgent, USER_AGENT)
                 parameter("fmt", "json")
                 parameter("limit", "5")
                 parameter("query", query)
             }
-        }.fold(
-            onSuccess = { response ->
-                val text = response.bodyAsText()
-                NetworkTraceLog.textResponse(
-                    serviceName = endpoint.serviceName,
-                    statusCode = response.status.value,
-                    body = text,
-                    contentType = response.headers[HttpHeaders.ContentType],
-                )
-                when (response.status) {
-                    HttpStatusCode.OK -> {
-                        val decoded = runCatching {
-                            json.decodeFromString<MusicBrainzReleaseGroupSearchResponse>(
-                                text
-                            )
-                        }.getOrElse {
-                            return MusicBrainzSearchResult.RetryableFailure(
-                                message = "MusicBrainz вернул неожиданный ответ",
-                            )
-                        }
-                        decoded.releaseGroups
-                            .filter { it.score >= MIN_MUSICBRAINZ_SCORE }
-                            .firstOrNull { it.matches(artist = artist, album = album) }
-                            ?.let { MusicBrainzSearchResult.Found(it) }
-                            ?: MusicBrainzSearchResult.NoMatch
-                    }
-                    HttpStatusCode.TooManyRequests,
-                    HttpStatusCode.ServiceUnavailable -> {
-                        musicBrainzLimiter.cooldown(RATE_LIMIT_COOLDOWN_MS)
-                        MusicBrainzSearchResult.RetryableFailure(
-                            message = "MusicBrainz ограничил частоту запросов",
-                            isRateLimited = true,
+            val text = response.bodyAsText()
+            NetworkTraceLog.textResponse(
+                trace = requestTrace,
+                statusCode = response.status.value,
+                body = text,
+                contentType = response.headers[HttpHeaders.ContentType],
+            )
+            when (response.status) {
+                HttpStatusCode.OK -> {
+                    val decoded = runCatching {
+                        json.decodeFromString<MusicBrainzReleaseGroupSearchResponse>(
+                            text
+                        )
+                    }.getOrElse {
+                        return MusicBrainzSearchResult.RetryableFailure(
+                            message = "MusicBrainz вернул неожиданный ответ",
                         )
                     }
-                    else -> MusicBrainzSearchResult.RetryableFailure(
-                        message = "MusicBrainz ответил HTTP ${response.status.value}",
-                        isRateLimited = false,
+                    decoded.releaseGroups
+                        .filter { it.score >= MIN_MUSICBRAINZ_SCORE }
+                        .firstOrNull { it.matches(artist = artist, album = album) }
+                        ?.let { MusicBrainzSearchResult.Found(it) }
+                        ?: MusicBrainzSearchResult.NoMatch
+                }
+                HttpStatusCode.TooManyRequests,
+                HttpStatusCode.ServiceUnavailable -> {
+                    musicBrainzLimiter.cooldown(RATE_LIMIT_COOLDOWN_MS)
+                    MusicBrainzSearchResult.RetryableFailure(
+                        message = "MusicBrainz ограничил частоту запросов",
+                        isRateLimited = true,
                     )
                 }
-            },
-            onFailure = { error ->
-                NetworkTraceLog.failure(
-                    serviceName = endpoint.serviceName,
-                    message = error.message ?: "Ошибка сети или TLS",
+                else -> MusicBrainzSearchResult.RetryableFailure(
+                    message = "MusicBrainz ответил HTTP ${response.status.value}",
+                    isRateLimited = false,
                 )
-                MusicBrainzSearchResult.RetryableFailure(
-                    message = "Ошибка сети или TLS при обращении к MusicBrainz",
-                )
-            },
-        )
+            }
+        } catch (error: CancellationException) {
+            NetworkTraceLog.cancelled(requestTrace)
+            throw error
+        } catch (error: Throwable) {
+            NetworkTraceLog.failure(
+                trace = requestTrace,
+                message = error.message ?: "Ошибка сети или TLS",
+            )
+            MusicBrainzSearchResult.RetryableFailure(
+                message = "Ошибка сети или TLS при обращении к MusicBrainz",
+            )
+        }
     }
 
     private suspend fun downloadCover(
@@ -207,60 +207,60 @@ class CoverArtRepository(
         }
 
         limiter.awaitPermit()
-        NetworkTraceLog.request(
+        val requestTrace = NetworkTraceLog.request(
             serviceName = serviceName,
             method = "GET",
             url = checkedUrl,
         )
 
-        return runCatching {
-            noRedirectClient.get(checkedUrl) {
+        return try {
+            val response = noRedirectClient.get(checkedUrl) {
                 header(HttpHeaders.UserAgent, USER_AGENT)
             }
-        }.fold(
-            onSuccess = { response ->
-                when (response.status) {
-                    HttpStatusCode.OK -> {
-                        val bytes: ByteArray = response.body()
-                        NetworkTraceLog.metadataResponse(
-                            serviceName = serviceName,
-                            statusCode = response.status.value,
-                            contentType = response.headers[HttpHeaders.ContentType],
-                            byteCount = bytes.size,
-                        )
-                        val localUri = fileStore.saveRemoteAlbumArt(
-                            albumId = albumId,
-                            sourceUrl = checkedUrl,
-                            bytes = bytes,
-                            contentType = response.headers[HttpHeaders.ContentType],
-                        )
-                        CoverArtLookup.Found(
-                            localUri = localUri,
-                            musicBrainzReleaseGroupMbid = musicBrainzReleaseGroupMbid,
-                        )
-                    }
-                    HttpStatusCode.NotFound -> {
-                        NetworkTraceLog.metadataResponse(
-                            serviceName = serviceName,
-                            statusCode = response.status.value,
-                            contentType = response.headers[HttpHeaders.ContentType],
-                        )
-                        CoverArtLookup.NoMatch
-                    }
-                    HttpStatusCode.MovedPermanently,
-                    HttpStatusCode.Found,
-                    HttpStatusCode.SeeOther,
-                    HttpStatusCode.TemporaryRedirect,
-                    HttpStatusCode.PermanentRedirect -> {
-                        val redirectUrl = response.headers[HttpHeaders.Location]
-                            ?.toRedirectUrl(currentUrl = checkedUrl)
-                            ?: return CoverArtLookup.RetryableFailure("Сервер обложек вернул пустой redirect")
-                        NetworkTraceLog.metadataResponse(
-                            serviceName = serviceName,
-                            statusCode = response.status.value,
-                            contentType = response.headers[HttpHeaders.ContentType],
-                            note = "location=$redirectUrl",
-                        )
+            when (response.status) {
+                HttpStatusCode.OK -> {
+                    val bytes: ByteArray = response.body()
+                    NetworkTraceLog.metadataResponse(
+                        trace = requestTrace,
+                        statusCode = response.status.value,
+                        contentType = response.headers[HttpHeaders.ContentType],
+                        byteCount = bytes.size,
+                    )
+                    val localUri = fileStore.saveRemoteAlbumArt(
+                        albumId = albumId,
+                        sourceUrl = checkedUrl,
+                        bytes = bytes,
+                        contentType = response.headers[HttpHeaders.ContentType],
+                    )
+                    CoverArtLookup.Found(
+                        localUri = localUri,
+                        musicBrainzReleaseGroupMbid = musicBrainzReleaseGroupMbid,
+                    )
+                }
+                HttpStatusCode.NotFound -> {
+                    NetworkTraceLog.metadataResponse(
+                        trace = requestTrace,
+                        statusCode = response.status.value,
+                        contentType = response.headers[HttpHeaders.ContentType],
+                    )
+                    CoverArtLookup.NoMatch
+                }
+                HttpStatusCode.MovedPermanently,
+                HttpStatusCode.Found,
+                HttpStatusCode.SeeOther,
+                HttpStatusCode.TemporaryRedirect,
+                HttpStatusCode.PermanentRedirect -> {
+                    val redirectUrl = response.headers[HttpHeaders.Location]
+                        ?.toRedirectUrl(currentUrl = checkedUrl)
+                    NetworkTraceLog.metadataResponse(
+                        trace = requestTrace,
+                        statusCode = response.status.value,
+                        contentType = response.headers[HttpHeaders.ContentType],
+                        note = redirectUrl?.let { "location=$it" } ?: "location=missing",
+                    )
+                    if (redirectUrl == null) {
+                        CoverArtLookup.RetryableFailure("Сервер обложек вернул пустой redirect")
+                    } else {
                         downloadCover(
                             albumId = albumId,
                             sourceUrl = redirectUrl,
@@ -271,39 +271,41 @@ class CoverArtRepository(
                             redirectDepth = redirectDepth + 1,
                         )
                     }
-                    HttpStatusCode.TooManyRequests,
-                    HttpStatusCode.ServiceUnavailable -> {
-                        NetworkTraceLog.metadataResponse(
-                            serviceName = serviceName,
-                            statusCode = response.status.value,
-                            contentType = response.headers[HttpHeaders.ContentType],
-                        )
-                        limiter.cooldown(RATE_LIMIT_COOLDOWN_MS)
-                        CoverArtLookup.RetryableFailure(
-                            message = "$serviceName ограничил частоту запросов",
-                            isRateLimited = true,
-                        )
-                    }
-                    else -> {
-                        NetworkTraceLog.metadataResponse(
-                            serviceName = serviceName,
-                            statusCode = response.status.value,
-                            contentType = response.headers[HttpHeaders.ContentType],
-                        )
-                        CoverArtLookup.RetryableFailure(
-                            message = "$serviceName ответил HTTP ${response.status.value}",
-                        )
-                    }
                 }
-            },
-            onFailure = { error ->
-                NetworkTraceLog.failure(
-                    serviceName = serviceName,
-                    message = error.message ?: "Ошибка сети или TLS",
-                )
-                CoverArtLookup.RetryableFailure("Ошибка сети или TLS при загрузке обложки")
-            },
-        )
+                HttpStatusCode.TooManyRequests,
+                HttpStatusCode.ServiceUnavailable -> {
+                    NetworkTraceLog.metadataResponse(
+                        trace = requestTrace,
+                        statusCode = response.status.value,
+                        contentType = response.headers[HttpHeaders.ContentType],
+                    )
+                    limiter.cooldown(RATE_LIMIT_COOLDOWN_MS)
+                    CoverArtLookup.RetryableFailure(
+                        message = "$serviceName ограничил частоту запросов",
+                        isRateLimited = true,
+                    )
+                }
+                else -> {
+                    NetworkTraceLog.metadataResponse(
+                        trace = requestTrace,
+                        statusCode = response.status.value,
+                        contentType = response.headers[HttpHeaders.ContentType],
+                    )
+                    CoverArtLookup.RetryableFailure(
+                        message = "$serviceName ответил HTTP ${response.status.value}",
+                    )
+                }
+            }
+        } catch (error: CancellationException) {
+            NetworkTraceLog.cancelled(requestTrace)
+            throw error
+        } catch (error: Throwable) {
+            NetworkTraceLog.failure(
+                trace = requestTrace,
+                message = error.message ?: "Ошибка сети или TLS",
+            )
+            CoverArtLookup.RetryableFailure("Ошибка сети или TLS при загрузке обложки")
+        }
     }
 
     private fun MusicBrainzReleaseGroup.matches(artist: String, album: String): Boolean {

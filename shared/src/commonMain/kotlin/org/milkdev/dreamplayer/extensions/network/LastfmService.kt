@@ -6,6 +6,7 @@ import io.ktor.client.request.get
 import io.ktor.client.request.parameter
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -152,7 +153,7 @@ class LastFmService(
                 )
             }
 
-        NetworkTraceLog.request(
+        val requestTrace = NetworkTraceLog.request(
             serviceName = endpoint.serviceName,
             method = "GET",
             url = endpoint.url,
@@ -162,44 +163,52 @@ class LastFmService(
             ) + traceParameters,
         )
 
-        return runCatching {
-            client.get(endpoint.url) {
+        return try {
+            val response = client.get(endpoint.url) {
                 parameter("method", method)
                 parameter("api_key", apiKey.trim())
                 parameter("format", "json")
                 extraParameters()
             }
-        }.fold(
-            onSuccess = { response ->
-                val text = response.bodyAsText()
-                NetworkTraceLog.textResponse(
-                    serviceName = endpoint.serviceName,
-                    statusCode = response.status.value,
-                    body = text,
-                    contentType = response.headers[HttpHeaders.ContentType],
-                )
-                parseApiError(text, response.status.value)
-                    ?: if (response.status.value in 200..299) {
-                        LastFmResult.Success(text)
-                    } else {
-                        LastFmResult.Failure(
-                            type = LastFmErrorType.HttpError,
-                            message = "Last.fm ответил HTTP ${response.status.value}",
-                            httpStatusCode = response.status.value,
-                        )
-                    }
-            },
-            onFailure = { error ->
-                NetworkTraceLog.failure(
-                    serviceName = endpoint.serviceName,
-                    message = error.message ?: "Ошибка сети или TLS",
-                )
-                LastFmResult.Failure(
-                    type = LastFmErrorType.Network,
-                    message = "Ошибка сети или TLS при обращении к Last.fm",
-                )
-            },
-        )
+            val text = response.bodyAsText()
+            NetworkTraceLog.textResponse(
+                trace = requestTrace,
+                statusCode = response.status.value,
+                body = text,
+                contentType = response.headers[HttpHeaders.ContentType],
+            )
+            parseApiError(text, response.status.value)
+                ?: when {
+                    response.status.value in 200..299 -> LastFmResult.Success(text)
+                    response.status.value == 429 -> LastFmResult.Failure(
+                        type = LastFmErrorType.RateLimited,
+                        message = "Last.fm включил rate limit",
+                        httpStatusCode = response.status.value,
+                    )
+                    response.status.value == 408 || response.status.value in 500..599 -> LastFmResult.Failure(
+                        type = LastFmErrorType.Temporary,
+                        message = "Last.fm временно недоступен",
+                        httpStatusCode = response.status.value,
+                    )
+                    else -> LastFmResult.Failure(
+                        type = LastFmErrorType.HttpError,
+                        message = "Last.fm ответил HTTP ${response.status.value}",
+                        httpStatusCode = response.status.value,
+                    )
+                }
+        } catch (error: CancellationException) {
+            NetworkTraceLog.cancelled(requestTrace)
+            throw error
+        } catch (error: Throwable) {
+            NetworkTraceLog.failure(
+                trace = requestTrace,
+                message = error.message ?: "Ошибка сети или TLS",
+            )
+            LastFmResult.Failure(
+                type = LastFmErrorType.Network,
+                message = "Ошибка сети или TLS при обращении к Last.fm",
+            )
+        }
     }
 
     private inline fun <reified T> decodeResponse(text: String): LastFmResult<T> {

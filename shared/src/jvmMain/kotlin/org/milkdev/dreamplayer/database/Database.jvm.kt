@@ -23,7 +23,8 @@ actual val appDatabase: AppDatabase = run {
             Migration4To5,
             Migration5To6,
             Migration6To7,
-            Migration7To8
+            Migration7To8,
+            Migration8To9
         )
         .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
         .build()

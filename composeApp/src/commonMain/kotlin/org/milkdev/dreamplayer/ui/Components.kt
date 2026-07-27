@@ -281,6 +281,7 @@ expect fun TrackImage(
     fallbackIcon: DrawableResource = Res.drawable.music_note,
     maxDecodeSizePx: Int = 512,
     loadUncached: Boolean = true,
+    artworkRevision: Long = 0L,
 )
 
 @Composable
@@ -566,6 +567,7 @@ fun RecommendationCard(
     imageShape: Shape = RoundedCornerShape(24.dp),
     cardWidth: Dp = 140.dp,
     loadUncached: Boolean = true,
+    artworkRevision: Long = 0L,
 ) {
     Column(
         modifier = modifier
@@ -584,6 +586,7 @@ fun RecommendationCard(
                 fallbackIcon = fallbackIcon,
                 maxDecodeSizePx = 320,
                 loadUncached = loadUncached,
+                artworkRevision = artworkRevision,
             )
         }
         Spacer(modifier = Modifier.height(8.dp))
@@ -637,6 +640,7 @@ fun ContentSection(
                     title = track.title,
                     subtitle = track.artistName,
                     artworkUri = track.albumArtUri,
+                    artworkRevision = track.contentVersion,
                     onClick = { onTrackClick(track) }
                 )
             }

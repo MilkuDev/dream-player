@@ -3,33 +3,55 @@
 package org.milkdev.dreamplayer.library.metadata
 
 import android.annotation.SuppressLint
+import android.os.ParcelFileDescriptor
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.milkdev.dreamplayer.app.applicationContext
+import org.milkdev.dreamplayer.diagnostics.AppDebugLog
 import org.milkdev.dreamplayer.library.RawTrackData
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.InputStream
+import java.io.RandomAccessFile
+import java.nio.ByteBuffer
+import java.nio.channels.FileChannel
 import java.security.MessageDigest
 
 actual object EmbeddedMetadataReader {
-    actual suspend fun read(rawTrack: RawTrackData): EmbeddedMetadata? {
-        val path = rawTrack.path.takeIf { it.isNotBlank() } ?: return null
-        val tagBytes = runCatching {
-            openMetadataStream(path)?.use { it.readBytes(MAX_TAG_SCAN_BYTES) }
-        }.getOrNull() ?: return null
+    actual suspend fun read(rawTrack: RawTrackData): EmbeddedMetadata? = withContext(Dispatchers.IO) {
+        val path = rawTrack.path.takeIf { it.isNotBlank() } ?: return@withContext null
+        val probeBytes = readMetadataBytes(path, FORMAT_PROBE_BYTES) ?: return@withContext null
 
         val parsed = when {
-            tagBytes.startsWith(FLAC_SIGNATURE) -> tagBytes.parseFlacEmbeddedMetadata()
-            tagBytes.startsWithId3() -> tagBytes.parseMp3EmbeddedMetadata()
-            else -> EmbeddedMetadata(
-                tagFingerprint = tagBytes.take(MAX_FALLBACK_HASH_BYTES).toByteArray().sha256()
-            )
-        }
+            probeBytes.startsWith(FLAC_SIGNATURE) -> {
+                readMetadataBytes(path, MAX_TAG_SCAN_BYTES)?.parseFlacEmbeddedMetadata()
+            }
 
-        return parsed.copy(
+            probeBytes.startsWithId3() -> {
+                readMetadataBytes(path, MAX_TAG_SCAN_BYTES)?.parseMp3EmbeddedMetadata()
+            }
+
+            probeBytes.looksLikeMp4() -> readMp4EmbeddedMetadata(path)
+
+            else -> EmbeddedMetadata(
+                tagFingerprint = (
+                    readMetadataBytes(path, MAX_FALLBACK_HASH_BYTES)
+                        ?: probeBytes
+                    ).sha256()
+            )
+        } ?: EmbeddedMetadata(tagFingerprint = probeBytes.sha256())
+
+        parsed.copy(
             tagFingerprint = "${rawTrack.fileSize}:${rawTrack.lastModified}:${parsed.tagFingerprint}",
         )
     }
+}
+
+private fun readMetadataBytes(path: String, limit: Int): ByteArray? {
+    return runCatching {
+        openMetadataStream(path)?.use { input -> input.readBytes(limit) }
+    }.getOrNull()
 }
 
 @SuppressLint("UseKtx")
@@ -64,18 +86,78 @@ private fun ByteArray.parseFlacEmbeddedMetadata(): EmbeddedMetadata {
 }
 
 private fun ByteArray.parseMp3EmbeddedMetadata(): EmbeddedMetadata {
-    val version = this[3].unsigned()
     val tagSize = synchsafeInt(6)
-    if (version !in SUPPORTED_ID3_VERSIONS || tagSize <= 0 || ID3_HEADER_SIZE + tagSize > size) {
+    if (tagSize <= 0 || ID3_HEADER_SIZE + tagSize > size) {
         return EmbeddedMetadata(
             tagFingerprint = take(MAX_FALLBACK_HASH_BYTES).toByteArray().sha256()
         )
     }
+    val header = copyOfRange(0, ID3_HEADER_SIZE)
     val tag = copyOfRange(ID3_HEADER_SIZE, ID3_HEADER_SIZE + tagSize)
-    return tag.parseId3TextFrames(version).toEmbeddedMetadata(tag.sha256())
+    val parsedTag = parseId3Tag(header, tag) ?: return EmbeddedMetadata(
+        tagFingerprint = tag.sha256()
+    )
+    parsedTag.logIssues()
+    return parsedTag.toEmbeddedMetadata(tag.sha256())
 }
 
-private fun ByteArray.parseFlacComments(): Map<String, String> {
+private fun readMp4EmbeddedMetadata(path: String): EmbeddedMetadata? {
+    val parsedTag = runCatching {
+        if (path.startsWith("content://", ignoreCase = true)) {
+            readContentMp4Tag(path)
+        } else {
+            val file = File(path)
+            if (!file.isFile) return@runCatching null
+            RandomAccessFile(file, "r").use { randomAccessFile ->
+                randomAccessFile.channel.readMp4Tag()
+            }
+        }
+    }.getOrNull()
+
+    if (parsedTag == null) {
+        AppDebugLog.log("embedded_mp4_parse_failed")
+        return null
+    }
+    parsedTag.logIssues()
+    return parsedTag.toEmbeddedMetadata(parsedTag.fingerprintMaterial.sha256())
+}
+
+private fun readContentMp4Tag(path: String): Mp4Tag? {
+    val descriptor = applicationContext.contentResolver.openFileDescriptor(
+        android.net.Uri.parse(path),
+        "r",
+    ) ?: return null
+    val declaredSize = descriptor.statSize
+    return ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { input ->
+        val channel = input.channel
+        val fileSize = declaredSize.takeIf { it > 0L } ?: channel.size()
+        channel.readMp4Tag(fileSize)
+    }
+}
+
+private fun FileChannel.readMp4Tag(fileSize: Long = size()): Mp4Tag? {
+    if (fileSize <= 0L) return null
+    return parseMp4Tag(
+        fileSize = fileSize,
+        reader = Mp4RandomAccessReader { offset, byteCount ->
+            readExact(offset, byteCount)
+        },
+    )
+}
+
+private fun FileChannel.readExact(offset: Long, byteCount: Int): ByteArray? {
+    if (offset < 0L || byteCount < 0) return null
+    val buffer = ByteBuffer.allocate(byteCount)
+    var position = offset
+    while (buffer.hasRemaining()) {
+        val read = read(buffer, position)
+        if (read <= 0) return null
+        position += read
+    }
+    return buffer.array()
+}
+
+private fun ByteArray.parseFlacComments(): Map<String, List<String>> {
     var offset = 0
     val vendorSize = littleEndianUnsignedInt(offset)?.regionEnd(offset + INT_BYTES, size) ?: return emptyMap()
     offset = vendorSize // TODO: something
@@ -84,7 +166,7 @@ private fun ByteArray.parseFlacComments(): Map<String, String> {
     if (commentCount > MAX_COMMENT_COUNT) return emptyMap()
     offset += INT_BYTES
 
-    val comments = mutableMapOf<String, String>()
+    val comments = linkedMapOf<String, MutableList<String>>()
     repeat(commentCount.toInt()) {
         val commentEnd = littleEndianUnsignedInt(offset)?.regionEnd(offset + INT_BYTES, size) ?: return comments
         val comment = decodeToString(offset + INT_BYTES, commentEnd)
@@ -94,127 +176,36 @@ private fun ByteArray.parseFlacComments(): Map<String, String> {
         if (separatorIndex <= 0) return@repeat
         val key = comment.substring(0, separatorIndex).lowercase()
         val value = comment.substring(separatorIndex + 1).trim()
-        if (value.isNotEmpty()) comments.putIfAbsent(key, value)
+        if (value.isNotEmpty()) comments.getOrPut(key) { mutableListOf() }.add(value)
     }
-    return comments
+    return comments.mapValues { (_, values) -> values.toList() }
 }
 
-private fun ByteArray.parseId3TextFrames(version: Int): Map<String, String> {
-    val frames = mutableMapOf<String, String>()
-    var offset = 0
-    while (offset < size) {
-        val frameHeaderSize = if (version == 2) ID3_V2_FRAME_HEADER_SIZE else ID3_V3_FRAME_HEADER_SIZE
-        if (offset + frameHeaderSize > size || this[offset] == 0.toByte()) return frames
-
-        val frameIdLength = if (version == 2) 3 else 4
-        val frameId = decodeToString(offset, offset + frameIdLength)
-        val frameSize = when (version) {
-            2 -> {
-                bigEndianInt(offset + 3, 3)
-            }
-            4 -> {
-                synchsafeInt(offset + 4)
-            }
-            else -> {
-                bigEndianInt(offset + 4, 4)
-            }
-        }
-        val frameEnd = offset.toLong() + frameHeaderSize + frameSize
-        if (frameSize <= 0 || frameEnd > size) return frames
-
-        val payload = copyOfRange(offset + frameHeaderSize, frameEnd.toInt())
-        when {
-            frameId == "TXXX" -> payload.parseId3UserTextFrame()?.let { (key, value) ->
-                frames.putIfAbsent(key.lowercase(), value)
-            }
-            frameId.startsWith("T") -> payload.parseId3TextFrame()?.let { value ->
-                frames.putIfAbsent(frameId.lowercase(), value)
-            }
-        }
-        offset = frameEnd.toInt()
-    }
-    return frames
-}
-
-private fun ByteArray.parseId3UserTextFrame(): Pair<String, String>? {
-    if (isEmpty()) return null
-    val encoding = this[0].unsigned()
-    val descriptionEnd = encodedTextEnd(1, encoding)
-    if (descriptionEnd < 0) return null
-    val description = decodeId3Text(1, descriptionEnd, encoding).trim()
-    val valueStart = descriptionEnd + encodedTerminatorSize(encoding)
-    if (description.isBlank() || valueStart >= size) return null
-    val value = decodeId3Text(valueStart, size, encoding).trim().trim('\u0000')
-    return description to value
-}
-
-private fun ByteArray.parseId3TextFrame(): String? {
-    if (isEmpty()) return null
-    val encoding = this[0].unsigned()
-    return decodeId3Text(1, size, encoding).trim().trim('\u0000').takeIf { it.isNotBlank() }
-}
-
-private fun Map<String, String>.toEmbeddedMetadata(fingerprint: String): EmbeddedMetadata {
-    return EmbeddedMetadata(
-        recordingMbid = firstMusicBrainzId(valueFor("musicbrainz_trackid", "musicbrainz track id")),
-        releaseMbid = firstMusicBrainzId(valueFor("musicbrainz_albumid", "musicbrainz album id")),
-        releaseGroupMbid = firstMusicBrainzId(
-            valueFor(
-                "musicbrainz_releasegroupid",
-                "musicbrainz release group id"
-            )
-        ),
-        artistMbids = splitMusicBrainzIds(
-            valueFor(
-                "musicbrainz_artistid",
-                "musicbrainz artist id"
-            )
-        ),
-        albumArtistMbids = splitMusicBrainzIds(
-            valueFor(
-                "musicbrainz_albumartistid",
-                "musicbrainz album artist id"
-            )
-        ),
-        year = parseEmbeddedYear(valueFor("date", "year", "tdrc", "tyer")),
-        genres = splitEmbeddedGenres(valueFor("genre", "tcon")),
-        tagFingerprint = fingerprint,
+private fun Id3Tag.logIssues() {
+    if (issues.isEmpty()) return
+    AppDebugLog.log(
+        "embedded_id3_parse issues=${issues.joinToString(",") { issue -> issue.name.lowercase() }}"
     )
 }
 
-private fun Map<String, String>.valueFor(vararg keys: String): String? {
-    return keys.firstNotNullOfOrNull { key -> this[key.lowercase()]?.takeIf(String::isNotBlank) }
-}
-
-private fun ByteArray.decodeId3Text(start: Int, end: Int, encoding: Int): String {
-    val charset = when (encoding) {
-        1 -> Charsets.UTF_16
-        2 -> Charsets.UTF_16BE
-        3 -> Charsets.UTF_8
-        else -> Charsets.ISO_8859_1
-    }
-    return String(this, start, (end - start).coerceAtLeast(0), charset)
-}
-
-private fun ByteArray.encodedTextEnd(startIndex: Int, encoding: Int): Int {
-    if (encoding != UTF_16_ENCODING && encoding != UTF_16_BE_ENCODING) {
-        return indexOfZero(startIndex)
-    }
-    var index = startIndex
-    while (index + 1 < size) {
-        if (this[index] == 0.toByte() && this[index + 1] == 0.toByte()) return index
-        index += 2
-    }
-    return -1
-}
-
-private fun encodedTerminatorSize(encoding: Int): Int {
-    return if (encoding == UTF_16_ENCODING || encoding == UTF_16_BE_ENCODING) 2 else 1
+private fun Mp4Tag.logIssues() {
+    if (issues.isEmpty()) return
+    AppDebugLog.log(
+        "embedded_mp4_parse issues=${issues.joinToString(",") { issue -> issue.name.lowercase() }}"
+    )
 }
 
 private fun ByteArray.startsWithId3(): Boolean {
     return size >= 3 && this[0] == 'I'.code.toByte() && this[1] == 'D'.code.toByte() &&
         this[2] == '3'.code.toByte()
+}
+
+private fun ByteArray.looksLikeMp4(): Boolean {
+    return size >= MP4_FILE_TYPE_OFFSET + MP4_ATOM_TYPE_SIZE &&
+        this[MP4_FILE_TYPE_OFFSET] == 'f'.code.toByte() &&
+        this[MP4_FILE_TYPE_OFFSET + 1] == 't'.code.toByte() &&
+        this[MP4_FILE_TYPE_OFFSET + 2] == 'y'.code.toByte() &&
+        this[MP4_FILE_TYPE_OFFSET + 3] == 'p'.code.toByte()
 }
 
 private fun ByteArray.startsWith(prefix: ByteArray): Boolean {
@@ -247,10 +238,6 @@ private fun Long.regionEnd(startIndex: Int, totalSize: Int): Int? {
     return (startIndex.toLong() + this).takeIf { it <= totalSize }?.toInt()
 }
 
-private fun ByteArray.indexOfZero(startIndex: Int): Int {
-    return (startIndex until size).firstOrNull { index -> this[index] == 0.toByte() } ?: -1
-}
-
 private fun ByteArray.sha256(): String {
     return MessageDigest.getInstance("SHA-256")
         .digest(this)
@@ -273,8 +260,8 @@ private fun InputStream.readBytes(limit: Int): ByteArray {
 private fun Byte.unsigned(): Int = toInt() and 0xFF
 
 private const val ID3_HEADER_SIZE = 10
-private const val ID3_V2_FRAME_HEADER_SIZE = 6
-private const val ID3_V3_FRAME_HEADER_SIZE = 10
+private const val MP4_FILE_TYPE_OFFSET = 4
+private const val MP4_ATOM_TYPE_SIZE = 4
 private const val FLAC_METADATA_BLOCK_HEADER_SIZE = 4
 private const val FLAC_LAST_METADATA_BLOCK_FLAG = 0x80
 private const val FLAC_METADATA_BLOCK_TYPE_MASK = 0x7F
@@ -284,10 +271,8 @@ private const val BITS_PER_BYTE = 8
 private const val SYNCHSAFE_INTEGER_BYTES = 4
 private const val SYNCHSAFE_BITS_PER_BYTE = 7
 private const val SYNCHSAFE_BYTE_MASK = 0x7F
-private const val UTF_16_ENCODING = 1
-private const val UTF_16_BE_ENCODING = 2
 private const val MAX_TAG_SCAN_BYTES = 4 * 1024 * 1024
 private const val MAX_FALLBACK_HASH_BYTES = 64 * 1024
+private const val FORMAT_PROBE_BYTES = 16
 private const val MAX_COMMENT_COUNT = 4096L
-private val SUPPORTED_ID3_VERSIONS = 2..4
 private val FLAC_SIGNATURE = byteArrayOf(0x66, 0x4C, 0x61, 0x43)

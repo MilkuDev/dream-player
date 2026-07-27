@@ -12,6 +12,13 @@ interface MusicScanner {
      * Emits an event whenever the system music library changes.
      */
     fun observeChanges(): Flow<Unit>
+
+    /**
+     * Checks whether the platform media provider can produce artwork for one
+     * logical library album. Implementations must treat transient/provider
+     * failures as [LocalArtworkState.UNKNOWN], not as a missing cover.
+     */
+    suspend fun probeArtwork(candidate: ArtworkProbeCandidate): ArtworkProbeResult
 }
 
 data class RawTrackData(
@@ -25,4 +32,24 @@ data class RawTrackData(
     val lastModified: Long,
     val albumArtUri: String? = null,
     val albumArtSource: CoverSource = CoverSource.NONE,
+    val albumArtworkKey: String? = null,
+    val localArtworkState: LocalArtworkState = LocalArtworkState.UNKNOWN,
+)
+
+enum class LocalArtworkState {
+    UNKNOWN,
+    PRESENT,
+    MISSING,
+}
+
+data class ArtworkProbeCandidate(
+    val requestId: Long,
+    val albumUris: List<String>,
+    val sampleTrackUris: List<String>,
+)
+
+data class ArtworkProbeResult(
+    val requestId: Long,
+    val state: LocalArtworkState,
+    val artworkUri: String? = null,
 )
