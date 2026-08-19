@@ -9,11 +9,14 @@ import org.milkdev.dreamplayer.audio.readJvmAudioFileFormat
 import org.milkdev.dreamplayer.library.metadata.parseId3Tag
 import java.io.File
 import java.io.RandomAccessFile
+import java.net.URI
 import java.security.MessageDigest
 import java.util.logging.Level
 import java.util.logging.Logger
 import javax.sound.sampled.AudioFileFormat
 import javax.sound.sampled.AudioSystem
+
+// Обновлённый метод scan() и probeArtwork() в JvmMusicScanner.kt:
 
 class JvmMusicScanner : MusicScanner {
     private val logger = Logger.getLogger(JvmMusicScanner::class.java.name)
@@ -21,52 +24,96 @@ class JvmMusicScanner : MusicScanner {
     override fun scan(): Flow<RawTrackData> = flow {
         val targetDirectory = File(System.getProperty("user.home"), "Music")
         if (targetDirectory.exists() && targetDirectory.isDirectory) {
-            val systemAudioFiles = targetDirectory.listFiles { _, title ->
-                title.substringAfterLast('.', missingDelimiterValue = "").lowercase() in AUDIO_FILE_EXTENSIONS
-            }
-            systemAudioFiles.orEmpty().sortedBy { it.name.lowercase() }.forEach { singleFile ->
-                val metadata = singleFile.readMetadata(logger)
-                if (metadata != null) {
-                    emit(
-                        RawTrackData(
-                            path = singleFile.absolutePath,
-                            title = metadata.title ?: singleFile.nameWithoutExtension,
-                            artist = metadata.artist,
-                            album = metadata.album,
-                            albumArtist = metadata.albumArtist,
-                            durationMs = metadata.durationMs ?: 0L,
-                            fileSize = singleFile.length(),
-                            lastModified = singleFile.lastModified(),
-                            albumArtUri = metadata.albumArtUri,
-                            albumArtSource = metadata.albumArtSource,
-                            localArtworkState = if (metadata.albumArtUri.isNullOrBlank()) {
-                                LocalArtworkState.MISSING
-                            } else {
-                                LocalArtworkState.PRESENT
-                            },
+            val sidecarCache = mutableMapOf<File, File?>()
+            targetDirectory.walkTopDown()
+                .maxDepth(RECURSIVE_MAX_DEPTH)
+                .filter { it.isFile && it.extension.lowercase() in AUDIO_FILE_EXTENSIONS }
+                .forEach { singleFile ->
+                    val metadata = singleFile.readMetadata(logger, sidecarCache)
+                    if (metadata != null) {
+                        emit(
+                            RawTrackData(
+                                path = singleFile.absolutePath,
+                                title = metadata.title ?: singleFile.nameWithoutExtension,
+                                artist = metadata.artist,
+                                album = metadata.album,
+                                albumArtist = metadata.albumArtist,
+                                durationMs = metadata.durationMs ?: 0L,
+                                fileSize = singleFile.length(),
+                                lastModified = singleFile.lastModified(),
+                                albumArtUri = metadata.albumArtUri,
+                                albumArtSource = metadata.albumArtSource,
+                                localArtworkState = if (metadata.albumArtUri.isNullOrBlank()) {
+                                    LocalArtworkState.MISSING
+                                } else {
+                                    LocalArtworkState.PRESENT
+                                },
+                            )
                         )
-                    )
+                    }
                 }
-            }
         }
     }
 
     override fun observeChanges(): Flow<Unit> = emptyFlow()
 
     override suspend fun probeArtwork(candidate: ArtworkProbeCandidate): ArtworkProbeResult {
+        var sawUnknown = false
+        val allUris = candidate.albumUris + candidate.sampleTrackUris
+
+        for (uri in allUris) {
+            val file = uri.toFileOrNull() ?: continue
+            val isFileExist = runCatching { file.isFile }.getOrElse {
+                sawUnknown = true
+                false
+            }
+            if (isFileExist && file.extension.lowercase() in IMAGE_FILE_EXTENSIONS) {
+                return ArtworkProbeResult(
+                    requestId = candidate.requestId,
+                    state = LocalArtworkState.PRESENT,
+                    artworkUri = uri,
+                )
+            }
+        }
+
+        val sidecarCache = mutableMapOf<File, File?>()
+        for (trackUri in candidate.sampleTrackUris) {
+            val trackFile = trackUri.toFileOrNull() ?: continue
+            val parent = trackFile.parentFile
+            if (parent != null) {
+                val canReadParent = runCatching { parent.exists() && parent.canRead() }.getOrElse {
+                    sawUnknown = true
+                    false
+                }
+                if (!canReadParent) {
+                    sawUnknown = true
+                    continue
+                }
+            }
+
+            val sidecar = trackFile.findSidecarAlbumArt(sidecarCache)
+            if (sidecar != null) {
+                return ArtworkProbeResult(
+                    requestId = candidate.requestId,
+                    state = LocalArtworkState.PRESENT,
+                    artworkUri = sidecar.toURI().toString(),
+                )
+            }
+        }
+
         return ArtworkProbeResult(
             requestId = candidate.requestId,
-            state = LocalArtworkState.UNKNOWN,
+            state = if (sawUnknown) LocalArtworkState.UNKNOWN else LocalArtworkState.MISSING,
         )
     }
 }
 
-private fun File.readMetadata(logger: Logger): TrackMetadata? {
+private fun File.readMetadata(logger: Logger, sidecarCache: MutableMap<File, File?>? = null): TrackMetadata? {
     val audioFileFormat = readAudioFileFormat(logger) ?: return null
     val properties: Map<String, Any?> = audioFileFormat.properties()
     val flacMetadata = readFlacMetadata()
     val embeddedMp3Metadata = readEmbeddedMp3Metadata(logger)
-    val albumArt = findAlbumArt(flacMetadata?.albumArt ?: embeddedMp3Metadata?.albumArt)
+    val albumArt = findAlbumArt(flacMetadata?.albumArt ?: embeddedMp3Metadata?.albumArt, sidecarCache)
 
     return TrackMetadata(
         title = properties.textValue("title"),
@@ -90,12 +137,15 @@ private fun File.readAudioFileFormat(logger: Logger): AudioFileFormat? {
     }.getOrNull()
 }
 
-private fun File.findAlbumArt(embeddedAlbumArt: EmbeddedAlbumArt?): AlbumArtReference? {
+private fun File.findAlbumArt(
+    embeddedAlbumArt: EmbeddedAlbumArt?,
+    sidecarCache: MutableMap<File, File?>? = null,
+): AlbumArtReference? {
     embeddedAlbumArt?.cacheFor(this)?.toURI()?.toString()?.let { uri ->
         return AlbumArtReference(uri = uri, source = CoverSource.EMBEDDED)
     }
 
-    return findSidecarAlbumArt()?.toURI()?.toString()?.let { uri ->
+    return findSidecarAlbumArt(sidecarCache)?.toURI()?.toString()?.let { uri ->
         AlbumArtReference(uri = uri, source = CoverSource.LOCAL_CACHE)
     }
 }
@@ -261,16 +311,30 @@ private fun EmbeddedAlbumArt.cacheFor(sourceFile: File): File? {
     }.getOrNull()
 }
 
-private fun File.findSidecarAlbumArt(): File? {
-    val candidates = parentFile?.listFiles { file ->
+private fun File.findSidecarAlbumArt(cache: MutableMap<File, File?>? = null): File? {
+    val parent = parentFile ?: return null
+    if (cache != null && cache.containsKey(parent)) {
+        return cache[parent]
+    }
+
+    val listResult = runCatching { parent.listFiles() }.getOrNull()
+    if (listResult == null) {
+        cache?.put(parent, null)
+        return null
+    }
+
+    val candidates = listResult.filter { file ->
         file.isFile && file.extension.lowercase() in IMAGE_FILE_EXTENSIONS
-    }.orEmpty()
+    }
     val trackName = nameWithoutExtension
 
-    return candidates.firstOrNull { it.nameWithoutExtension.equals(trackName, ignoreCase = true) }
+    val found = candidates.firstOrNull { it.nameWithoutExtension.equals(trackName, ignoreCase = true) }
         ?: SIDECAR_ALBUM_ART_NAMES.firstNotNullOfOrNull { preferredName ->
             candidates.firstOrNull { it.nameWithoutExtension.equals(preferredName, ignoreCase = true) }
         }
+
+    cache?.put(parent, found)
+    return found
 }
 
 private fun File.albumArtCacheKey(): String {
@@ -426,3 +490,11 @@ private val PNG_SIGNATURE = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47)
 private val GIF_SIGNATURE = byteArrayOf(0x47, 0x49, 0x46)
 private val WEBP_RIFF_SIGNATURE = byteArrayOf(0x52, 0x49, 0x46, 0x46)
 private val FLAC_SIGNATURE = byteArrayOf(0x66, 0x4C, 0x61, 0x43)
+private const val RECURSIVE_MAX_DEPTH = 8
+
+private fun String.toFileOrNull(): File? {
+    return runCatching {
+        val uri = URI(this)
+        if (uri.scheme == "file" || uri.scheme == null) File(uri.path ?: this) else null
+    }.getOrNull()
+}
