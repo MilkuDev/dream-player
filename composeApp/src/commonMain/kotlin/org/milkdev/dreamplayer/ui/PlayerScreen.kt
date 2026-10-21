@@ -6,6 +6,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.rememberScrollState
@@ -44,6 +45,7 @@ import org.milkdev.dreamplayer.playback.AudioPlayer
 import org.milkdev.dreamplayer.playback.PlaybackRepeatMode
 import org.milkdev.dreamplayer.playback.PlaybackTimeSnapshot
 import org.milkdev.dreamplayer.playback.PlaybackUiState
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import org.milkdev.dreamplayer.app.AppTheme
 import org.milkdev.dreamplayer.generated.resources.favorite_filled
@@ -65,6 +67,17 @@ fun PlayerScreen(
     onSeek: (Long) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var isFileInfoVisible by remember { mutableStateOf(false) }
+    var isLyricsVisible by remember { mutableStateOf(false) }
+    val currentTrack = playbackState.currentTrack
+
+    LaunchedEffect(currentTrack?.id) {
+        if (currentTrack == null) {
+            isFileInfoVisible = false
+            isLyricsVisible = false
+        }
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -98,6 +111,8 @@ fun PlayerScreen(
                     onShuffleClick = onShuffleClick,
                     onRepeatClick = onRepeatClick,
                     onFavoriteClick = onFavoriteClick,
+                    onLyricsClick = { isLyricsVisible = true },
+                    onFileInfoClick = { isFileInfoVisible = true },
                     onSeek = onSeek
                 )
             } else {
@@ -109,10 +124,54 @@ fun PlayerScreen(
                     onShuffleClick = onShuffleClick,
                     onRepeatClick = onRepeatClick,
                     onFavoriteClick = onFavoriteClick,
+                    onLyricsClick = { isLyricsVisible = true },
+                    onFileInfoClick = { isFileInfoVisible = true },
                     onSeek = onSeek
                 )
             }
         }
+    }
+
+    if (isFileInfoVisible && currentTrack != null) {
+        AlertDialog(
+            onDismissRequest = { isFileInfoVisible = false },
+            title = { Text("Информация о треке") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Название: ${currentTrack.title}")
+                    Text("Исполнитель: ${currentTrack.artistName}")
+                    Text("Альбом: ${currentTrack.albumName}")
+                    Text("Длительность: ${formatTime(currentTrack.durationMs)}")
+                    Text(
+                        if (currentTrack.isPresent) {
+                            "Статус: Доступен на устройстве"
+                        } else {
+                            "Статус: Файл недоступен"
+                        }
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { isFileInfoVisible = false }) {
+                    Text("Закрыть")
+                }
+            },
+        )
+    }
+
+    if (isLyricsVisible && currentTrack != null) {
+        AlertDialog(
+            onDismissRequest = { isLyricsVisible = false },
+            title = { Text("Текст трека") },
+            text = {
+                Text("Текст для трека «${currentTrack.title}» (${currentTrack.artistName}) пока не найден.")
+            },
+            confirmButton = {
+                TextButton(onClick = { isLyricsVisible = false }) {
+                    Text("Закрыть")
+                }
+            },
+        )
     }
 }
 
@@ -172,6 +231,8 @@ private fun PortraitPlayerContent(
     onShuffleClick: () -> Unit,
     onRepeatClick: () -> Unit,
     onFavoriteClick: () -> Unit,
+    onLyricsClick: () -> Unit,
+    onFileInfoClick: () -> Unit,
     onSeek: (Long) -> Unit,
 ) {
     Column(
@@ -198,12 +259,17 @@ private fun PortraitPlayerContent(
         PlayerTrackInfo(
             currentTrack = playbackState.currentTrack,
             onFavoriteClick = onFavoriteClick,
+            onLyricsClick = onLyricsClick,
             isFavorite = playbackState.isCurrentTrackFavorite
         )
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        PlayerProgress(onSeek = onSeek)
+        PlayerProgress(
+            isPlaying = playbackState.isPlaying,
+            currentTrackId = playbackState.currentTrack?.id,
+            onSeek = onSeek,
+        )
 
         Spacer(modifier = Modifier.height(20.dp))
 
@@ -220,7 +286,9 @@ private fun PortraitPlayerContent(
             isShuffleEnabled = playbackState.isShuffleEnabled,
             repeatMode = playbackState.repeatMode,
             onShuffleClick = onShuffleClick,
-            onRepeatClick = onRepeatClick
+            onRepeatClick = onRepeatClick,
+            onFileInfoClick = onFileInfoClick,
+            fileInfoEnabled = playbackState.currentTrack != null,
         )
     }
 }
@@ -234,6 +302,8 @@ private fun WidePlayerContent(
     onShuffleClick: () -> Unit,
     onRepeatClick: () -> Unit,
     onFavoriteClick: () -> Unit,
+    onLyricsClick: () -> Unit,
+    onFileInfoClick: () -> Unit,
     onSeek: (Long) -> Unit,
 ) {
     Row(
@@ -267,13 +337,18 @@ private fun WidePlayerContent(
             PlayerTrackInfo(
                 currentTrack = playbackState.currentTrack,
                 onFavoriteClick = onFavoriteClick,
+                onLyricsClick = onLyricsClick,
                 compact = true,
                 isFavorite = playbackState.isCurrentTrackFavorite,
             )
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            PlayerProgress(onSeek = onSeek)
+            PlayerProgress(
+                isPlaying = playbackState.isPlaying,
+                currentTrackId = playbackState.currentTrack?.id,
+                onSeek = onSeek,
+            )
 
             Spacer(modifier = Modifier.height(16.dp))
 
@@ -292,6 +367,8 @@ private fun WidePlayerContent(
                 repeatMode = playbackState.repeatMode,
                 onShuffleClick = onShuffleClick,
                 onRepeatClick = onRepeatClick,
+                onFileInfoClick = onFileInfoClick,
+                fileInfoEnabled = playbackState.currentTrack != null,
                 compact = true
             )
         }
@@ -323,6 +400,7 @@ private fun PlayerTrackInfo(
     currentTrack: LibraryTrack?,
     isFavorite: Boolean,
     onFavoriteClick: () -> Unit,
+    onLyricsClick: () -> Unit,
     compact: Boolean = false
 ) {
     val actionButtonSize = if (compact) 40.dp else 48.dp
@@ -406,7 +484,8 @@ private fun PlayerTrackInfo(
         Spacer(modifier = Modifier.width(if (compact) 8.dp else 12.dp))
 
         IconButton(
-            onClick = { /* TODO */ },
+            onClick = onLyricsClick,
+            enabled = currentTrack != null,
             modifier = Modifier
                 .size(actionButtonSize)
                 .background(MaterialTheme.colorScheme.primary, CircleShape)
@@ -422,6 +501,8 @@ private fun PlayerTrackInfo(
 
 @Composable
 private fun PlayerProgress(
+    isPlaying: Boolean,
+    currentTrackId: Long?,
     onSeek: (Long) -> Unit,
 ) {
     var isScrubbing by remember { mutableStateOf(false) }
@@ -434,61 +515,76 @@ private fun PlayerProgress(
     var stallCounter by remember { mutableIntStateOf(0) }
     var snapshotId by remember { mutableIntStateOf(0) }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(isPlaying, currentTrackId) {
+        snapshot = AudioPlayer.playbackTimeSource.snapshot()
+        previousSnapshot = snapshot
+        stallCounter = 0
+
         while (isActive) {
-            withFrameMillis { _ ->
-                snapshot = AudioPlayer.playbackTimeSource.snapshot()
-
-                val current = snapshot
-                val prev = previousSnapshot
-                snapshotId++
-
-                if (prev != null) {
-                    val posDelta = current.positionMs - prev.positionMs
-
-                    if (current.durationMs > 0L && current.positionMs > current.durationMs + 100L) {
-                        PlaybackTrace.anomaly(
-                            "SNAP_EXCEEDS_DURATION",
-                            "snapshotId=$snapshotId positionMs=${current.positionMs} durationMs=${current.durationMs}"
-                        )
+            if (isPlaying || snapshot.isPlaying) {
+                withFrameMillis { _ ->
+                    val current = AudioPlayer.playbackTimeSource.snapshot()
+                    if (current != snapshot) {
+                        snapshot = current
                     }
 
-                    if (current.positionMs < 0L) {
-                        PlaybackTrace.anomaly(
-                            "SNAP_NEGATIVE",
-                            "snapshotId=$snapshotId positionMs=${current.positionMs}"
-                        )
-                    }
+                    val prev = previousSnapshot
+                    snapshotId++
 
-                    if (posDelta < -200L) {
-                        PlaybackTrace.anomaly(
-                            "SNAP_BACKWARD",
-                            "snapshotId=$snapshotId positionMs=${current.positionMs} prevPositionMs=${prev.positionMs} delta=$posDelta"
-                        )
-                    }
+                    if (prev != null) {
+                        val posDelta = current.positionMs - prev.positionMs
 
-                    if (posDelta > 3000L) {
-                        PlaybackTrace.anomaly(
-                            "SNAP_LARGE_JUMP",
-                            "snapshotId=$snapshotId positionMs=${current.positionMs} prevPositionMs=${prev.positionMs} delta=$posDelta"
-                        )
-                    }
-
-                    if (current.isPlaying && current.positionMs <= prev.positionMs) {
-                        stallCounter++
-                        if (stallCounter >= 5) {
+                        if (current.durationMs > 0L && current.positionMs > current.durationMs + 100L) {
                             PlaybackTrace.anomaly(
-                                "SNAP_STALL",
-                                "snapshotId=$snapshotId stallCount=$stallCounter positionMs=${current.positionMs}"
+                                "SNAP_EXCEEDS_DURATION",
+                                "snapshotId=$snapshotId positionMs=${current.positionMs} durationMs=${current.durationMs}"
                             )
+                        }
+
+                        if (current.positionMs < 0L) {
+                            PlaybackTrace.anomaly(
+                                "SNAP_NEGATIVE",
+                                "snapshotId=$snapshotId positionMs=${current.positionMs}"
+                            )
+                        }
+
+                        if (posDelta < -200L) {
+                            PlaybackTrace.anomaly(
+                                "SNAP_BACKWARD",
+                                "snapshotId=$snapshotId positionMs=${current.positionMs} prevPositionMs=${prev.positionMs} delta=$posDelta"
+                            )
+                        }
+
+                        if (posDelta > 3000L) {
+                            PlaybackTrace.anomaly(
+                                "SNAP_LARGE_JUMP",
+                                "snapshotId=$snapshotId positionMs=${current.positionMs} prevPositionMs=${prev.positionMs} delta=$posDelta"
+                            )
+                        }
+
+                        if (current.isPlaying && current.positionMs <= prev.positionMs) {
+                            stallCounter++
+                            if (stallCounter >= 5) {
+                                PlaybackTrace.anomaly(
+                                    "SNAP_STALL",
+                                    "snapshotId=$snapshotId stallCount=$stallCounter positionMs=${current.positionMs}"
+                                )
+                                stallCounter = 0
+                            }
+                        } else {
                             stallCounter = 0
                         }
-                    } else {
-                        stallCounter = 0
                     }
-                }
 
-                previousSnapshot = current
+                    previousSnapshot = current
+                }
+            } else {
+                delay(250L)
+                val current = AudioPlayer.playbackTimeSource.snapshot()
+                if (current != snapshot) {
+                    snapshot = current
+                    previousSnapshot = current
+                }
             }
         }
     }
@@ -499,7 +595,7 @@ private fun PlayerProgress(
     ExpressiveSlider(
         value = sliderProgress,
         valueRange = 0f..totalDuration,
-        isPlaying = snapshot.isPlaying,
+        isPlaying = isPlaying && snapshot.isPlaying,
         colors = PlayerSliderColors(
             waveColor = MaterialTheme.colorScheme.primary,
             trackColor = MaterialTheme.colorScheme.secondaryContainer,
@@ -513,6 +609,7 @@ private fun PlayerProgress(
         },
         onValueChangeFinished = {
             onSeek(scrubProgress.toLong())
+            snapshot = AudioPlayer.playbackTimeSource.snapshot()
             isScrubbing = false
         }
     )
@@ -608,6 +705,8 @@ private fun ExtraPlaybackControls(
     repeatMode: PlaybackRepeatMode,
     onShuffleClick: () -> Unit,
     onRepeatClick: () -> Unit,
+    onFileInfoClick: () -> Unit,
+    fileInfoEnabled: Boolean = true,
     compact: Boolean = false
 ) {
     val buttonSize = if (compact) 40.dp else 48.dp
@@ -633,6 +732,7 @@ private fun ExtraPlaybackControls(
             modifier = Modifier
                 .clip(RoundedCornerShape(16.dp))
                 .background(MaterialTheme.colorScheme.primary)
+                .clickable(enabled = fileInfoEnabled, onClick = onFileInfoClick)
                 .padding(horizontal = if (compact) 18.dp else 24.dp, vertical = 8.dp)
         ) {
             Text(

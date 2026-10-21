@@ -15,10 +15,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
@@ -27,6 +30,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -40,6 +44,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import org.jetbrains.compose.resources.painterResource
 import org.milkdev.dreamplayer.app.AppTheme
+import org.milkdev.dreamplayer.app.LocalSceneExecutionPolicy
 import org.milkdev.dreamplayer.generated.resources.Res
 import org.milkdev.dreamplayer.generated.resources.album
 import org.milkdev.dreamplayer.generated.resources.arrow_back
@@ -49,7 +54,7 @@ import org.milkdev.dreamplayer.library.LibraryTrack
 import org.milkdev.dreamplayer.library.LibraryCollectionType
 import org.milkdev.dreamplayer.model.LibraryCollectionDetailUiState
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun LibraryCollectionDetailsScreen(
     modifier: Modifier = Modifier,
@@ -60,8 +65,14 @@ fun LibraryCollectionDetailsScreen(
     contentPadding: PaddingValues = PaddingValues.Zero,
     currentTrackId: Long? = null,
 ) {
+    val executionPolicy = LocalSceneExecutionPolicy.current
     val collection = detailState.collection
     var selectedGenreTab by remember(collection.title) { mutableStateOf(0) }
+    val listState = rememberLazyListState()
+    val loadUncachedArtworkState = rememberLazyArtworkLoadingState(
+        listState = listState,
+        enabled = executionPolicy.allowsUncachedArtwork,
+    )
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -108,7 +119,17 @@ fun LibraryCollectionDetailsScreen(
         val albums = collection.albums
         val isEmpty = if (isGenre && selectedGenreTab == 0) albums.isEmpty() else tracks.isEmpty()
 
-        if (isEmpty && !isGenre) {
+        if (detailState.isLoading && isEmpty) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+                    .padding(contentPadding),
+                contentAlignment = Alignment.Center,
+            ) {
+                LoadingIndicator()
+            }
+        } else if (isEmpty && !isGenre) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -143,54 +164,59 @@ fun LibraryCollectionDetailsScreen(
                     }
                 }
 
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(
-                        start = 16.dp,
-                        end = 16.dp,
-                        top = 12.dp,
-                        bottom = contentPadding.calculateBottomPadding() + 96.dp,
-                    ),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                CompositionLocalProvider(
+                    LocalLazyArtworkLoadingState provides loadUncachedArtworkState,
                 ) {
-                    if (isGenre && selectedGenreTab == 0) {
-                        if (albums.isEmpty()) {
-                            item(contentType = "empty_genre_albums") {
-                                EmptyCollectionText("Здесь пока нет альбомов")
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(
+                            start = 16.dp,
+                            end = 16.dp,
+                            top = 12.dp,
+                            bottom = contentPadding.calculateBottomPadding() + 96.dp,
+                        ),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        if (isGenre && selectedGenreTab == 0) {
+                            if (albums.isEmpty()) {
+                                item(contentType = "empty_genre_albums") {
+                                    EmptyCollectionText("Здесь пока нет альбомов")
+                                }
+                            } else {
+                                items(
+                                    items = albums,
+                                    key = { it.id },
+                                    contentType = { "library_collection_album" },
+                                ) { album ->
+                                    LibraryCollectionAlbumItem(
+                                        album = album,
+                                        onClick = { onAlbumClick(album) },
+                                    )
+                                }
                             }
                         } else {
-                            items(
-                                items = albums,
-                                key = { it.id },
-                                contentType = { "library_collection_album" },
-                            ) { album ->
-                                LibraryCollectionAlbumItem(
-                                    album = album,
-                                    onClick = { onAlbumClick(album) },
-                                )
-                            }
-                        }
-                    } else {
-                        if (tracks.isEmpty()) {
-                            item(contentType = "empty_genre_tracks") {
-                                EmptyCollectionText("Здесь пока нет треков")
-                            }
-                        } else {
-                            items(
-                                items = tracks,
-                                key = { it.id },
-                                contentType = { "library_collection_track" },
-                            ) { track ->
-                                LibraryCollectionTrackItem(
-                                    track = track,
-                                    selected = track.id == currentTrackId,
-                                    fallbackIcon = when (collection.type) {
-                                        LibraryCollectionType.ARTIST -> Res.drawable.artist
-                                        LibraryCollectionType.ALBUM,
-                                        LibraryCollectionType.GENRE -> Res.drawable.album
-                                    },
-                                    onClick = { onTrackClick(track) },
-                                )
+                            if (tracks.isEmpty()) {
+                                item(contentType = "empty_genre_tracks") {
+                                    EmptyCollectionText("Здесь пока нет треков")
+                                }
+                            } else {
+                                items(
+                                    items = tracks,
+                                    key = { it.id },
+                                    contentType = { "library_collection_track" },
+                                ) { track ->
+                                    LibraryCollectionTrackItem(
+                                        track = track,
+                                        selected = track.id == currentTrackId,
+                                        fallbackIcon = when (collection.type) {
+                                            LibraryCollectionType.ARTIST -> Res.drawable.artist
+                                            LibraryCollectionType.ALBUM,
+                                            LibraryCollectionType.GENRE -> Res.drawable.album
+                                        },
+                                        onClick = { onTrackClick(track) },
+                                    )
+                                }
                             }
                         }
                     }

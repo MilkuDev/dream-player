@@ -556,16 +556,19 @@ internal fun RetainedContentStackHost(
     check(records.map { record -> record.key }.distinct().size == records.size) {
         "Retained content host must own exactly one composition per scene key"
     }
+    val rolesByIndex = records.map { record ->
+        record.resolveRole(
+            state = state,
+            authoritativeTopKey = authoritativeTopKey,
+        )
+    }
     Layout(
         modifier = modifier,
         content = {
-            records.forEach { record ->
+            records.forEachIndexed { index, record ->
                 key(record.key) {
                     saveableStateHolder.SaveableStateProvider(record.saveableStateKey) {
-                        val role = record.resolveRole(
-                            state = state,
-                            authoritativeTopKey = authoritativeTopKey,
-                        )
+                        val role = rolesByIndex[index]
                         val policy = resolveSceneExecutionPolicy(
                             role = role,
                             foregroundPresentation = foregroundPresentation,
@@ -598,7 +601,9 @@ internal fun RetainedContentStackHost(
         val placeables = measurables.map { measurable -> measurable.measure(constraints) }
         layout(constraints.maxWidth, constraints.maxHeight) {
             placeables.forEachIndexed { index, placeable ->
-                placeable.place(0, 0, zIndex = index.toFloat())
+                if (rolesByIndex.getOrNull(index) != ScenePresentationRole.Retained) {
+                    placeable.place(0, 0, zIndex = index.toFloat())
+                }
             }
         }
     }

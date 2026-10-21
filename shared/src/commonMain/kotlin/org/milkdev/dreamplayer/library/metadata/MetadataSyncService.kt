@@ -467,6 +467,16 @@ class MetadataSyncService(
         var coverFailure: CoverArtLookup.RetryableFailure? = null
         var coverPermanentFailure = false
         val lastFmMetadata = (lastFmLookup as? LastFmAlbumLookup.Found)?.metadata
+        val effectiveGenreTrust = if (lastFmMetadata?.autocorrected == true) {
+            (TRUST_LASTFM_GENRE * 0.5).toInt()
+        } else {
+            TRUST_LASTFM_GENRE
+        }
+        val effectiveIdentityTrust = if (lastFmMetadata?.autocorrected == true) {
+            (TRUST_LASTFM_IDENTITY * 0.5).toInt()
+        } else {
+            TRUST_LASTFM_IDENTITY
+        }
         if (lastFmMetadata != null) {
             musicDao.insertMetadataResolution(
                 MetadataResolutionEntity(
@@ -475,9 +485,9 @@ class MetadataSyncService(
                     provider = MetadataProvider.LASTFM.name,
                     sourceId = lastFmMetadata.sourceMbid,
                     confidence = lastFmMetadata.confidence,
-                    identityTrust = TRUST_LASTFM_IDENTITY,
+                    identityTrust = effectiveIdentityTrust,
                     yearTrust = TRUST_LASTFM_YEAR,
-                    genreTrust = TRUST_LASTFM_GENRE,
+                    genreTrust = effectiveGenreTrust,
                     artworkTrust = TRUST_LASTFM_ARTWORK,
                     resolvedAt = now,
                 )
@@ -543,12 +553,13 @@ class MetadataSyncService(
             currentTrust = album.identitySourceTrust,
             candidates = listOf(
                 TrustedValue(musicBrainz?.releaseGroupMbid, TRUST_MUSICBRAINZ_IDENTITY),
-                TrustedValue(lastFmMetadata?.sourceMbid, TRUST_LASTFM_IDENTITY),
+                TrustedValue(lastFmMetadata?.sourceMbid, effectiveIdentityTrust),
             ),
         )
         val genreChoice = chooseGenreList(
             lastFmGenres = lastFmMetadata?.genres.orEmpty(),
             musicBrainzGenres = musicBrainz?.genres.orEmpty(),
+            lastFmGenreTrust = effectiveGenreTrust,
         )
 
         val hasNewCover = !cachedCoverUri.isNullOrBlank()
@@ -798,9 +809,12 @@ private fun <T> chooseTrustedValue(
 private fun chooseGenreList(
     lastFmGenres: List<String>,
     musicBrainzGenres: List<String>,
+    lastFmGenreTrust: Int = TRUST_LASTFM_GENRE,
 ): GenreChoice {
     return when {
-        lastFmGenres.isNotEmpty() -> GenreChoice(lastFmGenres, TRUST_LASTFM_GENRE)
+        lastFmGenres.isNotEmpty() &&
+            (musicBrainzGenres.isEmpty() || lastFmGenreTrust >= TRUST_MUSICBRAINZ_GENRE) ->
+            GenreChoice(lastFmGenres, lastFmGenreTrust)
         musicBrainzGenres.isNotEmpty() -> GenreChoice(musicBrainzGenres, TRUST_MUSICBRAINZ_GENRE)
         else -> GenreChoice(emptyList(), 0)
     }

@@ -1275,6 +1275,23 @@ interface MusicDao {
         artistSortKey: String,
     )
 
+    @Transaction
+    suspend fun updateAlbumsScanFields(updates: List<AlbumScanFieldsUpdate>) {
+        updates.forEach { update ->
+            updateAlbumScanFields(
+                albumId = update.albumId,
+                albumArtUri = update.albumArtUri,
+                coverSource = update.coverSource,
+                localArtworkKey = update.localArtworkKey,
+                localArtworkFingerprint = update.localArtworkFingerprint,
+                localArtworkState = update.localArtworkState,
+                timestamp = update.timestamp,
+                titleSortKey = update.titleSortKey,
+                artistSortKey = update.artistSortKey,
+            )
+        }
+    }
+
     @Query(
         """
         UPDATE albums
@@ -1318,6 +1335,23 @@ interface MusicDao {
 
     @Query("UPDATE albums SET deletedAt = :timestamp WHERE lastSeenTimestamp < :threshold AND deletedAt IS NULL")
     suspend fun markOldAlbumsDeleted(threshold: Long, timestamp: Long)
+
+    @Query(
+        """
+        UPDATE albums
+        SET deletedAt = :timestamp
+        WHERE id IN (:albumIds)
+            AND deletedAt IS NULL
+            AND NOT EXISTS (
+                SELECT 1
+                FROM library_tracks t
+                WHERE t.albumId = albums.id
+                    AND t.isPresent = 1
+                    AND t.deletedAt IS NULL
+            )
+        """
+    )
+    suspend fun markAlbumsDeletedIfNoPresentTracks(albumIds: List<Long>, timestamp: Long)
 
     @Query("DELETE FROM albums WHERE deletedAt IS NOT NULL AND deletedAt < :threshold")
     suspend fun purgeDeletedAlbums(threshold: Long)
@@ -1418,4 +1452,15 @@ data class GenreIdResult(val id: Long, val name: String)
 data class AlbumCoverLookupCandidate(
     @Embedded val album: AlbumEntity,
     val artistName: String,
+)
+data class AlbumScanFieldsUpdate(
+    val albumId: Long,
+    val albumArtUri: String?,
+    val coverSource: String,
+    val localArtworkKey: String?,
+    val localArtworkFingerprint: String,
+    val localArtworkState: String,
+    val timestamp: Long,
+    val titleSortKey: String,
+    val artistSortKey: String,
 )

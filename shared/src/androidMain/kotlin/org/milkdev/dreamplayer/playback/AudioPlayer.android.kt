@@ -35,7 +35,7 @@ actual object AudioPlayer {
     private val pendingActions = ArrayDeque<(MediaController) -> Unit>()
     private val _state = MutableStateFlow(AudioPlayerState())
     private val playerScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-    private val mediaItemCache = LruCache<MediaItemCacheKey, MediaItem>(367)
+    private val mediaItemCache = LruCache<MediaItemCacheKey, MediaItem>(512)
 
     private var controller: MediaController? = null
     private var controllerFuture: ListenableFuture<MediaController>? = null

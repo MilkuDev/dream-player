@@ -147,7 +147,9 @@ internal fun MainTabCarouselHost(
                 } else {
                     width * (MainTab.entries.size + tab.position + 1)
                 }
-                placeables[index].place(x = x, y = 0)
+                if (width <= 0 || (x > -width && x < width)) {
+                    placeables[index].place(x = x, y = 0)
+                }
             }
         }
     }

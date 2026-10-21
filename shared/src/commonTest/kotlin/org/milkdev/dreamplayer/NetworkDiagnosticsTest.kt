@@ -314,6 +314,18 @@ class NetworkDiagnosticsTest {
         LogStorage.clearOtherNetwork()
         val saved = mutableListOf<SavedAlbumArt>()
         val requestedHosts = mutableListOf<String>()
+        val fakeJpegBytes = byteArrayOf(
+            0xFF.toByte(),
+            0xD8.toByte(),
+            0xFF.toByte(),
+            0xE0.toByte(),
+            0x00,
+            0x10,
+            'J'.code.toByte(),
+            'F'.code.toByte(),
+            'I'.code.toByte(),
+            'F'.code.toByte(),
+        )
         val client = HttpClient(
             MockEngine { request ->
                 requestedHosts += request.url.host
@@ -349,7 +361,7 @@ class NetworkDiagnosticsTest {
                         ),
                     )
                     NetworkHosts.INTERNET_ARCHIVE -> respond(
-                        content = "fake-image",
+                        content = fakeJpegBytes,
                         status = HttpStatusCode.OK,
                         headers = headersOf(HttpHeaders.ContentType, "image/jpeg"),
                     )
@@ -371,7 +383,7 @@ class NetworkDiagnosticsTest {
             listOf(NetworkHosts.MUSIC_BRAINZ, NetworkHosts.COVER_ART_ARCHIVE, NetworkHosts.INTERNET_ARCHIVE),
             requestedHosts,
         )
-        assertEquals("fake-image", saved.single().bytes.decodeToString())
+        assertContentEquals(fakeJpegBytes, saved.single().bytes)
 
         val trace = LogStorage.otherNetworkLogs.value.joinToString("\n")
         assertTrue(trace.contains("MusicBrainz -> GET"))

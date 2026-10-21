@@ -21,7 +21,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.delay
 import org.jetbrains.compose.resources.painterResource
 import org.milkdev.dreamplayer.app.AppTheme
 import org.milkdev.dreamplayer.app.LocalSceneExecutionPolicy
@@ -29,9 +28,7 @@ import org.milkdev.dreamplayer.generated.resources.Res
 import org.milkdev.dreamplayer.generated.resources.arrow_back
 import org.milkdev.dreamplayer.library.LibraryTrack
 import org.milkdev.dreamplayer.playback.LibraryUiState
-import kotlin.time.Duration.Companion.seconds
 
-private var isFirstLaunchDebug = true
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun LibrarySearchScreen(
@@ -49,7 +46,7 @@ fun LibrarySearchScreen(
     }
 
     val lazyListState = rememberLazyListState()
-    val loadUncachedArtwork = rememberLazyArtworkLoadingEnabled(
+    val loadUncachedArtworkState = rememberLazyArtworkLoadingState(
         listState = lazyListState,
         enabled = executionPolicy.allowsUncachedArtwork,
     )
@@ -85,26 +82,9 @@ fun LibrarySearchScreen(
         onLoadMore = onLoadNextSearch,
     )
 
-    var isDebugLoading by remember { mutableStateOf(isFirstLaunchDebug) }
-
-    LaunchedEffect(
-        libraryState.isLoading,
-        executionPolicy.allowsImperativeScroll,
-        executionPolicy.authorityEpoch,
-    ) {
-        if (!executionPolicy.allowsImperativeScroll) return@LaunchedEffect
-        if (!libraryState.isLoading) {
-            if (isFirstLaunchDebug) {
-                delay(1.seconds)
-                isFirstLaunchDebug = false
-            }
-            isDebugLoading = false
-        }
-    }
-
     Box(modifier = modifier.fillMaxSize()) {
         when {
-            isDebugLoading -> {
+            libraryState.isLoading -> {
                 LoadingIndicator(modifier = Modifier.align(Alignment.Center))
             }
             libraryState.error != null -> {
@@ -147,7 +127,14 @@ fun LibrarySearchScreen(
                         }
                     }
 
-                    if (filteredTracks.isEmpty()) {
+                    if (filteredTracks.isEmpty() && libraryState.isSearchPageLoading) {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            LoadingIndicator()
+                        }
+                    } else if (filteredTracks.isEmpty()) {
                         Box(
                             modifier = Modifier.fillMaxSize(),
                             contentAlignment = Alignment.Center
@@ -163,62 +150,65 @@ fun LibrarySearchScreen(
                             )
                         }
                     } else {
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            state = lazyListState,
-                            contentPadding = PaddingValues(
-                                start = 16.dp,
-                                end = 16.dp,
-                                top = 16.dp,
-                                bottom = contentPadding.calculateBottomPadding() + 16.dp,
-                            ),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        CompositionLocalProvider(
+                            LocalLazyArtworkLoadingState provides loadUncachedArtworkState,
                         ) {
-                            items(filteredTracks, key = { it.id }) { track ->
-                                Card(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .animateItem()
-                                        .clickable { onTrackClick(filteredTracks, track) },
-                                    colors = CardDefaults.cardColors(
-                                        containerColor = if (track.id == currentTrackId)
-                                            MaterialTheme.colorScheme.primaryContainer
-                                        else
-                                            MaterialTheme.colorScheme.surfaceVariant
-                                    )
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(16.dp),
-                                        verticalAlignment = Alignment.CenterVertically
+                            LazyColumn(
+                                modifier = Modifier.fillMaxSize(),
+                                state = lazyListState,
+                                contentPadding = PaddingValues(
+                                    start = 16.dp,
+                                    end = 16.dp,
+                                    top = 16.dp,
+                                    bottom = contentPadding.calculateBottomPadding() + 16.dp,
+                                ),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                items(filteredTracks, key = { it.id }) { track ->
+                                    Card(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .animateItem()
+                                            .clickable { onTrackClick(filteredTracks, track) },
+                                        colors = CardDefaults.cardColors(
+                                            containerColor = if (track.id == currentTrackId)
+                                                MaterialTheme.colorScheme.primaryContainer
+                                            else
+                                                MaterialTheme.colorScheme.surfaceVariant
+                                        )
                                     ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(56.dp)
-                                                .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
-                                                .background(MaterialTheme.colorScheme.secondaryContainer)
+                                        Row(
+                                            modifier = Modifier.padding(16.dp),
+                                            verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            TrackImage(
-                                                uri = track.albumArtUri,
-                                                modifier = Modifier.fillMaxSize(),
-                                                maxDecodeSizePx = 192,
-                                                loadUncached = loadUncachedArtwork,
-                                                artworkRevision = track.contentVersion,
-                                            )
-                                        }
-                                        Spacer(modifier = Modifier.width(16.dp))
-                                        Column {
-                                            Text(
-                                                text = track.title,
-                                                style = AppTheme.typography.snPro.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            Text(
-                                                text = track.artistName,
-                                                style = AppTheme.typography.snPro.bodyMedium,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(56.dp)
+                                                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                                                    .background(MaterialTheme.colorScheme.secondaryContainer)
+                                            ) {
+                                                TrackImage(
+                                                    uri = track.albumArtUri,
+                                                    modifier = Modifier.fillMaxSize(),
+                                                    maxDecodeSizePx = 192,
+                                                    artworkRevision = track.contentVersion,
+                                                )
+                                            }
+                                            Spacer(modifier = Modifier.width(16.dp))
+                                            Column {
+                                                Text(
+                                                    text = track.title,
+                                                    style = AppTheme.typography.snPro.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Text(
+                                                    text = track.artistName,
+                                                    style = AppTheme.typography.snPro.bodyMedium,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
                                         }
                                     }
                                 }
