@@ -5,10 +5,13 @@ import io.ktor.client.call.body
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.parameter
+import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.Url
+import io.ktor.http.contentLength
+import io.ktor.utils.io.readAvailable
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -219,7 +222,63 @@ class CoverArtRepository(
             }
             when (response.status) {
                 HttpStatusCode.OK -> {
-                    val bytes: ByteArray = response.body()
+                    val contentType = response.headers[HttpHeaders.ContentType]
+                    if (contentType != null && !contentType.startsWith("image/", ignoreCase = true) &&
+                        !contentType.startsWith("application/octet-stream", ignoreCase = true)
+                    ) {
+                        NetworkTraceLog.metadataResponse(
+                            trace = requestTrace,
+                            statusCode = response.status.value,
+                            contentType = contentType,
+                            byteCount = 0,
+                        )
+                        return CoverArtLookup.PermanentFailure(
+                            "Сервер обложек вернул неверный Content-Type: $contentType"
+                        )
+                    }
+
+                    // 1. Предварительная проверка заголовка Content-Length
+                    val contentLength = response.contentLength()
+                    if (contentLength != null && contentLength > MAX_IMAGE_SIZE_BYTES) {
+                        NetworkTraceLog.metadataResponse(
+                            trace = requestTrace,
+                            statusCode = response.status.value,
+                            contentType = contentType,
+                            byteCount = contentLength.toInt(),
+                        )
+                        return CoverArtLookup.PermanentFailure(
+                            "Размер изображения ($contentLength байт) превышает лимит в $MAX_IMAGE_SIZE_BYTES байт"
+                        )
+                    }
+
+                    // 2. Безопасное потоковое чтение
+                    val channel = response.bodyAsChannel()
+                    val bytes = readChannelBounded(channel, MAX_IMAGE_SIZE_BYTES)
+                    if (bytes == null) {
+                        NetworkTraceLog.metadataResponse(
+                            trace = requestTrace,
+                            statusCode = response.status.value,
+                            contentType = contentType,
+                            byteCount = MAX_IMAGE_SIZE_BYTES + 1,
+                        )
+                        return CoverArtLookup.PermanentFailure(
+                            "Размер изображения превышает лимит в $MAX_IMAGE_SIZE_BYTES байт"
+                        )
+                    }
+
+                    // 3. Проверка сигнатуры файла (Magic Bytes)
+                    if (!isSupportedImageSignature(bytes)) {
+                        NetworkTraceLog.metadataResponse(
+                            trace = requestTrace,
+                            statusCode = response.status.value,
+                            contentType = contentType,
+                            byteCount = bytes.size,
+                        )
+                        return CoverArtLookup.PermanentFailure(
+                            "Файл не является поддерживаемым изображением (неверная сигнатура байтов)"
+                        )
+                    }
+
                     NetworkTraceLog.metadataResponse(
                         trace = requestTrace,
                         statusCode = response.status.value,
@@ -237,6 +296,7 @@ class CoverArtRepository(
                         musicBrainzReleaseGroupMbid = musicBrainzReleaseGroupMbid,
                     )
                 }
+
                 HttpStatusCode.NotFound -> {
                     NetworkTraceLog.metadataResponse(
                         trace = requestTrace,
@@ -308,6 +368,58 @@ class CoverArtRepository(
         }
     }
 
+    private suspend fun readChannelBounded(
+        channel: io.ktor.utils.io.ByteReadChannel,
+        maxSizeBytes: Int,
+    ): ByteArray? {
+        val chunks = mutableListOf<ByteArray>()
+        val buffer = ByteArray(8192)
+        var totalBytesRead = 0
+
+        while (!channel.isClosedForRead) {
+            val read = channel.readAvailable(buffer, 0, buffer.size)
+            if (read <= 0) break
+            totalBytesRead += read
+            if (totalBytesRead > maxSizeBytes) {
+                channel.cancel(null)
+                return null
+            }
+            chunks.add(buffer.copyOf(read))
+        }
+
+        val result = ByteArray(totalBytesRead)
+        var offset = 0
+        for (chunk in chunks) {
+            chunk.copyInto(result, destinationOffset = offset)
+            offset += chunk.size
+        }
+        return result
+    }
+
+    private fun isSupportedImageSignature(bytes: ByteArray): Boolean {
+        if (bytes.size < 3) return false
+        return bytes.startsWith(JPEG_SIGNATURE) ||
+                bytes.startsWith(PNG_SIGNATURE) ||
+                bytes.startsWith(GIF_SIGNATURE) ||
+                (bytes.size >= 12 && bytes.startsWith(WEBP_RIFF_SIGNATURE) && bytes.hasWebpHeaderAt8())
+    }
+
+    private fun ByteArray.startsWith(prefix: ByteArray): Boolean {
+        if (size < prefix.size) return false
+        for (i in prefix.indices) {
+            if (this[i] != prefix[i]) return false
+        }
+        return true
+    }
+
+    private fun ByteArray.hasWebpHeaderAt8(): Boolean {
+        return size >= 12 &&
+                this[8] == 'W'.code.toByte() &&
+                this[9] == 'E'.code.toByte() &&
+                this[10] == 'B'.code.toByte() &&
+                this[11] == 'P'.code.toByte()
+    }
+
     private fun MusicBrainzReleaseGroup.matches(artist: String, album: String): Boolean {
         val expectedAlbum = album.normalizedMusicKey()
         val expectedArtist = artist.normalizedMusicKey()
@@ -320,12 +432,17 @@ class CoverArtRepository(
     }
 
     private companion object {
+        val JPEG_SIGNATURE = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte())
+        val PNG_SIGNATURE = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47)
+        val GIF_SIGNATURE = byteArrayOf(0x47, 0x49, 0x46)
+        val WEBP_RIFF_SIGNATURE = byteArrayOf(0x52, 0x49, 0x46, 0x46)
         const val USER_AGENT = "DreamPlayer/1.0 (https://github.com/milkdev/DreamPlayer)"
         const val MIN_MUSICBRAINZ_SCORE = 90
         const val MAX_REDIRECTS = 4
         const val MUSICBRAINZ_INTERVAL_MS = 1_100L
         const val COVER_DOWNLOAD_INTERVAL_MS = 600L
         const val RATE_LIMIT_COOLDOWN_MS = 60_000L
+        const val MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024
 
         val json = Json {
             ignoreUnknownKeys = true

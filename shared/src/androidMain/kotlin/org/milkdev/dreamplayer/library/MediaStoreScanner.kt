@@ -28,6 +28,7 @@ class MediaStoreScanner : MusicScanner {
             MediaStore.Audio.Media.TITLE,
             MediaStore.Audio.Media.ARTIST,
             MediaStore.Audio.Media.ALBUM,
+            MediaStore.Audio.Media.ALBUM_ARTIST,
             MediaStore.Audio.Media.DURATION,
             MediaStore.Audio.Media.SIZE,
             MediaStore.Audio.Media.DATE_MODIFIED,
@@ -54,6 +55,7 @@ class MediaStoreScanner : MusicScanner {
             val titleColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
             val artistColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
             val albumColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM)
+            val albumArtistColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM_ARTIST)
             val durationColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION)
             val sizeColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.SIZE)
             val dateModifiedColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DATE_MODIFIED)
@@ -84,6 +86,7 @@ class MediaStoreScanner : MusicScanner {
                         title = cursor.getString(titleColumn),
                         artist = cursor.getString(artistColumn),
                         album = cursor.getString(albumColumn),
+                        albumArtist = cursor.getString(albumArtistColumn),
                         durationMs = cursor.getLong(durationColumn),
                         fileSize = cursor.getLong(sizeColumn),
                         lastModified = cursor.getLong(dateModifiedColumn),

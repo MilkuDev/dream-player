@@ -68,7 +68,10 @@ class LastFmRepository(private val lastFmService: LastFmService) {
                     return LastFmAlbumLookup.NoMatch
                 }
 
-                val metadata = albumData.toMetadata()
+                val metadata = albumData.toMetadata(
+                    requestedArtist = artist,
+                    requestedAlbum = album,
+                )
                 if (metadata.hasAnyValue()) {
                     MetadataDebugLog.event(
                         "metadata_provider_result",
@@ -176,7 +179,18 @@ class LastFmRepository(private val lastFmService: LastFmService) {
     }
 
     @Suppress("RemoveExplicitTypeArguments")
-    private fun LastFmAlbum.toMetadata(): LastFmAlbumMetadata {
+    // Внутри LastFmRepository.kt обнови метод toMetadata():
+
+    private fun LastFmAlbum.toMetadata(
+        requestedArtist: String,
+        requestedAlbum: String,
+    ): LastFmAlbumMetadata {
+        val autocorrected = isSemanticAutocorrect(
+            actualArtist = artist,
+            actualAlbum = name,
+            requestedArtist = requestedArtist,
+            requestedAlbum = requestedAlbum,
+        )
         val receivedTagCount = toptags?.tag.orEmpty().size
         val validGenres = toptags?.tag
             .orEmpty()
@@ -192,6 +206,7 @@ class LastFmRepository(private val lastFmService: LastFmService) {
             .distinct()
             .take(MAX_LASTFM_GENRES)
             .toList()
+
         MetadataDebugLog.event(
             "metadata_provider_tags",
             "provider" to "lastfm",
@@ -205,8 +220,60 @@ class LastFmRepository(private val lastFmService: LastFmService) {
             coverUrl = selectBestLastFmImageUrl(image.orEmpty()),
             genres = validGenres,
             sourceMbid = mbid?.takeIf { it.isNotBlank() },
-            confidence = 1f,
+            confidence = if (autocorrected) 0.5f else 1f,
+            autocorrected = autocorrected,
         )
+    }
+
+    // Вспомогательные функции нормализации и Левенштейна:
+
+    private fun isSemanticAutocorrect(
+        actualArtist: String,
+        actualAlbum: String,
+        requestedArtist: String,
+        requestedAlbum: String,
+    ): Boolean {
+        val normActualArtist = actualArtist.normalizeForMetadataMatch()
+        val normReqArtist = requestedArtist.normalizeForMetadataMatch()
+        val normActualAlbum = actualAlbum.normalizeForMetadataMatch()
+        val normReqAlbum = requestedAlbum.normalizeForMetadataMatch()
+
+        val artistMismatch = normActualArtist != normReqArtist &&
+                levenshteinDistance(normActualArtist, normReqArtist) > MAX_ALLOWED_TYPO_DISTANCE
+        val albumMismatch = normActualAlbum != normReqAlbum &&
+                levenshteinDistance(normActualAlbum, normReqAlbum) > MAX_ALLOWED_TYPO_DISTANCE
+
+        return artistMismatch || albumMismatch
+    }
+
+    private fun String.normalizeForMetadataMatch(): String {
+        return this.trim()
+            .lowercase()
+            .replace("&", "and")
+            .replace(Regex("[—–-]"), " ")
+            .replace(Regex("[“”'’\"`«»]"), "")
+            .replace(Regex("[^a-z0-9а-яë\\s]"), "")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+    }
+
+    private fun levenshteinDistance(s1: String, s2: String): Int {
+        if (s1 == s2) return 0
+        if (s1.isEmpty()) return s2.length
+        if (s2.isEmpty()) return s1.length
+
+        val dp = IntArray(s2.length + 1) { it }
+        for (i in 1..s1.length) {
+            var prevUpperLeft = dp[0]
+            dp[0] = i
+            for (j in 1..s2.length) {
+                val temp = dp[j]
+                val cost = if (s1[i - 1] == s2[j - 1]) 0 else 1
+                dp[j] = minOf(dp[j] + 1, dp[j - 1] + 1, prevUpperLeft + cost)
+                prevUpperLeft = temp
+            }
+        }
+        return dp[s2.length]
     }
 
     private fun LastFmAlbumSearchItem.scoreAgainst(
@@ -237,6 +304,8 @@ class LastFmRepository(private val lastFmService: LastFmService) {
     }
 
     private companion object {
+
+        private const val MAX_ALLOWED_TYPO_DISTANCE = 2
         val yearRegex = Regex("\\d{4}")
         const val MAX_LASTFM_GENRES = 5
         const val MIN_LASTFM_CANDIDATE_SCORE = 180
@@ -262,6 +331,7 @@ data class LastFmAlbumMetadata(
     val genres: List<String> = genre?.let(::listOf).orEmpty(),
     val sourceMbid: String? = null,
     val confidence: Float = 0f,
+    val autocorrected: Boolean = false,
 ) {
     fun hasAnyValue(): Boolean {
         return year != null || genres.isNotEmpty() || !genre.isNullOrBlank() || !coverUrl.isNullOrBlank()

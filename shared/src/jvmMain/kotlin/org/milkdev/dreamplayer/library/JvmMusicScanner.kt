@@ -10,6 +10,7 @@ import org.milkdev.dreamplayer.database.applicationDirectory
 import org.milkdev.dreamplayer.library.metadata.parseId3Tag
 import java.io.File
 import java.io.RandomAccessFile
+import java.net.URI
 import java.security.MessageDigest
 import java.util.logging.Level
 import java.util.logging.Logger

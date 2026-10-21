@@ -468,6 +468,16 @@ class MetadataSyncService(
         var coverPermanentFailure = false
         val lastFmMetadata = (lastFmLookup as? LastFmAlbumLookup.Found)?.metadata
         if (lastFmMetadata != null) {
+            val effectiveGenreTrust = if (lastFmMetadata.autocorrected) {
+                (TRUST_LASTFM_GENRE * 0.5).toInt()
+            } else {
+                TRUST_LASTFM_GENRE
+            }
+            val effectiveIdentityTrust = if (lastFmMetadata.autocorrected) {
+                (TRUST_LASTFM_IDENTITY * 0.5).toInt()
+            } else {
+                TRUST_LASTFM_IDENTITY
+            }
             musicDao.insertMetadataResolution(
                 MetadataResolutionEntity(
                     entityType = MetadataEntityType.ALBUM.name,
@@ -475,9 +485,9 @@ class MetadataSyncService(
                     provider = MetadataProvider.LASTFM.name,
                     sourceId = lastFmMetadata.sourceMbid,
                     confidence = lastFmMetadata.confidence,
-                    identityTrust = TRUST_LASTFM_IDENTITY,
+                    identityTrust = effectiveIdentityTrust,
                     yearTrust = TRUST_LASTFM_YEAR,
-                    genreTrust = TRUST_LASTFM_GENRE,
+                    genreTrust = effectiveGenreTrust,
                     artworkTrust = TRUST_LASTFM_ARTWORK,
                     resolvedAt = now,
                 )
