@@ -1,10 +1,10 @@
 package org.milkdev.dreamplayer.extensions.data
 
 import io.ktor.client.HttpClient
-import io.ktor.client.call.body
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.parameter
+import io.ktor.client.request.prepareGet
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
@@ -217,144 +217,153 @@ class CoverArtRepository(
         )
 
         return try {
-            val response = noRedirectClient.get(checkedUrl) {
+            var redirectTarget: String? = null
+            val lookupResult = noRedirectClient.prepareGet(checkedUrl) {
                 header(HttpHeaders.UserAgent, USER_AGENT)
-            }
-            when (response.status) {
-                HttpStatusCode.OK -> {
-                    val contentType = response.headers[HttpHeaders.ContentType]
-                    if (contentType != null && !contentType.startsWith("image/", ignoreCase = true) &&
-                        !contentType.startsWith("application/octet-stream", ignoreCase = true)
-                    ) {
-                        NetworkTraceLog.metadataResponse(
-                            trace = requestTrace,
-                            statusCode = response.status.value,
-                            contentType = contentType,
-                            byteCount = 0,
-                        )
-                        return CoverArtLookup.PermanentFailure(
-                            "Сервер обложек вернул неверный Content-Type: $contentType"
-                        )
-                    }
+            }.execute { response ->
+                when (response.status) {
+                    HttpStatusCode.OK -> {
+                        val contentType = response.headers[HttpHeaders.ContentType]
+                        if (contentType != null && !contentType.startsWith("image/", ignoreCase = true) &&
+                            !contentType.startsWith("application/octet-stream", ignoreCase = true)
+                        ) {
+                            NetworkTraceLog.metadataResponse(
+                                trace = requestTrace,
+                                statusCode = response.status.value,
+                                contentType = contentType,
+                                byteCount = 0,
+                            )
+                            return@execute CoverArtLookup.PermanentFailure(
+                                "Сервер обложек вернул неверный Content-Type: $contentType"
+                            )
+                        }
 
-                    // 1. Предварительная проверка заголовка Content-Length
-                    val contentLength = response.contentLength()
-                    if (contentLength != null && contentLength > MAX_IMAGE_SIZE_BYTES) {
-                        NetworkTraceLog.metadataResponse(
-                            trace = requestTrace,
-                            statusCode = response.status.value,
-                            contentType = contentType,
-                            byteCount = contentLength.toInt(),
-                        )
-                        return CoverArtLookup.PermanentFailure(
-                            "Размер изображения ($contentLength байт) превышает лимит в $MAX_IMAGE_SIZE_BYTES байт"
-                        )
-                    }
+                        // 1. Предварительная проверка заголовка Content-Length
+                        val contentLength = response.contentLength()
+                        if (contentLength != null && contentLength > MAX_IMAGE_SIZE_BYTES) {
+                            NetworkTraceLog.metadataResponse(
+                                trace = requestTrace,
+                                statusCode = response.status.value,
+                                contentType = contentType,
+                                byteCount = contentLength.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+                            )
+                            return@execute CoverArtLookup.PermanentFailure(
+                                "Размер изображения ($contentLength байт) превышает лимит в $MAX_IMAGE_SIZE_BYTES байт"
+                            )
+                        }
 
-                    // 2. Безопасное потоковое чтение
-                    val channel = response.bodyAsChannel()
-                    val bytes = readChannelBounded(channel, MAX_IMAGE_SIZE_BYTES)
-                    if (bytes == null) {
-                        NetworkTraceLog.metadataResponse(
-                            trace = requestTrace,
-                            statusCode = response.status.value,
-                            contentType = contentType,
-                            byteCount = MAX_IMAGE_SIZE_BYTES + 1,
-                        )
-                        return CoverArtLookup.PermanentFailure(
-                            "Размер изображения превышает лимит в $MAX_IMAGE_SIZE_BYTES байт"
-                        )
-                    }
+                        // 2. Безопасное потоковое чтение
+                        val channel = response.bodyAsChannel()
+                        val bytes = readChannelBounded(channel, MAX_IMAGE_SIZE_BYTES)
+                        if (bytes == null) {
+                            NetworkTraceLog.metadataResponse(
+                                trace = requestTrace,
+                                statusCode = response.status.value,
+                                contentType = contentType,
+                                byteCount = MAX_IMAGE_SIZE_BYTES + 1,
+                            )
+                            return@execute CoverArtLookup.PermanentFailure(
+                                "Размер изображения превышает лимит в $MAX_IMAGE_SIZE_BYTES байт"
+                            )
+                        }
 
-                    // 3. Проверка сигнатуры файла (Magic Bytes)
-                    if (!isSupportedImageSignature(bytes)) {
+                        // 3. Проверка сигнатуры файла (Magic Bytes)
+                        if (!isSupportedImageSignature(bytes)) {
+                            NetworkTraceLog.metadataResponse(
+                                trace = requestTrace,
+                                statusCode = response.status.value,
+                                contentType = contentType,
+                                byteCount = bytes.size,
+                            )
+                            return@execute CoverArtLookup.PermanentFailure(
+                                "Файл не является поддерживаемым изображением (неверная сигнатура байтов)"
+                            )
+                        }
+
                         NetworkTraceLog.metadataResponse(
                             trace = requestTrace,
                             statusCode = response.status.value,
-                            contentType = contentType,
+                            contentType = response.headers[HttpHeaders.ContentType],
                             byteCount = bytes.size,
                         )
-                        return CoverArtLookup.PermanentFailure(
-                            "Файл не является поддерживаемым изображением (неверная сигнатура байтов)"
-                        )
-                    }
-
-                    NetworkTraceLog.metadataResponse(
-                        trace = requestTrace,
-                        statusCode = response.status.value,
-                        contentType = response.headers[HttpHeaders.ContentType],
-                        byteCount = bytes.size,
-                    )
-                    val localUri = fileStore.saveRemoteAlbumArt(
-                        albumId = albumId,
-                        sourceUrl = checkedUrl,
-                        bytes = bytes,
-                        contentType = response.headers[HttpHeaders.ContentType],
-                    )
-                    CoverArtLookup.Found(
-                        localUri = localUri,
-                        musicBrainzReleaseGroupMbid = musicBrainzReleaseGroupMbid,
-                    )
-                }
-
-                HttpStatusCode.NotFound -> {
-                    NetworkTraceLog.metadataResponse(
-                        trace = requestTrace,
-                        statusCode = response.status.value,
-                        contentType = response.headers[HttpHeaders.ContentType],
-                    )
-                    CoverArtLookup.NoMatch
-                }
-                HttpStatusCode.MovedPermanently,
-                HttpStatusCode.Found,
-                HttpStatusCode.SeeOther,
-                HttpStatusCode.TemporaryRedirect,
-                HttpStatusCode.PermanentRedirect -> {
-                    val redirectUrl = response.headers[HttpHeaders.Location]
-                        ?.toRedirectUrl(currentUrl = checkedUrl)
-                    NetworkTraceLog.metadataResponse(
-                        trace = requestTrace,
-                        statusCode = response.status.value,
-                        contentType = response.headers[HttpHeaders.ContentType],
-                        note = redirectUrl?.let { "location=$it" } ?: "location=missing",
-                    )
-                    if (redirectUrl == null) {
-                        CoverArtLookup.RetryableFailure("Сервер обложек вернул пустой redirect")
-                    } else {
-                        downloadCover(
+                        val localUri = fileStore.saveRemoteAlbumArt(
                             albumId = albumId,
-                            sourceUrl = redirectUrl,
-                            serviceName = serviceName,
-                            allowedHosts = allowedHosts,
-                            limiter = limiter,
+                            sourceUrl = checkedUrl,
+                            bytes = bytes,
+                            contentType = response.headers[HttpHeaders.ContentType],
+                        )
+                        CoverArtLookup.Found(
+                            localUri = localUri,
                             musicBrainzReleaseGroupMbid = musicBrainzReleaseGroupMbid,
-                            redirectDepth = redirectDepth + 1,
+                        )
+                    }
+
+                    HttpStatusCode.NotFound -> {
+                        NetworkTraceLog.metadataResponse(
+                            trace = requestTrace,
+                            statusCode = response.status.value,
+                            contentType = response.headers[HttpHeaders.ContentType],
+                        )
+                        CoverArtLookup.NoMatch
+                    }
+                    HttpStatusCode.MovedPermanently,
+                    HttpStatusCode.Found,
+                    HttpStatusCode.SeeOther,
+                    HttpStatusCode.TemporaryRedirect,
+                    HttpStatusCode.PermanentRedirect -> {
+                        val redirectUrl = response.headers[HttpHeaders.Location]
+                            ?.toRedirectUrl(currentUrl = checkedUrl)
+                        NetworkTraceLog.metadataResponse(
+                            trace = requestTrace,
+                            statusCode = response.status.value,
+                            contentType = response.headers[HttpHeaders.ContentType],
+                            note = redirectUrl?.let { "location=$it" } ?: "location=missing",
+                        )
+                        if (redirectUrl == null) {
+                            CoverArtLookup.RetryableFailure("Сервер обложек вернул пустой redirect")
+                        } else {
+                            redirectTarget = redirectUrl
+                            CoverArtLookup.NoMatch
+                        }
+                    }
+                    HttpStatusCode.TooManyRequests,
+                    HttpStatusCode.ServiceUnavailable -> {
+                        NetworkTraceLog.metadataResponse(
+                            trace = requestTrace,
+                            statusCode = response.status.value,
+                            contentType = response.headers[HttpHeaders.ContentType],
+                        )
+                        limiter.cooldown(RATE_LIMIT_COOLDOWN_MS)
+                        CoverArtLookup.RetryableFailure(
+                            message = "$serviceName ограничил частоту запросов",
+                            isRateLimited = true,
+                        )
+                    }
+                    else -> {
+                        NetworkTraceLog.metadataResponse(
+                            trace = requestTrace,
+                            statusCode = response.status.value,
+                            contentType = response.headers[HttpHeaders.ContentType],
+                        )
+                        CoverArtLookup.RetryableFailure(
+                            message = "$serviceName ответил HTTP ${response.status.value}",
                         )
                     }
                 }
-                HttpStatusCode.TooManyRequests,
-                HttpStatusCode.ServiceUnavailable -> {
-                    NetworkTraceLog.metadataResponse(
-                        trace = requestTrace,
-                        statusCode = response.status.value,
-                        contentType = response.headers[HttpHeaders.ContentType],
-                    )
-                    limiter.cooldown(RATE_LIMIT_COOLDOWN_MS)
-                    CoverArtLookup.RetryableFailure(
-                        message = "$serviceName ограничил частоту запросов",
-                        isRateLimited = true,
-                    )
-                }
-                else -> {
-                    NetworkTraceLog.metadataResponse(
-                        trace = requestTrace,
-                        statusCode = response.status.value,
-                        contentType = response.headers[HttpHeaders.ContentType],
-                    )
-                    CoverArtLookup.RetryableFailure(
-                        message = "$serviceName ответил HTTP ${response.status.value}",
-                    )
-                }
+            }
+            val nextUrl = redirectTarget
+            if (nextUrl != null) {
+                downloadCover(
+                    albumId = albumId,
+                    sourceUrl = nextUrl,
+                    serviceName = serviceName,
+                    allowedHosts = allowedHosts,
+                    limiter = limiter,
+                    musicBrainzReleaseGroupMbid = musicBrainzReleaseGroupMbid,
+                    redirectDepth = redirectDepth + 1,
+                )
+            } else {
+                lookupResult
             }
         } catch (error: CancellationException) {
             NetworkTraceLog.cancelled(requestTrace)

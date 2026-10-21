@@ -148,14 +148,14 @@ class LastFmRepository(private val lastFmService: LastFmService) {
             is LastFmResult.Failure -> if (direct.type != LastFmErrorType.NotFound) return direct
         }
 
-        val search = lastFmService.searchAlbums(apiKey = apiKey, album = album)
+        val search = lastFmService.searchAlbums(apiKey = apiKey, album = album.trim())
         if (search is LastFmResult.Failure) return search
 
         val bestCandidate = (search as LastFmResult.Success).value.results
             ?.albummatches
             ?.album
             .orEmpty()
-            .map { candidate -> candidate to candidate.scoreAgainst(artist = artist, album = album, expectedYear = expectedYear) }
+            .map { candidate -> candidate to candidate.scoreAgainst(artist = artist, album = album) }
             .filter { (_, score) -> score >= MIN_LASTFM_CANDIDATE_SCORE }
             .maxByOrNull { (_, score) -> score }
             ?.first
@@ -179,8 +179,6 @@ class LastFmRepository(private val lastFmService: LastFmService) {
     }
 
     @Suppress("RemoveExplicitTypeArguments")
-    // Внутри LastFmRepository.kt обнови метод toMetadata():
-
     private fun LastFmAlbum.toMetadata(
         requestedArtist: String,
         requestedAlbum: String,
@@ -247,14 +245,20 @@ class LastFmRepository(private val lastFmService: LastFmService) {
     }
 
     private fun String.normalizeForMetadataMatch(): String {
-        return this.trim()
+        val cleaned = this.trim()
             .lowercase()
-            .replace("&", "and")
-            .replace(Regex("[—–-]"), " ")
+            .replace('ё', 'е')
+            .replace("e\u0308", "е")
+            .replace("&", " and ")
             .replace(Regex("[“”'’\"`«»]"), "")
-            .replace(Regex("[^a-z0-9а-яë\\s]"), "")
-            .replace(Regex("\\s+"), " ")
-            .trim()
+        return buildString(cleaned.length) {
+            cleaned.forEach { character ->
+                append(if (character.isLetterOrDigit()) character else ' ')
+            }
+        }
+            .splitToSequence(' ')
+            .filter { it.isNotBlank() }
+            .joinToString(" ")
     }
 
     private fun levenshteinDistance(s1: String, s2: String): Int {
@@ -279,7 +283,6 @@ class LastFmRepository(private val lastFmService: LastFmService) {
     private fun LastFmAlbumSearchItem.scoreAgainst(
         artist: String,
         album: String,
-        expectedYear: Int?,
     ): Int {
         val artistMatches = this.artist.normalizedMusicKey() == artist.normalizedMusicKey()
         val albumMatches = name.normalizedMusicKey() == album.normalizedMusicKey()
@@ -287,8 +290,7 @@ class LastFmRepository(private val lastFmService: LastFmService) {
             EDITION_WORDS.none { album.contains(it, ignoreCase = true) }
         return (if (artistMatches) 100 else 0) +
             (if (albumMatches) 100 else 0) +
-            (if (!mbid.isNullOrBlank()) 40 else 0) +
-            (expectedYear?.let { 10 } ?: 0) -
+            (if (!mbid.isNullOrBlank()) 40 else 0) -
             (if (hasEditionPenalty) 30 else 0)
     }
 
