@@ -96,6 +96,7 @@ class WaveGeometryCache(
 
     private val fullProgressPath: Path = Path()
     private val pathMeasure: PathMeasure = PathMeasure()
+    private val transformMatrix: Matrix = Matrix()
     val trackPathToDraw: Path = Path()
 
     var progressPathsToDraw: Array<Path>? = null
@@ -214,11 +215,12 @@ class WaveGeometryCache(
         require(paths != null && paths.size == progressFractions.size / 2) {
             "progress fraction pairs do not match the number of progress paths to draw."
         }
+        val effectiveWaveOffset = if (amplitude != 0f) waveOffset else 0f
         if (
             !forceUpdate &&
             currentProgressFractions.contentEquals(progressFractions) &&
             currentAmplitude == amplitude &&
-            currentWaveOffset == waveOffset
+            currentWaveOffset == effectiveWaveOffset
         ) {
             return
         }
@@ -262,17 +264,15 @@ class WaveGeometryCache(
                     destination = paths[i],
                 )
 
-                paths[i].transform(
-                    Matrix().apply {
-                        translate(
-                            x = if (waveShift > 0f) -waveShift else 0f,
-                            y = (1f - amplitude) * halfHeight,
-                        )
-                        if (amplitude != 1f) {
-                            scale(y = amplitude)
-                        }
-                    }
+                transformMatrix.reset()
+                transformMatrix.translate(
+                    x = if (waveShift > 0f) -waveShift else 0f,
+                    y = (1f - amplitude) * halfHeight,
                 )
+                if (amplitude != 1f) {
+                    transformMatrix.scale(y = amplitude)
+                }
+                paths[i].transform(transformMatrix)
             }
 
             val adaptiveTrackSpacing =
@@ -299,7 +299,7 @@ class WaveGeometryCache(
 
         progressFractions.copyInto(currentProgressFractions!!)
         currentAmplitude = amplitude
-        currentWaveOffset = waveOffset
+        currentWaveOffset = effectiveWaveOffset
     }
 }
 
@@ -331,16 +331,22 @@ fun ExpressiveSlider(
     )
 
     val geometryCache = remember { WaveGeometryCache() }
+    val progressFractions = remember { FloatArray(2) }
 
-    val infiniteTransition = rememberInfiniteTransition()
-    val waveOffset by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = style.waveDurationMs, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart,
-        ),
-    )
+    val waveOffset = if (isPlaying || gestureAmplitude > 0f) {
+        val infiniteTransition = rememberInfiniteTransition()
+        val animatedWaveOffset by infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = style.waveDurationMs, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart,
+            ),
+        )
+        animatedWaveOffset
+    } else {
+        0f
+    }
 
     val currentEnabled by rememberUpdatedState(enabled)
     val currentOnValueChange by rememberUpdatedState(onValueChange)
@@ -419,12 +425,14 @@ fun ExpressiveSlider(
             val horizontalPadding = max(thumbWidthPx / 2f, strokeCapWidth)
             val activeWidth = size.width - 2 * horizontalPadding
 
+            progressFractions[0] = 0f
+            progressFractions[1] = fraction
             geometryCache.updatePaths(
                 size = size,
                 wavelength = wavelengthPx,
                 waveHeight = waveHeightPx,
                 thumbWidth = thumbWidthPx,
-                progressFractions = floatArrayOf(0f, fraction),
+                progressFractions = progressFractions,
                 amplitude = gestureAmplitude,
                 waveOffset = waveOffset,
                 gapSize = gapSizePx,

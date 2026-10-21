@@ -943,10 +943,15 @@ class PlayerViewModel {
         storeScope.launch {
             val order = _libraryState.value.trackSortOrder
             val allIds = MusicLibrarySource.getAllTrackIds(order)
-            val startIndex = allIds.indexOf(trackId).coerceAtLeast(0)
+            if (allIds.isEmpty()) return@launch
+            val rawStartIndex = allIds.indexOf(trackId).coerceAtLeast(0)
+            val (windowedIds, startIndex) = windowLibraryQueueIds(
+                allIds = allIds,
+                targetIndex = rawStartIndex,
+            )
 
             val snapshot = playbackQueueController.setQueue(
-                trackIds = allIds,
+                trackIds = windowedIds,
                 startIndex = startIndex,
             )
             _playbackState.update {
@@ -1640,17 +1645,16 @@ class PlayerViewModel {
 
             val currentTrack = playbackSnapshot.currentItem()?.toLibraryTrack()
 
-            val resolvedQueue = if (shuffleApplyMode == ShuffleApplyMode.QueueVisible) {
-                withContext(Dispatchers.Default) {
-                    _playbackState.value.findTracksForIds(currentQueueSnapshot.trackIds)
-                }
+            val existingQueue = withContext(Dispatchers.Default) {
+                _playbackState.value.findTracksForIds(currentQueueSnapshot.trackIds)
+            }
+            val resolvedQueue = if (existingQueue.size == currentQueueSnapshot.trackIds.size) {
+                existingQueue
             } else {
-                _playbackState.value.playbackQueue
+                playbackSnapshot.items.map { it.toLibraryTrack() }
             }
 
             if (isUpdate && !isActive) return@launch
-
-            val hasMissingTracks = resolvedQueue.size != currentQueueSnapshot.trackIds.size
 
             _playbackState.update { currentState ->
                 currentState.copy(
@@ -1662,10 +1666,6 @@ class PlayerViewModel {
                     queueVersion = currentQueueSnapshot.queueVersion,
                     isShuffleEnabled = playbackQueueController.isShuffleEnabled,
                 )
-            }
-
-            if (shuffleApplyMode == ShuffleApplyMode.QueueVisible && hasMissingTracks) {
-                refreshQueueDisplay(currentQueueSnapshot)
             }
 
             when (mode) {
@@ -1696,16 +1696,12 @@ class PlayerViewModel {
             if (!latestQueueSnapshot.matchesDisplayRequest(currentQueueSnapshot)) return@launch
 
             _playbackState.update { currentState ->
-                if (currentNavigationState.currentDestination != AppRoute.Queue) {
-                    currentState
-                } else {
-                    currentState.copy(
-                        playbackQueue = displayQueue,
-                        currentQueueIndex = latestQueueSnapshot.currentIndex,
-                        queueVersion = latestQueueSnapshot.queueVersion,
-                        isShuffleEnabled = playbackQueueController.isShuffleEnabled,
-                    )
-                }
+                currentState.copy(
+                    playbackQueue = displayQueue,
+                    currentQueueIndex = latestQueueSnapshot.currentIndex,
+                    queueVersion = latestQueueSnapshot.queueVersion,
+                    isShuffleEnabled = playbackQueueController.isShuffleEnabled,
+                )
             }
         }
     }
@@ -1784,23 +1780,9 @@ class PlayerViewModel {
         }
 
         val finalSnapshot = playbackQueueController.snapshot()
-        val displayQueue = withContext(Dispatchers.Default) {
-            MusicLibrarySource.resolveDisplayQueue(finalSnapshot.trackIds)
-        }
         val preparedPlaybackSnapshot = PlaybackResolver.resolve(finalSnapshot)
-        val resolvedTrack = resolvedItems.firstOrNull {
-            it.trackId == restorePlan.currentTrackId
-        }
-        val libraryTrack = resolvedTrack?.let { item ->
-            LibraryTrack(
-                id = item.trackId,
-                title = item.metadata.title,
-                artistName = item.metadata.artistName,
-                albumName = item.metadata.albumName,
-                durationMs = item.metadata.durationMs,
-                albumArtUri = item.metadata.albumArtUri,
-            )
-        }
+        val displayQueue = preparedPlaybackSnapshot.items.map { it.toLibraryTrack() }
+        val libraryTrack = preparedPlaybackSnapshot.currentItem()?.toLibraryTrack()
 
         val repeatMode = try {
             PlaybackRepeatMode.valueOf(savedState.repeatMode)
@@ -2132,8 +2114,29 @@ private fun ResolvedPlaybackItem.toLibraryTrack(): LibraryTrack {
         albumName = metadata.albumName,
         durationMs = metadata.durationMs,
         albumArtUri = metadata.albumArtUri,
+        isPresent = ref.availability == TrackAvailability.AVAILABLE,
+        contentVersion = ref.contentVersion,
     )
 }
+
+internal fun windowLibraryQueueIds(
+    allIds: LongArray,
+    targetIndex: Int,
+    maxWindowSize: Int = MaxLibraryPlaybackQueueSize,
+): Pair<LongArray, Int> {
+    if (allIds.size <= maxWindowSize || maxWindowSize <= 0) {
+        val coercedIndex = targetIndex.coerceIn(0, (allIds.size - 1).coerceAtLeast(0))
+        return allIds to coercedIndex
+    }
+    val safeTarget = targetIndex.coerceIn(0, allIds.lastIndex)
+    val preferredBefore = maxWindowSize / 5
+    val maxStart = (allIds.size - maxWindowSize).coerceAtLeast(0)
+    val windowStart = (safeTarget - preferredBefore).coerceIn(0, maxStart)
+    val windowEndExclusive = (windowStart + maxWindowSize).coerceAtMost(allIds.size)
+    return allIds.copyOfRange(windowStart, windowEndExclusive) to (safeTarget - windowStart)
+}
+
+private const val MaxLibraryPlaybackQueueSize = 500
 
 private fun PlaybackUiState.findTracksForIds(ids: LongArray): List<LibraryTrack> {
     val queueById = playbackQueue.associateBy { it.id }

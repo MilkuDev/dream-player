@@ -10,26 +10,32 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -53,7 +59,7 @@ import org.milkdev.dreamplayer.library.LibraryTrack
 import org.milkdev.dreamplayer.model.PlaylistDetailUiState
 import org.milkdev.dreamplayer.playback.LibraryUiState
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun PlaylistDetailsScreen(
     modifier: Modifier = Modifier,
@@ -70,6 +76,11 @@ fun PlaylistDetailsScreen(
     val playlist = detailState.playlist
     val editablePlaylist = playlist.takeIf { it.canEditTracks }
     var isTrackPickerVisible by remember { mutableStateOf(false) }
+    val listState = rememberLazyListState()
+    val loadUncachedArtworkState = rememberLazyArtworkLoadingState(
+        listState = listState,
+        enabled = executionPolicy.allowsUncachedArtwork,
+    )
     LaunchedEffect(executionPolicy.allowsFocusAndPopups) {
         if (!executionPolicy.allowsFocusAndPopups) {
             isTrackPickerVisible = false
@@ -118,7 +129,17 @@ fun PlaylistDetailsScreen(
             }
         },
     ) { innerPadding ->
-        if (detailState.tracks.isEmpty()) {
+        if (detailState.isLoading && detailState.tracks.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+                    .padding(contentPadding),
+                contentAlignment = Alignment.Center,
+            ) {
+                LoadingIndicator()
+            }
+        } else if (detailState.tracks.isEmpty()) {
             EmptyPlaylistMessage(
                 modifier = Modifier
                     .fillMaxSize()
@@ -126,28 +147,33 @@ fun PlaylistDetailsScreen(
                     .padding(contentPadding),
             )
         } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding),
-                contentPadding = PaddingValues(
-                    start = 16.dp,
-                    end = 16.dp,
-                    top = 12.dp,
-                    bottom = contentPadding.calculateBottomPadding() + 96.dp,
-                ),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+            CompositionLocalProvider(
+                LocalLazyArtworkLoadingState provides loadUncachedArtworkState,
             ) {
-                items(
-                    items = detailState.tracks,
-                    key = { it.id },
-                    contentType = { "playlist_track" },
-                ) { track ->
-                    PlaylistTrackItem(
-                        track = track,
-                        selected = track.id == currentTrackId,
-                        onClick = { onTrackClick(track) },
-                    )
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding),
+                    contentPadding = PaddingValues(
+                        start = 16.dp,
+                        end = 16.dp,
+                        top = 12.dp,
+                        bottom = contentPadding.calculateBottomPadding() + 96.dp,
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(
+                        items = detailState.tracks,
+                        key = { it.id },
+                        contentType = { "playlist_track" },
+                    ) { track ->
+                        PlaylistTrackItem(
+                            track = track,
+                            selected = track.id == currentTrackId,
+                            onClick = { onTrackClick(track) },
+                        )
+                    }
                 }
             }
         }
@@ -158,8 +184,11 @@ fun PlaylistDetailsScreen(
         editablePlaylist != null &&
         executionPolicy.allowsFocusAndPopups
     ) {
+        val allPickerTracks = remember(libraryState.playlistPickerTrackItems) {
+            libraryState.playlistPickerTrackItems.map { it.toLibraryTrack() }
+        }
         PlaylistTrackPickerDialog(
-            allTracks = libraryState.playlistPickerTrackItems.map { it.toLibraryTrack() },
+            allTracks = allPickerTracks,
             currentPlaylistTracks = detailState.tracks,
             hasMoreTracks = libraryState.hasMorePlaylistPickerTracks,
             isLoadingMore = libraryState.isPlaylistPickerPageLoading,
@@ -246,9 +275,24 @@ private fun PlaylistTrackPickerDialog(
     onDismiss: () -> Unit,
     onSave: (List<Long>) -> Unit,
 ) {
-    val currentTrackIds = currentPlaylistTracks.map { it.id }
+    val currentTrackIds = remember(currentPlaylistTracks) {
+        currentPlaylistTracks.map { it.id }
+    }
     var selectedTrackIds by remember(currentTrackIds) {
         mutableStateOf(currentTrackIds.toSet())
+    }
+    var filterQuery by remember { mutableStateOf("") }
+    val visibleTracks = remember(allTracks, filterQuery) {
+        val trimmed = filterQuery.trim()
+        if (trimmed.isEmpty()) {
+            allTracks
+        } else {
+            allTracks.filter { track ->
+                track.title.contains(trimmed, ignoreCase = true) ||
+                    track.artistName.contains(trimmed, ignoreCase = true) ||
+                    track.albumName.contains(trimmed, ignoreCase = true)
+            }
+        }
     }
 
     AlertDialog(
@@ -258,37 +302,47 @@ private fun PlaylistTrackPickerDialog(
             if (allTracks.isEmpty()) {
                 Text("В библиотеке пока нет треков")
             } else {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 420.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    items(
-                        items = allTracks,
-                        key = { it.id },
-                        contentType = { "playlist_track_picker" },
-                    ) { track ->
-                        PlaylistSelectableTrackItem(
-                            track = track,
-                            selected = track.id in selectedTrackIds,
-                            onClick = {
-                                selectedTrackIds = if (track.id in selectedTrackIds) {
-                                    selectedTrackIds - track.id
-                                } else {
-                                    selectedTrackIds + track.id
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    OutlinedTextField(
+                        value = filterQuery,
+                        onValueChange = { filterQuery = it },
+                        placeholder = { Text("Поиск по названию или артисту") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 380.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(
+                            items = visibleTracks,
+                            key = { it.id },
+                            contentType = { "playlist_track_picker" },
+                        ) { track ->
+                            PlaylistSelectableTrackItem(
+                                track = track,
+                                selected = track.id in selectedTrackIds,
+                                onClick = {
+                                    selectedTrackIds = if (track.id in selectedTrackIds) {
+                                        selectedTrackIds - track.id
+                                    } else {
+                                        selectedTrackIds + track.id
+                                    }
+                                },
+                            )
+                        }
+                        if (hasMoreTracks) {
+                            item {
+                                TextButton(
+                                    onClick = onLoadMore,
+                                    enabled = !isLoadingMore,
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text(if (isLoadingMore) "Загружаю..." else "Загрузить ещё")
                                 }
-                            },
-                        )
-                    }
-                    if (hasMoreTracks) {
-                        item {
-                            TextButton(
-                                onClick = onLoadMore,
-                                enabled = !isLoadingMore,
-                                modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                Text(if (isLoadingMore) "Загружаю..." else "Загрузить ещё")
                             }
                         }
                     }

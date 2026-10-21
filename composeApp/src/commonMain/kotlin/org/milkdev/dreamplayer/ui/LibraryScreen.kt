@@ -58,13 +58,13 @@ fun LibraryScreen(
     val lazyListState = rememberLazyListState()
     val lazyGridState = rememberLazyGridState()
 
-    val loadUncachedListArtwork = rememberLazyArtworkLoadingEnabled(
+    val loadUncachedListArtworkState = rememberLazyArtworkLoadingState(
         listState = lazyListState,
         enabled = executionPolicy.allowsUncachedArtwork &&
             libraryState.currentCategory == LibraryCategory.TRACKS &&
             libraryState.trackSortOrder != TrackSortOrder.GENRE,
     )
-    val loadUncachedGridArtwork = rememberLazyArtworkLoadingEnabled(
+    val loadUncachedGridArtworkState = rememberLazyArtworkLoadingState(
         gridState = lazyGridState,
         enabled = executionPolicy.allowsUncachedArtwork && (
             libraryState.currentCategory == LibraryCategory.ARTISTS ||
@@ -159,11 +159,6 @@ fun LibraryScreen(
 
                 when (libraryState.currentCategory) {
                     LibraryCategory.TRACKS -> {
-
-                        val mappedTracks = remember(libraryState.trackListItems) {
-                            libraryState.trackListItems.map { it.toLibraryTrack() }
-                        }
-
                         if (libraryState.trackSortOrder == TrackSortOrder.GENRE) {
                             InfiniteGridHandler(
                                 gridState = lazyGridState,
@@ -184,14 +179,17 @@ fun LibraryScreen(
                                 hasMore = libraryState.hasMoreTracks,
                                 isLoading = libraryState.isTrackPageLoading,
                             ) { onIntent(LibraryIntent.LoadNextTracks) }
-                            LibraryTrackList(
-                                tracks = mappedTracks,
-                                currentTrack = currentTrack,
-                                onIntent = onIntent,
-                                loadUncachedArtwork = loadUncachedListArtwork,
-                                listState = lazyListState,
-                                contentPadding = contentPadding
-                            )
+                            CompositionLocalProvider(
+                                LocalLazyArtworkLoadingState provides loadUncachedListArtworkState,
+                            ) {
+                                LibraryTrackList(
+                                    tracks = libraryState.trackListItems,
+                                    currentTrack = currentTrack,
+                                    onIntent = onIntent,
+                                    listState = lazyListState,
+                                    contentPadding = contentPadding
+                                )
+                            }
                         }
                     }
                     LibraryCategory.ALBUMS -> {
@@ -215,13 +213,16 @@ fun LibraryScreen(
                                 hasMore = libraryState.hasMoreAlbums,
                                 isLoading = libraryState.isAlbumPageLoading,
                             ) { onIntent(LibraryIntent.LoadNextAlbums) }
-                            LibraryAlbumGrid(
-                                albums = libraryState.albumListItems,
-                                onIntent = onIntent,
-                                loadUncachedArtwork = loadUncachedGridArtwork,
-                                gridState = lazyGridState,
-                                contentPadding = contentPadding
-                            )
+                            CompositionLocalProvider(
+                                LocalLazyArtworkLoadingState provides loadUncachedGridArtworkState,
+                            ) {
+                                LibraryAlbumGrid(
+                                    albums = libraryState.albumListItems,
+                                    onIntent = onIntent,
+                                    gridState = lazyGridState,
+                                    contentPadding = contentPadding
+                                )
+                            }
                         }
                     }
                     LibraryCategory.ARTISTS -> {
@@ -231,13 +232,16 @@ fun LibraryScreen(
                             hasMore = libraryState.hasMoreArtists,
                             isLoading = libraryState.isArtistPageLoading,
                         ) { onIntent(LibraryIntent.LoadNextArtists) }
-                        LibraryArtistGrid(
-                            artists = libraryState.artistListItems,
-                            onIntent = onIntent,
-                            loadUncachedArtwork = loadUncachedGridArtwork,
-                            gridState = lazyGridState,
-                            contentPadding = contentPadding
-                        )
+                        CompositionLocalProvider(
+                            LocalLazyArtworkLoadingState provides loadUncachedGridArtworkState,
+                        ) {
+                            LibraryArtistGrid(
+                                artists = libraryState.artistListItems,
+                                onIntent = onIntent,
+                                gridState = lazyGridState,
+                                contentPadding = contentPadding
+                            )
+                        }
                     }
                     LibraryCategory.PLAYLISTS -> {
 
@@ -260,10 +264,9 @@ fun LibraryScreen(
 
 @Composable
 private fun LibraryTrackList(
-    tracks: List<LibraryTrack>,
+    tracks: List<TrackListItem>,
     currentTrack: LibraryTrack?,
     onIntent: (LibraryIntent) -> Unit,
-    loadUncachedArtwork: Boolean,
     listState: LazyListState,
     contentPadding: PaddingValues,
 ) {
@@ -281,7 +284,10 @@ private fun LibraryTrackList(
                 modifier = Modifier
                     .fillMaxWidth()
                     .animateItem()
-                    .clickable { onIntent(LibraryIntent.PlayTrack(tracks, track)) },
+                    .clickable {
+                        val libraryTrack = track.toLibraryTrack()
+                        onIntent(LibraryIntent.PlayTrack(listOf(libraryTrack), libraryTrack))
+                    },
                 colors = CardDefaults.cardColors(
                     containerColor = if (track.id == currentTrack?.id) {
                         MaterialTheme.colorScheme.primaryContainer
@@ -301,11 +307,10 @@ private fun LibraryTrackList(
                             .background(MaterialTheme.colorScheme.secondaryContainer),
                     ) {
                         TrackImage(
-                            uri = track.albumArtUri,
+                            uri = track.artworkUri,
                             modifier = Modifier.fillMaxSize(),
                             maxDecodeSizePx = 192,
-                            loadUncached = loadUncachedArtwork,
-                            artworkRevision = track.contentVersion,
+                            artworkRevision = track.artworkRevision,
                         )
                     }
                     Spacer(modifier = Modifier.width(16.dp))
@@ -333,7 +338,6 @@ private fun LibraryTrackList(
 private fun LibraryAlbumGrid(
     albums: List<AlbumListItem>,
     onIntent: (LibraryIntent) -> Unit,
-    loadUncachedArtwork: Boolean,
     gridState: LazyGridState,
     contentPadding: PaddingValues,
 ) {
@@ -357,7 +361,6 @@ private fun LibraryAlbumGrid(
                 artworkUri = album.artworkUri,
                 artworkRevision = album.artworkRevision,
                 onClick = { onIntent(LibraryIntent.OpenAlbum(album)) },
-                loadUncached = loadUncachedArtwork,
             )
         }
     }
@@ -367,7 +370,6 @@ private fun LibraryAlbumGrid(
 private fun LibraryArtistGrid(
     artists: List<ArtistListItem>,
     onIntent: (LibraryIntent) -> Unit,
-    loadUncachedArtwork: Boolean,
     gridState: LazyGridState,
     contentPadding: PaddingValues,
 ) {
@@ -402,7 +404,6 @@ private fun LibraryArtistGrid(
                     fallbackIcon = Res.drawable.artist,
                     imageShape = CircleShape,
                     onClick = { onIntent(LibraryIntent.OpenArtist(artist)) },
-                    loadUncached = loadUncachedArtwork,
                 )
             }
         }

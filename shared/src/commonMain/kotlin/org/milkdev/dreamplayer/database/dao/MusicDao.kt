@@ -1275,6 +1275,23 @@ interface MusicDao {
         artistSortKey: String,
     )
 
+    @Transaction
+    suspend fun updateAlbumsScanFields(updates: List<AlbumScanFieldsUpdate>) {
+        updates.forEach { update ->
+            updateAlbumScanFields(
+                albumId = update.albumId,
+                albumArtUri = update.albumArtUri,
+                coverSource = update.coverSource,
+                localArtworkKey = update.localArtworkKey,
+                localArtworkFingerprint = update.localArtworkFingerprint,
+                localArtworkState = update.localArtworkState,
+                timestamp = update.timestamp,
+                titleSortKey = update.titleSortKey,
+                artistSortKey = update.artistSortKey,
+            )
+        }
+    }
+
     @Query(
         """
         UPDATE albums
@@ -1418,4 +1435,15 @@ data class GenreIdResult(val id: Long, val name: String)
 data class AlbumCoverLookupCandidate(
     @Embedded val album: AlbumEntity,
     val artistName: String,
+)
+data class AlbumScanFieldsUpdate(
+    val albumId: Long,
+    val albumArtUri: String?,
+    val coverSource: String,
+    val localArtworkKey: String?,
+    val localArtworkFingerprint: String,
+    val localArtworkState: String,
+    val timestamp: Long,
+    val titleSortKey: String,
+    val artistSortKey: String,
 )

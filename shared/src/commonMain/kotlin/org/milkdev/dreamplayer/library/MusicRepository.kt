@@ -22,6 +22,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.milkdev.dreamplayer.currentTimeMillis
+import org.milkdev.dreamplayer.database.dao.AlbumScanFieldsUpdate
 import org.milkdev.dreamplayer.database.dao.GenreIdResult
 import org.milkdev.dreamplayer.database.dao.MusicDao
 import org.milkdev.dreamplayer.database.entities.AlbumEntity
@@ -64,6 +65,7 @@ class MusicRepository(
 
     private val playbackItemCacheMutex = Mutex()
     private var artworkVerificationJob: Job? = null
+    private var embeddedMetadataJob: Job? = null
     private val metadataSyncService = MetadataSyncService(
         musicDao = musicDao,
         lastFmRepository = LastFmRepository(LastFmService()),
@@ -108,6 +110,7 @@ class MusicRepository(
             var changedTracks = 0
             var skippedTracks = 0
             var movedTracks = 0
+            val changedRawTracks = mutableListOf<RawTrackData>()
             val batches = rawTracks.chunked(BATCH_SIZE)
             batches.forEach { batch ->
                 val batchStats = processBatch(
@@ -116,6 +119,7 @@ class MusicRepository(
                     artistMap = artistMap,
                     albumMap = albumMap,
                     movedTrackQueues = movedTrackQueues,
+                    changedRawTracksOut = changedRawTracks,
                 )
                 changedTracks += batchStats.changed
                 skippedTracks += batchStats.skipped
@@ -147,6 +151,7 @@ class MusicRepository(
                 )
             )
             clearPlaybackItemCache()
+            scheduleEmbeddedMetadataExtraction(changedRawTracks, currentSyncTimestamp)
             val artworkVerificationScheduled =
                 scheduleArtworkVerification(albumSyncResult.artworkCandidates)
             metadataSyncService.refreshPendingCount()
@@ -258,9 +263,9 @@ class MusicRepository(
         val albumIdMap = musicDao.getAlbumIdMap()
         val albumMap = albumIdMap.associate { (it.title to it.artistId) to it.id }
         val artistNameMap = artistMap.entries.associate { it.value to it.key }
-        albums.forEach { album ->
-            val albumId = albumMap[album.title to album.artistId] ?: return@forEach
-            musicDao.updateAlbumScanFields(
+        val albumScanUpdates = albums.mapNotNull { album ->
+            val albumId = albumMap[album.title to album.artistId] ?: return@mapNotNull null
+            AlbumScanFieldsUpdate(
                 albumId = albumId,
                 albumArtUri = album.artUri,
                 coverSource = album.coverSource.name,
@@ -271,6 +276,9 @@ class MusicRepository(
                 titleSortKey = album.title.toSortKey(),
                 artistSortKey = (artistNameMap[album.artistId] ?: "").toSortKey(),
             )
+        }
+        albumScanUpdates.chunked(BATCH_SIZE).forEach { chunk ->
+            musicDao.updateAlbumsScanFields(chunk)
         }
 
         val artworkCandidates = albums.mapNotNull { album ->
@@ -408,6 +416,7 @@ class MusicRepository(
         artistMap: Map<String, Long>,
         albumMap: Map<Pair<String, Long>, Long>,
         movedTrackQueues: MutableMap<TrackSignature, MutableList<TrackEntity>>,
+        changedRawTracksOut: MutableList<RawTrackData>,
     ): BatchSyncStats {
         val existingTracksByPath = batch
             .map { it.path }
@@ -424,7 +433,6 @@ class MusicRepository(
 
         var movedTracks = 0
         var skippedTracks = 0
-        val changedRawTracks = mutableListOf<RawTrackData>()
         val trackEntities = batch.mapNotNull { raw ->
             val artistId = artistMap[raw.artist ?: UNKNOWN_ARTIST] ?: -1L
             val albumId = albumMap[(raw.album ?: UNKNOWN_ALBUM) to artistId] ?: -1L
@@ -439,7 +447,7 @@ class MusicRepository(
                 return@mapNotNull null
             }
 
-            changedRawTracks += raw
+            changedRawTracksOut += raw
             TrackEntity(
                 id = existing?.id ?: 0L,
                 filePath = raw.path,
@@ -465,7 +473,6 @@ class MusicRepository(
 
         if (trackEntities.isNotEmpty()) {
             musicDao.upsertTracks(trackEntities)
-            scheduleEmbeddedMetadataExtraction(changedRawTracks, timestamp)
         }
 
         return BatchSyncStats(
@@ -479,49 +486,56 @@ class MusicRepository(
         rawTracks: List<RawTrackData>,
         generation: Long,
     ) {
+        embeddedMetadataJob?.cancel()
         if (rawTracks.isEmpty()) return
 
-        scope.launch(Dispatchers.IO) {
-            rawTracks.forEach { raw ->
-                val track = musicDao.getTracksByPaths(listOf(raw.path)).firstOrNull() ?: return@forEach
-                if (!track.isPresent || track.deletedAt != null) return@forEach
+        embeddedMetadataJob = scope.launch(Dispatchers.IO) {
+            rawTracks.chunked(QUERY_BATCH_SIZE).forEach { chunk ->
+                val tracksByPath = musicDao.getTracksByPaths(
+                    chunk.map { it.path }.distinct()
+                ).associateBy { it.filePath }
 
-                val metadata = EmbeddedMetadataReader.read(raw)
-                val now = currentTimeMillis()
-                val mbidStatus = when {
-                    metadata == null -> EmbeddedMbidStatus.FAILED
-                    !metadata.recordingMbid.isNullOrBlank() -> EmbeddedMbidStatus.FOUND
-                    else -> EmbeddedMbidStatus.NOT_PRESENT
+                chunk.forEach { raw ->
+                    val track = tracksByPath[raw.path] ?: return@forEach
+                    if (!track.isPresent || track.deletedAt != null) return@forEach
+
+                    val metadata = EmbeddedMetadataReader.read(raw)
+                    val now = currentTimeMillis()
+                    val mbidStatus = when {
+                        metadata == null -> EmbeddedMbidStatus.FAILED
+                        !metadata.recordingMbid.isNullOrBlank() -> EmbeddedMbidStatus.FOUND
+                        else -> EmbeddedMbidStatus.NOT_PRESENT
+                    }
+                    val parentGenres = metadata?.genres.orEmpty().flatMap {
+                        GenreDictionary.resolveParentGenres(it)
+                    }.distinct()
+
+                    musicDao.applyEmbeddedMetadata(
+                        trackId = track.id,
+                        expectedFilePath = raw.path,
+                        expectedContentFingerprint = raw.contentFingerprint(),
+                        expectedGeneration = generation,
+                        recordingMbid = metadata?.recordingMbid,
+                        releaseMbid = metadata?.releaseMbid,
+                        releaseGroupMbid = metadata?.releaseGroupMbid,
+                        artistMbids = metadata?.artistMbids.orEmpty(),
+                        albumArtistMbids = metadata?.albumArtistMbids.orEmpty(),
+                        year = metadata?.year,
+                        genres = parentGenres.map { genre ->
+                            GenreEntity(
+                                name = genre,
+                                sortKey = genre.toSortKey(),
+                                createdAt = now,
+                            )
+                        },
+                        embeddedMbidStatus = mbidStatus.name,
+                        embeddedFingerprint = metadata?.tagFingerprint,
+                        timestamp = now,
+                        identityTrust = TRUST_EMBEDDED_IDENTITY,
+                        yearTrust = TRUST_EMBEDDED_YEAR,
+                        genreTrust = TRUST_EMBEDDED_GENRE,
+                    )
                 }
-                val parentGenres = metadata?.genres.orEmpty().flatMap {
-                    GenreDictionary.resolveParentGenres(it)
-                }.distinct()
-
-                musicDao.applyEmbeddedMetadata(
-                    trackId = track.id,
-                    expectedFilePath = raw.path,
-                    expectedContentFingerprint = raw.contentFingerprint(),
-                    expectedGeneration = generation,
-                    recordingMbid = metadata?.recordingMbid,
-                    releaseMbid = metadata?.releaseMbid,
-                    releaseGroupMbid = metadata?.releaseGroupMbid,
-                    artistMbids = metadata?.artistMbids.orEmpty(),
-                    albumArtistMbids = metadata?.albumArtistMbids.orEmpty(),
-                    year = metadata?.year,
-                    genres = parentGenres.map { genre ->
-                        GenreEntity(
-                            name = genre,
-                            sortKey = genre.toSortKey(),
-                            createdAt = now,
-                        )
-                    },
-                    embeddedMbidStatus = mbidStatus.name,
-                    embeddedFingerprint = metadata?.tagFingerprint,
-                    timestamp = now,
-                    identityTrust = TRUST_EMBEDDED_IDENTITY,
-                    yearTrust = TRUST_EMBEDDED_YEAR,
-                    genreTrust = TRUST_EMBEDDED_GENRE,
-                )
             }
         }
     }
@@ -1015,6 +1029,13 @@ class MusicRepository(
             for ((key, value) in from) {
                 map.remove(key)
                 map[key] = value
+                if (map.size > maxSize) {
+                    val iterator = map.iterator()
+                    if (iterator.hasNext()) {
+                        iterator.next()
+                        iterator.remove()
+                    }
+                }
             }
             trimToSize()
         }

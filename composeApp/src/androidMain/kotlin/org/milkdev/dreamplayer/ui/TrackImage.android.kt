@@ -58,6 +58,7 @@ actual fun TrackImage(
     artworkRevision: Long,
 ) {
     val executionPolicy = LocalSceneExecutionPolicy.current
+    val lazyArtworkLoadingState = LocalLazyArtworkLoadingState.current
     val effectiveLoadUncached =
         loadUncached && executionPolicy.allowsUncachedArtwork
     val context = LocalContext.current
@@ -90,7 +91,8 @@ actual fun TrackImage(
             return@produceState
         }
 
-        snapshotFlow { loadUncachedState.value }.first { isUncachedAllowed -> isUncachedAllowed }
+        snapshotFlow { loadUncachedState.value && lazyArtworkLoadingState.value }
+            .first { isUncachedAllowed -> isUncachedAllowed }
 
         if (isFailedImage(cacheKey)) {
             value = null
@@ -128,25 +130,23 @@ private suspend fun loadCachedThumbnailBitmap(
 ): ImageBitmap? {
     return withContext(Dispatchers.IO) {
         try {
-            imageDecodeSemaphore.withPermit {
-                getCachedBitmap(cacheKey)?.let {
-                    return@withPermit it.asImageBitmap()
-                }
+            getCachedBitmap(cacheKey)?.let {
+                return@withContext it.asImageBitmap()
+            }
 
-                val cacheFile = TrackImageDiskCache.get(context, cacheKey)
-                    ?: return@withPermit null
-                ensureActive()
+            val cacheFile = TrackImageDiskCache.get(context, cacheKey)
+                ?: return@withContext null
+            ensureActive()
 
-                val bitmap = BitmapFactory.decodeFile(cacheFile.absolutePath)
-                ensureActive()
+            val bitmap = BitmapFactory.decodeFile(cacheFile.absolutePath)
+            ensureActive()
 
-                if (bitmap != null) {
-                    putCachedBitmap(cacheKey, bitmap)
-                    bitmap.asImageBitmap()
-                } else {
-                    TrackImageDiskCache.remove(context, cacheKey)
-                    null
-                }
+            if (bitmap != null) {
+                putCachedBitmap(cacheKey, bitmap)
+                bitmap.asImageBitmap()
+            } else {
+                TrackImageDiskCache.remove(context, cacheKey)
+                null
             }
         } catch (e: CancellationException) {
             throw e

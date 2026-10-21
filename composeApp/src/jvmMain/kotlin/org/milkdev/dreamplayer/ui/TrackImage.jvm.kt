@@ -31,7 +31,7 @@ import java.net.URI
 import kotlin.math.max
 import kotlin.math.roundToInt
 
-private val imageDecodeSemaphore = Semaphore(permits = 2)
+private val imageDecodeSemaphore = Semaphore(permits = 4)
 private val thumbnailDiskCache = TrackImageDiskCache(
     directory = File(applicationDirectory, "album-art/thumbnails"),
     maxBytes = 256L * 1024L * 1024L,
@@ -49,6 +49,7 @@ actual fun TrackImage(
     artworkRevision: Long,
 ) {
     val executionPolicy = LocalSceneExecutionPolicy.current
+    val lazyArtworkLoadingState = LocalLazyArtworkLoadingState.current
     val effectiveLoadUncached =
         loadUncached && executionPolicy.allowsUncachedArtwork
     val cacheDecodeSizePx = remember(maxDecodeSizePx) {
@@ -78,7 +79,8 @@ actual fun TrackImage(
             return@produceState
         }
 
-        snapshotFlow { loadUncachedState.value }.first { isAllowed -> isAllowed }
+        snapshotFlow { loadUncachedState.value && lazyArtworkLoadingState.value }
+            .first { isAllowed -> isAllowed }
         if (TrackImageCache.isFailed(cacheKey)) {
             value = null
             return@produceState
@@ -173,25 +175,23 @@ private object TrackImageCache {
 
 private suspend fun loadCachedThumbnailBitmap(cacheKey: String): ImageBitmap? {
     return withContext(Dispatchers.IO) {
-        imageDecodeSemaphore.withPermit {
-            TrackImageCache.get(cacheKey)?.let { return@withPermit it }
+        TrackImageCache.get(cacheKey)?.let { return@withContext it }
 
-            val cacheFile = thumbnailDiskCache.get(cacheKey) ?: return@withPermit null
-            try {
+        val cacheFile = thumbnailDiskCache.get(cacheKey) ?: return@withContext null
+        try {
+            ensureActive()
+            val thumbnailImage = SkiaImage.makeFromEncoded(cacheFile.readBytes())
+            thumbnailImage.use { image ->
                 ensureActive()
-                val thumbnailImage = SkiaImage.makeFromEncoded(cacheFile.readBytes())
-                thumbnailImage.use { thumbnailImage ->
-                    ensureActive()
-                    val imageBitmap = thumbnailImage.toComposeImageBitmap()
-                    TrackImageCache.put(cacheKey, imageBitmap)
-                    imageBitmap
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                thumbnailDiskCache.remove(cacheKey)
-                null
+                val imageBitmap = image.toComposeImageBitmap()
+                TrackImageCache.put(cacheKey, imageBitmap)
+                imageBitmap
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            thumbnailDiskCache.remove(cacheKey)
+            null
         }
     }
 }

@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flow
 import org.milkdev.dreamplayer.audio.readJvmAudioFileFormat
+import org.milkdev.dreamplayer.database.applicationDirectory
 import org.milkdev.dreamplayer.library.metadata.parseId3Tag
 import java.io.File
 import java.io.RandomAccessFile
@@ -21,10 +22,16 @@ class JvmMusicScanner : MusicScanner {
     override fun scan(): Flow<RawTrackData> = flow {
         val targetDirectory = File(System.getProperty("user.home"), "Music")
         if (targetDirectory.exists() && targetDirectory.isDirectory) {
-            val systemAudioFiles = targetDirectory.listFiles { _, title ->
-                title.substringAfterLast('.', missingDelimiterValue = "").lowercase() in AUDIO_FILE_EXTENSIONS
-            }
-            systemAudioFiles.orEmpty().sortedBy { it.name.lowercase() }.forEach { singleFile ->
+            val systemAudioFiles = targetDirectory
+                .walkTopDown()
+                .onEnter { dir -> !dir.name.startsWith(".") }
+                .filter { file ->
+                    file.isFile &&
+                        file.extension.lowercase() in AUDIO_FILE_EXTENSIONS
+                }
+                .sortedBy { it.absolutePath.lowercase() }
+                .toList()
+            systemAudioFiles.forEach { singleFile ->
                 val metadata = singleFile.readMetadata(logger)
                 if (metadata != null) {
                     emit(
@@ -237,13 +244,21 @@ private fun ByteArray.parseFlacPicture(): EmbeddedAlbumArt? {
 }
 
 private fun EmbeddedAlbumArt.cacheFor(sourceFile: File): File? {
-    val cacheDirectory = File(System.getProperty("java.io.tmpdir"), ALBUM_ART_CACHE_DIRECTORY)
+    val cacheDirectory = File(applicationDirectory, ALBUM_ART_CACHE_DIRECTORY)
     val cacheFile = File(cacheDirectory, "${sourceFile.albumArtCacheKey()}.${fileExtension()}")
 
     return runCatching {
         if (!cacheFile.isFile || cacheFile.length() != bytes.size.toLong()) {
             cacheDirectory.mkdirs()
-            cacheFile.writeBytes(bytes)
+            val tempFile = File(cacheDirectory, "${cacheFile.name}.tmp")
+            tempFile.writeBytes(bytes)
+            if (cacheFile.exists()) {
+                cacheFile.delete()
+            }
+            if (!tempFile.renameTo(cacheFile)) {
+                cacheFile.writeBytes(bytes)
+                tempFile.delete()
+            }
         }
         cacheFile
     }.getOrNull()
